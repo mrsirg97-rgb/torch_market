@@ -4,7 +4,7 @@
 
 Brightside Solutions, 2026
 
-[torch.market](https://torch.market) | [audit](https://torch.market/audit.md) | [@torch_market](https://x.com/torch_market/)
+[torch.market](https://torch.market) | [docs](https://torch-market-docs.vercel.app/) | [audit](https://torch.market/audit.md) | [@torch_market](https://x.com/torch_market/)
 
 ---
 
@@ -25,6 +25,8 @@ This is not a launchpad. This is a protocol that turns every token into a self-c
 - **All parameters are immutable.** 50% max LTV. 65% liquidation threshold. 2% interest per epoch. 10% liquidation bonus. 80% utilization cap. Set at deployment. No admin key can change them. You can read every parameter, calculate every outcome, and know the rules won't change after you open a position.
 
 - **One user cannot collapse the pool.** Per-user borrow caps (5x collateral share of supply), utilization caps (20% of treasury always reserved), and isolated positions (one loan per user per token) mean the system stays available for everyone regardless of what any single actor does.
+
+- **Circuit breakers protect against manipulation.** New margin positions are blocked when pool liquidity drops below 5 SOL or price deviates more than 50% from migration baseline. Liquidations remain functional (safety valve) but require minimum liquidity. No off-chain keepers, no oracles — the program reads pool state directly and refuses to act when the price signal is untrustworthy.
 
 - **No rug pull is structurally possible.** Mint and freeze authority are revoked permanently at creation. LP tokens are burned. Liquidity is locked forever. Not by promise — by code.
 
@@ -108,6 +110,8 @@ Both sides use the same parameters. Both are overcollateralized. Both are isolat
 | Utilization cap | 80% |
 | Per-user cap | 5x collateral share of supply |
 | Liquidation close | 50% per call |
+| Min pool liquidity | 5 SOL (blocks all margin ops below this) |
+| Max price deviation | 50% from baseline (blocks new positions only) |
 
 ---
 
@@ -141,6 +145,8 @@ On torch, shorts borrow real tokens and sell them on the real market. That sell 
 
 There is no oracle to manipulate. There is no funding rate to spike. There is no LP pool praying it stays solvent. The counterparty is 300M tokens that were locked at creation for exactly this purpose.
 
+Most perps protocols have a single point of failure: the off-chain price feed. If the keeper stops cranking, the oracle goes stale, and either liquidations halt (bad debt accumulates) or positions get liquidated against a stale price (users get robbed). Torch has zero off-chain dependencies — the program reads Raydium pool state directly, and when pool conditions are unhealthy, circuit breakers refuse to open new positions rather than acting on bad data.
+
 ---
 
 ## Recovery
@@ -169,9 +175,9 @@ Every parameter is readable on-chain. Every outcome is calculable before executi
 
 ## Verification
 
-58 Kani proof harnesses. 59 end-to-end tests. All passing.
+70 Kani proof harnesses. 52 end-to-end tests. All passing. Cross-validated by independent audit (OpenAI o3).
 
-Core arithmetic is formally verified with [Kani](https://model-checking.github.io/kani/) covering every possible input in constrained ranges: fee calculations, bonding curve pricing, lending formulas, liquidation lifecycle, short selling, reward distribution, migration conservation, token distribution. No SOL created from nothing. No tokens minted from thin air. No fees exceeding stated rates.
+Core arithmetic is formally verified with [Kani](https://model-checking.github.io/kani/) covering every possible input in constrained ranges: fee calculations, bonding curve pricing, lending formulas, liquidation lifecycle, short selling, bad debt accounting, circuit breaker band math, reward distribution, migration conservation, token distribution. No SOL created from nothing. No tokens minted from thin air. No fees exceeding stated rates.
 
 See [VERIFICATION.md](https://torch.market/verification.md).
 
@@ -197,6 +203,8 @@ See [VERIFICATION.md](https://torch.market/verification.md).
 | Liquidation bonus | 10% |
 | Utilization cap | 80% |
 | Per-user borrow cap | 5x collateral share of supply |
+| Min pool liquidity | 5 SOL |
+| Max price deviation | 50% from migration baseline |
 | Min borrow | 0.1 SOL |
 | Epoch duration | ~7 days |
 | Reward eligibility | 2 SOL volume per epoch |

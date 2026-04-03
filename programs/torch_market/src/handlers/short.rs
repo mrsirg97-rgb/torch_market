@@ -4,7 +4,7 @@ use anchor_spl::token_interface::{transfer_checked, TransferChecked};
 use crate::constants::*;
 use crate::contexts::*;
 use crate::errors::TorchMarketError;
-use crate::pool_validation::{read_token_account_balance, validate_pool_accounts};
+use crate::pool_validation::{read_token_account_balance, validate_pool_accounts, require_min_pool_liquidity, require_price_in_band};
 use crate::state::ShortPosition;
 
 // Calculate token debt value in lamports using Raydium pool reserves.
@@ -181,7 +181,15 @@ pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
 
     let pool_sol = read_token_account_balance(&ctx.accounts.token_vault_0)?;
     let pool_tokens = read_token_account_balance(&ctx.accounts.token_vault_1)?;
-    require!(pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
+    require!(pool_sol > 0 && pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
+
+    require_min_pool_liquidity(pool_sol)?;
+    require_price_in_band(
+        pool_sol,
+        pool_tokens,
+        treasury.baseline_sol_reserves,
+        treasury.baseline_token_reserves,
+    )?;
 
     let total_token_debt = position
         .tokens_borrowed
@@ -531,7 +539,9 @@ pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
 
     let pool_sol = read_token_account_balance(&ctx.accounts.token_vault_0)?;
     let pool_tokens = read_token_account_balance(&ctx.accounts.token_vault_1)?;
-    require!(pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
+    require!(pool_sol > 0 && pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
+
+    require_min_pool_liquidity(pool_sol)?;
 
     let total_token_debt = position
         .tokens_borrowed
@@ -700,7 +710,8 @@ pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
     let short_config = &mut ctx.accounts.short_config;
     short_config.total_tokens_lent = short_config
         .total_tokens_lent
-        .saturating_sub(remaining_tokens_paid);
+        .saturating_sub(remaining_tokens_paid)
+        .saturating_sub(bad_debt_tokens);
     short_config.total_interest_collected = short_config
         .total_interest_collected
         .checked_add(interest_paid)

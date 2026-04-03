@@ -115,4 +115,6 @@ pub const SHORT_SEED: &[u8] = b"short";
 pub const SHORT_CONFIG_SEED: &[u8] = b"short_config";
 /// Prevents dust positions that cost more in rent than they're worth
 pub const MIN_SHORT_TOKENS: u64 = 1_000_000_000;
+pub const MIN_POOL_SOL_LENDING: u64 = 5_000_000_000;
+pub const MAX_PRICE_DEVIATION_BPS: u64 = 5000;
 pub const SHORT_ENABLED_SENTINEL: u16 = u16::MAX; // Stored in Treasury.buyback_percent_bps to flag short selling enabled

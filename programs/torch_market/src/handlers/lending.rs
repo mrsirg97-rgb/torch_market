@@ -4,7 +4,7 @@ use anchor_spl::token_interface::{transfer_checked, TransferChecked};
 use crate::constants::*;
 use crate::contexts::*;
 use crate::errors::TorchMarketError;
-use crate::pool_validation::{read_token_account_balance, validate_pool_accounts};
+use crate::pool_validation::{read_token_account_balance, validate_pool_accounts, require_min_pool_liquidity, require_price_in_band};
 use crate::state::LoanPosition;
 
 // value = collateral_amount * pool_sol_reserves / pool_token_reserves
@@ -172,7 +172,15 @@ pub fn borrow(ctx: Context<Borrow>, args: BorrowArgs) -> Result<()> {
 
     let pool_sol = read_token_account_balance(&ctx.accounts.token_vault_0)?;
     let pool_tokens = read_token_account_balance(&ctx.accounts.token_vault_1)?;
-    require!(pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
+    require!(pool_sol > 0 && pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
+
+    require_min_pool_liquidity(pool_sol)?;
+    require_price_in_band(
+        pool_sol,
+        pool_tokens,
+        treasury.baseline_sol_reserves,
+        treasury.baseline_token_reserves,
+    )?;
 
     let collateral_value = calculate_collateral_value(user_collateral, pool_sol, pool_tokens)?;
     let total_debt = loan
@@ -493,7 +501,9 @@ pub fn liquidate(ctx: Context<Liquidate>) -> Result<()> {
 
     let pool_sol = read_token_account_balance(&ctx.accounts.token_vault_0)?;
     let pool_tokens = read_token_account_balance(&ctx.accounts.token_vault_1)?;
-    require!(pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
+    require!(pool_sol > 0 && pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
+
+    require_min_pool_liquidity(pool_sol)?;
 
     let collateral_value = calculate_collateral_value(
         loan.collateral_amount,
@@ -638,7 +648,8 @@ pub fn liquidate(ctx: Context<Liquidate>) -> Result<()> {
     let treasury = &mut ctx.accounts.treasury;
     treasury.total_sol_lent = treasury
         .total_sol_lent
-        .saturating_sub(remaining_debt_paid);
+        .saturating_sub(remaining_debt_paid)
+        .saturating_sub(bad_debt);
     treasury.sol_balance = treasury
         .sol_balance
         .checked_add(actual_debt_covered)

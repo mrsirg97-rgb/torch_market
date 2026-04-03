@@ -2,7 +2,7 @@
   "address": "8hbUkonssSEEtkqzwM7ZcZrD9evacM92TcWSooVF4BeT",
   "metadata": {
     "name": "torch_market",
-    "version": "10.2.0",
+    "version": "10.2.1",
     "spec": "0.1.0",
     "description": "torch.market"
   },
@@ -5972,6 +5972,16 @@
       "code": 6070,
       "name": "ShortAlreadyEnabled",
       "msg": "Short selling already enabled for this token"
+    },
+    {
+      "code": 6071,
+      "name": "PoolTooThin",
+      "msg": "Pool liquidity too low for safe collateral valuation"
+    },
+    {
+      "code": 6072,
+      "name": "PriceDeviationTooHigh",
+      "msg": "Pool price deviates too far from baseline for new margin positions"
     }
   ],
   "types": [

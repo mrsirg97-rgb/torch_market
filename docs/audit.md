@@ -1,6 +1,6 @@
 # Torch Market Security Audit Summary
 
-**Date:** April 2, 2026 | **Auditor:** Claude Opus 4.6 (Anthropic) | **Version:** V10.2.0 Production
+**Date:** April 3, 2026 | **Auditor:** Claude Opus 4.6 (Anthropic) + OpenAI o3 (independent review) | **Version:** V10.2.1 Production
 
 ---
 
@@ -10,7 +10,7 @@ Four audits covering the full stack:
 
 | Layer | Files | Lines | Report |
 |-------|-------|-------|--------|
-| On-chain program (V10.0.0) | 22 source files | ~7,600 | `audit.md` |
+| On-chain program (V10.2.1) | 22 source files | ~7,800 | `audit.md` |
 | Frontend & API | 37 files (17 API routes, 12 libs, 8 components) | -- | `SECURITY_AUDIT_FE_V2.4.1_PROD.md` |
 | Agent Kit plugin (V4.0) | 4 files | ~1,900 | `SECURITY_AUDIT_AGENTKIT_V4.0.md` |
 | Torch SDK (V2.0) | 9 files | ~2,800 | Included in Agent Kit V4.0 audit |
@@ -21,25 +21,28 @@ Program ID: `8hbUkonssSEEtkqzwM7ZcZrD9evacM92TcWSooVF4BeT`
 
 ## Findings Summary
 
-### On-Chain Program (V10.0.0)
+### On-Chain Program (V10.2.1)
 
 | Severity | Count | Details |
 |----------|-------|---------|
 | Critical | 0 | -- |
 | High | 0 | -- |
-| Medium | 4 | Lending enabled by default (accepted); Token-2022 transfer fee on collateral (inherent, 0.04% new / 0.03% legacy); Epoch rewards race condition (accepted); [V5] AMM spot price for margin valuations (accepted — no oracle, Raydium pool IS the price, same risk as long lending) |
-| Low | 7 | fund_vault_wsol decoupled accounting; Stranded WSOL lamports; Vault sol_balance drift; Sell no position check; Slot-based interest; Revival no virtual reserve update; Treasury lock ATA not Anchor-constrained (CPI validated, see V31 notes) |
-| Informational | 29 | Various carried findings + 3 new V3.7.1 + 2 new V3.7.2 + 2 new V3.7.3 + 2 new V3.7.5 (I-20: zero-burn migration design; I-21: AccountInfo stack pressure mitigation) + 1 new V3.7.6 (I-22: reserve floor zeroed, fee split rebalanced) + 1 new V3.7.7 (I-23: buyback removed, lending cap increased) + 1 new V3.7.9 (I-24: creator revenue streams, transfer fee bump) + 1 new (I-25: per-user borrow cap) + 1 new V3.7.10 (I-26: community token option) + 1 new V4.0.1 (I-27: simplified tiers & reduced fees) + 1 new V10.0.0 (I-28: oracle-free margin trading — short selling) + 1 new V10.0.0 (I-29: deprecated field repurposing for short collateral tracking) |
+| Medium | 4 | Lending enabled by default (accepted); Token-2022 transfer fee on collateral (inherent, 0.04% new / 0.03% legacy); Epoch rewards race condition (accepted); [V5] AMM spot price for margin valuations (mitigated V6 — circuit breakers block new positions on unhealthy pools, liquidity floor on liquidations; TWAP deferred as higher-risk than spot+breakers for thin pools) |
+| Low | 5 | fund_vault_wsol decoupled accounting; Stranded WSOL lamports; Vault sol_balance drift; Sell no position check; Slot-based interest ~~Revival no virtual reserve update; Treasury lock ATA not Anchor-constrained~~ (2 closed in V10.2.1) |
+| Informational | 32 | Various carried findings + 3 new V3.7.1 + 2 new V3.7.2 + 2 new V3.7.3 + 2 new V3.7.5 + 1 new V3.7.6 + 1 new V3.7.7 + 1 new V3.7.9 + 1 new V3.7.10 + 1 new V4.0.1 + 2 new V10.0.0 (I-28: oracle-free margin trading; I-29: deprecated field repurposing) + 3 new V10.2.1 (I-30: pool circuit breakers; I-31: bad debt aggregate reconciliation; I-32: independent audit cross-validation) |
 
 **Rating: EXCELLENT -- Ready for Mainnet**
 
 Key strengths:
-- 31 instructions, 14 account types, 58 Kani formal verification proofs passed
+- 31 instructions, 14 account types, 70 Kani formal verification proofs passed
+- **V6 pool circuit breakers** (V10.2.1): Two-layer protection against spot-price manipulation on margin operations. Layer 1: `MIN_POOL_SOL_LENDING` (5 SOL) liquidity floor blocks all margin operations on drained pools. Layer 2: `MAX_PRICE_DEVIATION_BPS` (50%) deviation band blocks new borrows/shorts when pool price diverges >50% from migration baseline. Liquidations exempt from deviation band (safety valve must remain functional during volatility) but subject to liquidity floor. New helpers `require_min_pool_liquidity()` and `require_price_in_band()` in `pool_validation.rs`. New errors `PoolTooThin` and `PriceDeviationTooHigh`. 4 Kani proofs verify band symmetry, edge correctness, and threshold behavior
+- **V6 bad debt accounting fix** (V10.2.1): `liquidate()` and `liquidate_short()` now reduce `total_sol_lent` / `total_tokens_lent` by bad debt written off, not just principal repaid. Prevents utilization cap drift after under-collateralized liquidations. `pool_sol > 0` guard added to all 4 margin handlers (borrow, liquidate, open_short, liquidate_short). 8 new Kani proofs cover bad debt accounting, formula algebraic identity, pool reserve guards, and ratio gate safety
+- **Independent cross-audit** (V10.2.1): OpenAI o3 performed an independent engineering audit of the full on-chain program. 7 of 8 specific claims verified accurate against source code (1 false positive: IDL/lib.rs instruction count mismatch — both have 31). Key findings that led to V6 changes: spot-price oracle risk on lending/shorts (→ circuit breakers), bad debt aggregate drift (→ accounting fix), missing `pool_sol > 0` guard (→ added). Recommendation for TWAP evaluated and deferred — adds attack surface (stale cranks, manipulation of accumulator) without meaningful benefit on thin long-tail pools where circuit breakers are more practical
 - **V36 vote vault removal**: `BURN_RATE_BPS` (10% community treasury split) removed — 100% of `tokens_out` goes to buyer. `BuyArgs.vote` parameter removed. Vote vault balance tracking, vote recording, vote finalization, and vote processing at migration all removed. State fields retained for Borsh layout compatibility but initialized to zero/true for V36+ tokens (`vote_finalized = true` at creation so migration gate passes). Migration handler unchanged — naturally skips vote processing when `vote_vault_balance == 0`. `TREASURY_SOL_MAX_BPS` increased from 1500 (15%) to 1750 (17.5%) to deepen treasury. Net effect: simpler buy instruction, no governance overhead, ~10% more tokens per SOL, deeper lending pool. 6 fewer active state fields, no new attack surface
 - **V5 oracle-free margin trading (short selling)**: Completes the two-sided margin system. 4 new instructions: `enable_short_selling` (admin), `open_short`, `close_short`, `liquidate_short`. 2 new account types: `ShortPosition` (per-user, per-token) and `ShortConfig` (per-token stats, holds no SOL). SOL collateral deposited to Treasury, tracked via repurposed deprecated `total_burned_from_buyback` field (sentinel `u16::MAX` in `buyback_percent_bps`, following V35 pattern). Same LTV (50%), liquidation (65%, 10% bonus, 50% close factor), interest (2%/epoch in token terms), and utilization cap (80%) as long lending. One change to existing code: `borrow()` subtracts reserved short collateral from available SOL. All 4 instructions support vault routing. No external oracle — Raydium pool price is canonical. 10 new Kani proofs verify debt value bounds, LTV edge cases, interest non-overflow, liquidation bonus, lifecycle conservation, partial close accounting, and collateral reservation. All accounts boxed to stay under 4KB BPF stack limit
 - **V35 community token option**: New `community_token: bool` in `CreateTokenArgs` (default `true`). Community tokens route 0% to creator — all bonding SOL share and `swap_fees_to_sol` proceeds go entirely to treasury. Uses sentinel value (`u64::MAX`) in deprecated `Treasury.total_bought_back` field — no struct layout changes, full backward compat. 2 new Kani proofs verify SOL conservation for both community token paths
 - **V34 creator revenue**: Three new income streams for creators — bonding SOL share (0.2%→1% carved from treasury rate, linear growth), 15% of post-migration `swap_fees_to_sol` proceeds, and star payout (cost reduced 0.05→0.02 SOL). `creator` account added to `Buy` and `SwapFeesToSol` contexts, validated against `bonding_curve.creator`. Transfer fee bumped from 3 to 4 bps (new tokens only — old tokens immutable). 4 new Kani proofs verify creator rate bounds, monotonicity, subtraction safety, and fee share conservation
-- **Per-user borrow cap**: `BORROW_SHARE_MULTIPLIER` (initially 3, now 5 in V4.0) limits each borrower to Nx their collateral's proportional share of the lendable pool (e.g., 1% of supply as collateral → max 5% of lendable SOL). Prevents single-whale pool monopolization. `UserBorrowCapExceeded` error. Kani proof `verify_per_user_borrow_cap_bounded` verifies no overflow, upper bound, and boundary correctness
+- **Per-user borrow cap**: New `BORROW_SHARE_MULTIPLIER = 3` limits each borrower to 3x their collateral's proportional share of the lendable pool (e.g., 1% of supply as collateral → max 3% of lendable SOL). Prevents single-whale pool monopolization. New `UserBorrowCapExceeded` error. Kani proof `verify_per_user_borrow_cap_bounded` verifies no overflow, upper bound, and boundary correctness
 - **V33 buyback removal**: `execute_auto_buyback` instruction removed (~330 lines of handler + context). Eliminates a complex Raydium CPI instruction that spent treasury SOL providing exit liquidity during dumps, had a fee-inflation bug in vault balance reads, and competed with lending for treasury SOL. One fewer attack surface. Binary size reduced ~6% (850 KB → 804 KB). Treasury simplified to: fee harvest → sell high → SOL → lending yield + epoch rewards
 - **V33 lending cap increase**: Utilization cap raised from 50% to 70%. More SOL available for community lending while maintaining 30% visible reserve. Conservative LTV/liquidation thresholds unchanged
 - **V32 protocol treasury rebalance**: Reserve floor removed (1,500 SOL → 0) -- all fees distributed each epoch. Volume eligibility lowered (10 SOL → 2 SOL). New MIN_CLAIM_AMOUNT (0.1 SOL) prevents dust claims. Protocol fee split rebalanced from 75/25 to 90% treasury / 10% dev wallet. New `verify_min_claim_enforcement` Kani proof
@@ -542,7 +545,7 @@ No new accounts, no new instructions, no state struct changes. `creator` account
 
 **I-25 (Informational): Per-user borrow cap (supply-proportional)**
 
-A per-user borrow cap was added to the `borrow` handler to prevent any single borrower from monopolizing the lending pool. The cap formula is `max_user_borrow = max_lendable * user_collateral * BORROW_SHARE_MULTIPLIER / TOTAL_SUPPLY`, enforced after the global utilization cap check. `BORROW_SHARE_MULTIPLIER` was initially 3, now 5 (V4.0). `UserBorrowCapExceeded` error variant was added.
+A per-user borrow cap was added to the `borrow` handler to prevent any single borrower from monopolizing the lending pool. The cap formula is `max_user_borrow = max_lendable * user_collateral * 3 / TOTAL_SUPPLY`, enforced after the global utilization cap check. A new `BORROW_SHARE_MULTIPLIER = 3` constant and `UserBorrowCapExceeded` error variant were added.
 
 **Security analysis:**
 - All arithmetic uses u128 intermediates — `140_000_000_000 * 1_000_000_000_000_000 * 3` fits comfortably in u128
@@ -1019,7 +1022,7 @@ All configuration instructions were removed. Parameters are compile-time constan
 | Lending max LTV | 50% | Conservative for volatile tokens |
 | Liquidation threshold | 65% LTV | 15% buffer from max borrow |
 | Liquidation bonus | 10% | Incentive for liquidation keepers |
-| Utilization cap | 80% | [V4.0] Max treasury SOL lendable (was 70% V33, was 50% V2.4) |
+| Utilization cap | 70% | [V33] Max treasury SOL lendable (was 50%) |
 
 These cannot be changed without a program upgrade.
 
@@ -1044,7 +1047,8 @@ If you're an AI agent interacting with Torch Market:
 
 The complete audit reports (with line-by-line findings, attack vector analysis, and instruction-by-instruction verification) are maintained in the project repository under `/audits/`:
 
-- `SECURITY_AUDIT_SP_V10.0.0_PROD.md` -- On-chain program V10.0.0 (latest: oracle-free margin trading / short selling -- 31 instructions, ~7,600 lines, 58 Kani proofs)
+- `SECURITY_AUDIT_SP_V10.2.1_PROD.md` -- On-chain program V10.2.1 (latest: pool circuit breakers, bad debt accounting fix, independent cross-audit -- 31 instructions, ~7,800 lines, 70 Kani proofs)
+- `SECURITY_AUDIT_SP_V10.0.0_PROD.md` -- On-chain program V10.0.0 (oracle-free margin trading / short selling -- 31 instructions, ~7,600 lines, 58 Kani proofs)
 - `SECURITY_AUDIT_SP_V3.7.9_PROD.md` -- On-chain program V3.7.9 (per-user borrow cap + V34 creator revenue + transfer fee bump -- 27 instructions, ~6,800 lines, 44 Kani proofs)
 - `SECURITY_AUDIT_SP_V3.7.7_PROD.md` -- On-chain program V3.7.7 (V33 buyback removal + lending cap increase -- 27 instructions, ~6,700 lines, binary 804 KB, 39 Kani proofs)
 - `SECURITY_AUDIT_SP_V3.7.6_PROD.md` -- On-chain program V3.7.6 (V32 treasury rebalance -- 0 reserve floor, 2 SOL eligibility, 0.1 SOL min claim, 90/10 fee split)

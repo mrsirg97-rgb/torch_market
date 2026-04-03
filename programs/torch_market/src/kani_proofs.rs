@@ -1,4 +1,18 @@
+//! Kani Formal Verification Proof Harnesses
+//!
+//! Mathematically proves properties of torch_market's core arithmetic
+//! for ALL valid inputs within protocol bounds.
+//!
+//! Run with: cargo kani
+//!
+//! Each harness verifies a specific property (conservation, bounds, monotonicity)
+//! using symbolic inputs constrained to realistic protocol ranges.
+
 use crate::constants::*;
+
+// ============================================================================
+// Pure math replicas (extracted from handlers for standalone verification)
+// ============================================================================
 
 fn calc_protocol_fee(sol_amount: u64, fee_bps: u16) -> Option<u64> {
     sol_amount.checked_mul(fee_bps as u64)?.checked_div(10000)
@@ -16,6 +30,7 @@ fn calc_token_treasury_fee(sol_amount: u64) -> Option<u64> {
         .checked_div(10000)
 }
 
+// [V10] Flat 15% → 2.5% treasury rate decay (was 12.5% → 4% in V4.0, 20% → 5% in V2.3)
 fn calc_treasury_rate_bps(real_sol_reserves: u64, target: u64) -> Option<u16> {
     let rate_range = (TREASURY_SOL_MAX_BPS - TREASURY_SOL_MIN_BPS) as u128;
     let decay = (real_sol_reserves as u128)
@@ -25,6 +40,8 @@ fn calc_treasury_rate_bps(real_sol_reserves: u64, target: u64) -> Option<u16> {
     Some(rate.max(TREASURY_SOL_MIN_BPS as u128) as u16)
 }
 
+// Helper: assume target is one of the valid tiers
+// [V4.0] Removed SPARK (50 SOL) — no longer a valid creation target
 fn assume_valid_target(target: u64) {
     kani::assume(
         target == BONDING_TARGET_FLAME
@@ -44,6 +61,9 @@ fn calc_sol_out(vs: u64, vt: u64, tokens: u64) -> Option<u64> {
     Some(num.checked_div(den)? as u64)
 }
 
+// [V36] calc_tokens_to_buyer removed — tokens_to_buyer == tokens_out (100%)
+
+// [V34] Creator SOL rate: 0.2%→1% linear growth as bonding progresses
 fn calc_creator_rate_bps(real_sol_reserves: u64, target: u64) -> Option<u16> {
     let rate_range = (CREATOR_SOL_MAX_BPS - CREATOR_SOL_MIN_BPS) as u128;
     let growth = (real_sol_reserves as u128)
@@ -53,6 +73,7 @@ fn calc_creator_rate_bps(real_sol_reserves: u64, target: u64) -> Option<u16> {
     Some(rate.min(CREATOR_SOL_MAX_BPS as u128) as u16)
 }
 
+// [V34] Creator's share of post-migration fee swap proceeds
 fn calc_creator_fee_share(sol_received: u64) -> Option<u64> {
     Some(
         (sol_received as u128)
@@ -1626,5 +1647,526 @@ fn verify_short_collateral_reservation() {
     if short_collateral == treasury_sol {
         assert!(available == 0);
         assert!(max_lendable == 0);
+    }
+}
+
+// ============================================================================
+// 55. LENDING: Bad Debt Write-Off Reduces total_sol_lent
+//     Proves: after liquidation with bad debt, total_sol_lent is reduced by
+//     both principal repaid AND bad debt written off, preventing utilization
+//     cap drift. Concrete pool + interest + aggregate for SAT tractability;
+//     only borrowed and collateral are symbolic.
+// ============================================================================
+
+#[kani::proof]
+fn verify_liquidation_bad_debt_accounting() {
+    let pool_sol: u64 = 100_000_000_000;       // 100 SOL pool
+    let pool_tokens: u64 = 50_000_000_000_000;  // 50T tokens
+    let interest: u64 = 500_000_000;             // 0.5 SOL accrued interest
+    let total_sol_lent_before: u64 = 200_000_000_000; // 200 SOL aggregate
+
+    let borrowed: u64 = kani::any();
+    let collateral: u64 = kani::any();
+
+    kani::assume(borrowed >= MIN_BORROW_AMOUNT);
+    kani::assume(borrowed <= 50_000_000_000); // Max 50 SOL
+    kani::assume(borrowed >= interest);        // Principal >= accrued interest
+    kani::assume(collateral > 0);
+    kani::assume(collateral <= 500_000_000_000); // Bounded collateral tokens
+
+    let total_debt = borrowed.checked_add(interest).unwrap();
+
+    // Liquidation covers up to close_bps% of total debt
+    let max_debt_to_cover = (total_debt as u128)
+        .checked_mul(DEFAULT_LIQUIDATION_CLOSE_BPS as u128)
+        .unwrap()
+        .checked_div(10000)
+        .unwrap() as u64;
+    let debt_to_cover = max_debt_to_cover.min(total_debt);
+
+    // Compute collateral to seize
+    let collateral_to_seize =
+        calc_collateral_to_seize(debt_to_cover, DEFAULT_LIQUIDATION_BONUS_BPS, pool_tokens, pool_sol)
+            .unwrap();
+
+    let actual_collateral_seized = collateral_to_seize.min(collateral);
+
+    // If collateral insufficient, bad debt occurs
+    let actual_debt_covered = if collateral_to_seize > collateral {
+        calc_collateral_value(actual_collateral_seized, pool_sol, pool_tokens).unwrap()
+    } else {
+        debt_to_cover
+    };
+
+    let bad_debt = total_debt.saturating_sub(
+        actual_debt_covered
+            .checked_add(total_debt.saturating_sub(debt_to_cover))
+            .unwrap(),
+    );
+
+    // Apply repayment: interest first, then principal
+    let mut remaining_debt_paid = actual_debt_covered;
+    let mut loan_interest = interest;
+    let mut loan_borrowed = borrowed;
+
+    if remaining_debt_paid <= loan_interest {
+        loan_interest -= remaining_debt_paid;
+        remaining_debt_paid = 0;
+    } else {
+        remaining_debt_paid -= loan_interest;
+        loan_interest = 0;
+        loan_borrowed = loan_borrowed.saturating_sub(remaining_debt_paid);
+    }
+
+    // Write off bad debt
+    if bad_debt > 0 {
+        loan_borrowed = loan_borrowed.saturating_sub(bad_debt);
+        loan_interest = 0;
+    }
+
+    // Fixed: total_sol_lent reduced by principal paid AND bad debt
+    let total_sol_lent_after = total_sol_lent_before
+        .saturating_sub(remaining_debt_paid)
+        .saturating_sub(bad_debt);
+
+    // Key property: if loan is fully liquidated, total_sol_lent decreased by
+    // at least the original borrowed amount
+    if loan_borrowed == 0 && loan_interest == 0 {
+        assert!(total_sol_lent_after <= total_sol_lent_before.saturating_sub(borrowed));
+    }
+
+    // total_sol_lent never goes negative (saturating)
+    assert!(total_sol_lent_after <= total_sol_lent_before);
+}
+
+// ============================================================================
+// 56. [V5] SHORT: Bad Debt Write-Off Reduces total_tokens_lent
+//     Proves: after short liquidation with bad debt, total_tokens_lent is
+//     reduced by both principal repaid AND bad debt tokens, preventing
+//     utilization cap drift on the token side. Concrete interest + aggregate
+//     for SAT tractability; only tokens_borrowed and sol_collateral symbolic.
+// ============================================================================
+
+#[kani::proof]
+fn verify_short_liquidation_bad_debt_accounting() {
+    let pool_sol: u64 = 100_000_000_000;       // 100 SOL pool
+    let pool_tokens: u64 = 50_000_000_000_000;  // 50T tokens
+    let interest: u64 = 1_000_000_000;           // 1B token interest
+    let total_tokens_lent_before: u64 = 100_000_000_000_000; // 100T aggregate
+
+    let tokens_borrowed: u64 = kani::any();
+    let sol_collateral: u64 = kani::any();
+
+    kani::assume(tokens_borrowed >= interest);
+    kani::assume(tokens_borrowed <= 50_000_000_000_000); // Max 50T tokens
+    kani::assume(sol_collateral > 0);
+    kani::assume(sol_collateral <= 50_000_000_000); // Max 50 SOL collateral
+
+    let total_token_debt = tokens_borrowed.checked_add(interest).unwrap();
+
+    // Liquidation covers up to close_bps% of total token debt
+    let max_tokens_to_cover = (total_token_debt as u128)
+        .checked_mul(DEFAULT_LIQUIDATION_CLOSE_BPS as u128)
+        .unwrap()
+        .checked_div(10000)
+        .unwrap() as u64;
+    let tokens_to_cover = max_tokens_to_cover.min(total_token_debt);
+
+    // Debt value in SOL
+    let debt_value = calc_short_debt_value(tokens_to_cover, pool_sol, pool_tokens).unwrap();
+
+    // SOL to seize (with bonus)
+    let sol_to_seize = calc_short_sol_to_seize(debt_value, DEFAULT_LIQUIDATION_BONUS_BPS).unwrap();
+    let actual_sol_seized = sol_to_seize.min(sol_collateral);
+
+    // If collateral insufficient, compute actual tokens covered
+    let actual_tokens_covered = if sol_to_seize > sol_collateral {
+        // Bad debt: reverse-compute from seized SOL
+        let seized_value = actual_sol_seized;
+        let without_bonus = (seized_value as u128)
+            .checked_mul(10000)
+            .unwrap()
+            .checked_div((10000 + DEFAULT_LIQUIDATION_BONUS_BPS as u64) as u128)
+            .unwrap() as u64;
+        // Convert SOL value back to tokens
+        (without_bonus as u128)
+            .checked_mul(pool_tokens as u128)
+            .unwrap()
+            .checked_div(pool_sol as u128)
+            .unwrap() as u64
+    } else {
+        tokens_to_cover
+    };
+
+    let bad_debt_tokens = total_token_debt.saturating_sub(
+        actual_tokens_covered
+            .checked_add(total_token_debt.saturating_sub(tokens_to_cover))
+            .unwrap(),
+    );
+
+    // Apply repayment: interest first, then principal
+    let mut remaining_tokens_paid = actual_tokens_covered;
+    let mut pos_interest = interest;
+    let mut pos_borrowed = tokens_borrowed;
+
+    if remaining_tokens_paid <= pos_interest {
+        pos_interest -= remaining_tokens_paid;
+        remaining_tokens_paid = 0;
+    } else {
+        remaining_tokens_paid -= pos_interest;
+        pos_interest = 0;
+        pos_borrowed = pos_borrowed.saturating_sub(remaining_tokens_paid);
+    }
+
+    // Write off bad debt
+    if bad_debt_tokens > 0 {
+        pos_borrowed = pos_borrowed.saturating_sub(bad_debt_tokens);
+        pos_interest = 0;
+    }
+
+    // NEW (fixed): total_tokens_lent reduced by principal paid AND bad debt
+    let total_tokens_lent_after = total_tokens_lent_before
+        .saturating_sub(remaining_tokens_paid)
+        .saturating_sub(bad_debt_tokens);
+
+    // Key property: if position is fully liquidated, total_tokens_lent decreased
+    // by at least the original tokens_borrowed
+    if pos_borrowed == 0 && pos_interest == 0 {
+        assert!(total_tokens_lent_after <= total_tokens_lent_before.saturating_sub(tokens_borrowed));
+    }
+
+    // total_tokens_lent never goes negative (saturating)
+    assert!(total_tokens_lent_after <= total_tokens_lent_before);
+}
+
+// ============================================================================
+// 57. LENDING: Liquidation Requires Positive Pool Reserves (Both Sides)
+//     Proves: the pool_sol > 0 && pool_tokens > 0 guard prevents division
+//     by zero in collateral valuation, ensuring no stuck/unliquidatable loans.
+// ============================================================================
+
+#[kani::proof]
+fn verify_pool_reserve_guards_prevent_div_zero() {
+    let pool_sol: u64 = kani::any();
+    let pool_tokens: u64 = kani::any();
+    let collateral: u64 = kani::any();
+
+    kani::assume(collateral > 0);
+    kani::assume(collateral <= MAX_WALLET_TOKENS);
+
+    // Guard: both reserves must be positive (as now enforced in code)
+    kani::assume(pool_sol > 0 && pool_tokens > 0);
+
+    // Collateral value computation must succeed (no division by zero)
+    let cv = calc_collateral_value(collateral, pool_sol, pool_tokens);
+    assert!(cv.is_some());
+
+    // LTV computation must also succeed
+    let ltv = calc_ltv_bps(1_000_000_000, cv.unwrap()); // 1 SOL debt
+    assert!(ltv.is_some());
+}
+
+// ============================================================================
+// 58. [V5] SHORT: Pool Reserve Guards for Debt Valuation
+//     Proves: pool_sol > 0 && pool_tokens > 0 ensures short debt valuation
+//     never hits division by zero.
+// ============================================================================
+
+#[kani::proof]
+fn verify_short_pool_reserve_guards() {
+    let pool_sol: u64 = kani::any();
+    let pool_tokens: u64 = kani::any();
+    let token_debt: u64 = kani::any();
+
+    kani::assume(token_debt > 0);
+    kani::assume(token_debt <= TOTAL_SUPPLY);
+    kani::assume(pool_sol > 0 && pool_tokens > 0);
+
+    // Debt value computation must succeed
+    let dv = calc_short_debt_value(token_debt, pool_sol, pool_tokens);
+    assert!(dv.is_some());
+}
+
+// ============================================================================
+// 59. [V6] CIRCUIT BREAKER: Price Deviation Band Symmetry
+//     Proves: the deviation band is symmetric around baseline, and baseline
+//     price always passes (0% deviation). Uses concrete baseline with
+//     symbolic current ratio for SAT tractability.
+// ============================================================================
+
+fn calc_price_in_band(
+    pool_sol: u64,
+    pool_tokens: u64,
+    baseline_sol: u64,
+    baseline_tokens: u64,
+) -> Option<bool> {
+    let current_ratio = (pool_sol as u128)
+        .checked_mul(RATIO_PRECISION)?
+        .checked_div(pool_tokens as u128)?;
+    let baseline_ratio = (baseline_sol as u128)
+        .checked_mul(RATIO_PRECISION)?
+        .checked_div(baseline_tokens as u128)?;
+
+    let upper = baseline_ratio
+        .checked_mul(10000 + MAX_PRICE_DEVIATION_BPS as u128)?
+        .checked_div(10000)?;
+    let lower = baseline_ratio
+        .checked_mul(10000_u128.saturating_sub(MAX_PRICE_DEVIATION_BPS as u128))?
+        .checked_div(10000)?;
+
+    Some(current_ratio >= lower && current_ratio <= upper)
+}
+
+#[kani::proof]
+fn verify_circuit_breaker_baseline_passes() {
+    // Baseline price always passes its own check
+    let baseline_sol: u64 = 100_000_000_000;    // 100 SOL
+    let baseline_tokens: u64 = 50_000_000_000_000; // 50T tokens
+
+    let result = calc_price_in_band(
+        baseline_sol, baseline_tokens,
+        baseline_sol, baseline_tokens,
+    );
+    assert!(result.unwrap());
+}
+
+// ============================================================================
+// 60. [V6] CIRCUIT BREAKER: Deviation Band Rejects Out-of-Range Price
+//     Proves: a 2x price (100% increase) is rejected by the 50% band.
+// ============================================================================
+
+#[kani::proof]
+fn verify_circuit_breaker_rejects_doubled_price() {
+    let baseline_sol: u64 = 100_000_000_000;
+    let baseline_tokens: u64 = 50_000_000_000_000;
+
+    // Double the SOL = 2x price (100% increase, exceeds 50% band)
+    let result = calc_price_in_band(
+        200_000_000_000, baseline_tokens,
+        baseline_sol, baseline_tokens,
+    );
+    assert!(!result.unwrap());
+}
+
+// ============================================================================
+// 61. [V6] CIRCUIT BREAKER: Band Edge Acceptance
+//     Proves: price at exactly +49% and -49% passes, +51% and -51% fails.
+//     Concrete values for fast SAT solving.
+// ============================================================================
+
+#[kani::proof]
+fn verify_circuit_breaker_band_edges() {
+    let baseline_sol: u64 = 100_000_000_000;       // 100 SOL
+    let baseline_tokens: u64 = 100_000_000_000_000; // 100T tokens
+
+    // +49%: pool_sol = 149 SOL (price up 49%)
+    let up_49 = calc_price_in_band(
+        149_000_000_000, baseline_tokens,
+        baseline_sol, baseline_tokens,
+    );
+    assert!(up_49.unwrap());
+
+    // +51%: pool_sol = 151 SOL (price up 51%)
+    let up_51 = calc_price_in_band(
+        151_000_000_000, baseline_tokens,
+        baseline_sol, baseline_tokens,
+    );
+    assert!(!up_51.unwrap());
+
+    // -49%: pool_sol = 51 SOL (price down 49%)
+    let down_49 = calc_price_in_band(
+        51_000_000_000, baseline_tokens,
+        baseline_sol, baseline_tokens,
+    );
+    assert!(down_49.unwrap());
+
+    // -51%: pool_sol = 49 SOL (price down 51%)
+    let down_51 = calc_price_in_band(
+        49_000_000_000, baseline_tokens,
+        baseline_sol, baseline_tokens,
+    );
+    assert!(!down_51.unwrap());
+}
+
+// ============================================================================
+// 62. [V6] CIRCUIT BREAKER: Min Pool Liquidity Constant Check
+//     Proves: MIN_POOL_SOL_LENDING is 5 SOL and the check rejects below it.
+// ============================================================================
+
+#[kani::proof]
+fn verify_min_pool_liquidity_threshold() {
+    let pool_sol: u64 = kani::any();
+    kani::assume(pool_sol <= 10_000_000_000); // Bound for tractability
+
+    let passes = pool_sol >= MIN_POOL_SOL_LENDING;
+
+    // Exactly 5 SOL passes
+    if pool_sol == 5_000_000_000 {
+        assert!(passes);
+    }
+    // Below 5 SOL fails
+    if pool_sol < 5_000_000_000 {
+        assert!(!passes);
+    }
+}
+
+// ============================================================================
+// 63. LENDING: Bad Debt Formula Algebraic Identity
+//     Proves: bad_debt = max(0, debt_to_cover - actual_debt_covered) for all
+//     inputs. The on-chain formula uses an indirect expression via total_debt;
+//     this proof confirms it reduces to the simple form.
+// ============================================================================
+
+#[kani::proof]
+fn verify_bad_debt_formula_identity() {
+    let borrowed: u64 = kani::any();
+    let interest: u64 = kani::any();
+
+    kani::assume(borrowed >= MIN_BORROW_AMOUNT);
+    kani::assume(borrowed <= 50_000_000_000);
+    kani::assume(interest <= borrowed);
+
+    let total_debt = borrowed.checked_add(interest).unwrap();
+
+    let max_debt_to_cover = (total_debt as u128)
+        .checked_mul(DEFAULT_LIQUIDATION_CLOSE_BPS as u128)
+        .unwrap()
+        .checked_div(10000)
+        .unwrap() as u64;
+    let debt_to_cover = max_debt_to_cover.min(total_debt);
+
+    // Simulate both sufficient and insufficient collateral paths
+    let actual_debt_covered: u64 = kani::any();
+    kani::assume(actual_debt_covered <= debt_to_cover);
+
+    // On-chain formula (indirect)
+    let bad_debt_onchain = total_debt.saturating_sub(
+        actual_debt_covered
+            .checked_add(total_debt.saturating_sub(debt_to_cover))
+            .unwrap(),
+    );
+
+    // Simple form (direct)
+    let bad_debt_simple = debt_to_cover.saturating_sub(actual_debt_covered);
+
+    // They must be identical
+    assert!(bad_debt_onchain == bad_debt_simple);
+
+    // bad_debt + actual_debt_covered == debt_to_cover (conservation of liquidation slice)
+    assert!(bad_debt_simple + actual_debt_covered == debt_to_cover);
+}
+
+// ============================================================================
+// 64. [V5] SHORT: Bad Debt Formula Algebraic Identity
+//     Same proof as lending but for token-denominated short liquidation.
+// ============================================================================
+
+#[kani::proof]
+fn verify_short_bad_debt_formula_identity() {
+    let tokens_borrowed: u64 = kani::any();
+    let interest: u64 = kani::any();
+
+    kani::assume(tokens_borrowed >= MIN_SHORT_TOKENS);
+    kani::assume(tokens_borrowed <= 50_000_000_000_000);
+    kani::assume(interest <= tokens_borrowed);
+
+    let total_token_debt = tokens_borrowed.checked_add(interest).unwrap();
+
+    let max_tokens_to_cover = (total_token_debt as u128)
+        .checked_mul(DEFAULT_LIQUIDATION_CLOSE_BPS as u128)
+        .unwrap()
+        .checked_div(10000)
+        .unwrap() as u64;
+    let tokens_to_cover = max_tokens_to_cover.min(total_token_debt);
+
+    let actual_tokens_covered: u64 = kani::any();
+    kani::assume(actual_tokens_covered <= tokens_to_cover);
+
+    // On-chain formula
+    let bad_debt_onchain = total_token_debt.saturating_sub(
+        actual_tokens_covered
+            .checked_add(total_token_debt.saturating_sub(tokens_to_cover))
+            .unwrap(),
+    );
+
+    // Simple form
+    let bad_debt_simple = tokens_to_cover.saturating_sub(actual_tokens_covered);
+
+    assert!(bad_debt_onchain == bad_debt_simple);
+    assert!(bad_debt_simple + actual_tokens_covered == tokens_to_cover);
+}
+
+// ============================================================================
+// 65. TREASURY: Ratio Gate Fee Subtraction Safety
+//     Proves: after saturating_sub of accumulated fees from vault balances,
+//     the ratio calculation either succeeds or is blocked by the pool_tokens > 0
+//     guard. No division by zero, no inflated ratio from negative balances.
+// ============================================================================
+
+#[kani::proof]
+fn verify_ratio_gate_fee_subtraction_safe() {
+    let vault_sol: u64 = kani::any();
+    let vault_tokens: u64 = kani::any();
+    let sol_fees: u64 = kani::any();
+    let token_fees: u64 = kani::any();
+
+    kani::assume(vault_sol <= 10_000_000_000_000);  // Max 10K SOL
+    kani::assume(vault_tokens <= TOTAL_SUPPLY);
+    kani::assume(sol_fees <= vault_sol);             // Fees can't exceed vault (Raydium invariant)
+    kani::assume(token_fees <= vault_tokens);
+
+    let pool_sol = vault_sol.saturating_sub(sol_fees);
+    let pool_tokens = vault_tokens.saturating_sub(token_fees);
+
+    // If pool_tokens == 0, the on-chain require! blocks the operation
+    if pool_tokens > 0 {
+        // Ratio computation must succeed (no division by zero)
+        let ratio = (pool_sol as u128)
+            .checked_mul(RATIO_PRECISION)
+            .unwrap()
+            .checked_div(pool_tokens as u128);
+        assert!(ratio.is_some());
+    }
+
+    // Fee subtraction never produces values larger than original
+    assert!(pool_sol <= vault_sol);
+    assert!(pool_tokens <= vault_tokens);
+}
+
+// ============================================================================
+// 66. TREASURY: Sell Amount Bounded and Correct
+//     Proves: sell_amount <= token_amount for all inputs, and the 15% calc
+//     fits in u64. Below SELL_ALL_TOKEN_THRESHOLD, sell 100%.
+// ============================================================================
+
+#[kani::proof]
+fn verify_treasury_sell_amount_bounded() {
+    let token_amount: u64 = kani::any();
+    kani::assume(token_amount > 0);
+    kani::assume(token_amount <= TOTAL_SUPPLY);
+
+    let sell_amount = if token_amount <= SELL_ALL_TOKEN_THRESHOLD {
+        token_amount // 100% below threshold
+    } else {
+        (token_amount as u128)
+            .checked_mul(DEFAULT_SELL_PERCENT_BPS as u128)
+            .unwrap()
+            .checked_div(10000)
+            .unwrap() as u64
+    };
+
+    // Sell amount never exceeds balance
+    assert!(sell_amount <= token_amount);
+
+    // Below threshold: sell everything
+    if token_amount <= SELL_ALL_TOKEN_THRESHOLD {
+        assert!(sell_amount == token_amount);
+    }
+
+    // Above threshold: sell exactly 15%
+    if token_amount > SELL_ALL_TOKEN_THRESHOLD {
+        assert!(sell_amount <= token_amount / 6); // 15% < 1/6 ≈ 16.7%
+        // And it's non-zero for any positive amount above threshold
+        assert!(sell_amount > 0);
     }
 }

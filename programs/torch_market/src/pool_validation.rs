@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::constants::{RAYDIUM_AMM_CONFIG, RAYDIUM_CPMM_PROGRAM_ID};
+use crate::constants::{RAYDIUM_AMM_CONFIG, RAYDIUM_CPMM_PROGRAM_ID, MIN_POOL_SOL_LENDING, MAX_PRICE_DEVIATION_BPS, RATIO_PRECISION};
 use crate::errors::TorchMarketError;
 use crate::migration::WSOL_MINT;
 
@@ -107,6 +107,62 @@ pub fn validate_pool_accounts(
     require!(
         has_token && has_wsol,
         TorchMarketError::InvalidPoolAccount
+    );
+
+    Ok(())
+}
+
+// Require minimum pool SOL liquidity.
+// Used by both new positions (borrow/short) and liquidations.
+pub fn require_min_pool_liquidity(pool_sol: u64) -> Result<()> {
+    require!(
+        pool_sol >= MIN_POOL_SOL_LENDING,
+        TorchMarketError::PoolTooThin
+    );
+    Ok(())
+}
+
+// Require pool price is within deviation band of migration baseline.
+// Used only for new positions (borrow/short). Liquidations are exempt.
+// Compares current_ratio vs baseline_ratio using RATIO_PRECISION (1e9).
+// Blocks if price has moved more than MAX_PRICE_DEVIATION_BPS (50%) in either direction.
+pub fn require_price_in_band(
+    pool_sol: u64,
+    pool_tokens: u64,
+    baseline_sol: u64,
+    baseline_tokens: u64,
+) -> Result<()> {
+    // Skip if baseline not initialized (shouldn't happen post-migration, but defensive)
+    if baseline_sol == 0 || baseline_tokens == 0 {
+        return Ok(());
+    }
+
+    let current_ratio = (pool_sol as u128)
+        .checked_mul(RATIO_PRECISION)
+        .ok_or(TorchMarketError::MathOverflow)?
+        .checked_div(pool_tokens as u128)
+        .ok_or(TorchMarketError::MathOverflow)?;
+    let baseline_ratio = (baseline_sol as u128)
+        .checked_mul(RATIO_PRECISION)
+        .ok_or(TorchMarketError::MathOverflow)?
+        .checked_div(baseline_tokens as u128)
+        .ok_or(TorchMarketError::MathOverflow)?;
+    // Upper bound: baseline * (10000 + deviation) / 10000
+    let upper = baseline_ratio
+        .checked_mul(10000 + MAX_PRICE_DEVIATION_BPS as u128)
+        .ok_or(TorchMarketError::MathOverflow)?
+        .checked_div(10000)
+        .ok_or(TorchMarketError::MathOverflow)?;
+    // Lower bound: baseline * (10000 - deviation) / 10000
+    let lower = baseline_ratio
+        .checked_mul(10000_u128.saturating_sub(MAX_PRICE_DEVIATION_BPS as u128))
+        .ok_or(TorchMarketError::MathOverflow)?
+        .checked_div(10000)
+        .ok_or(TorchMarketError::MathOverflow)?;
+
+    require!(
+        current_ratio >= lower && current_ratio <= upper,
+        TorchMarketError::PriceDeviationTooHigh
     );
 
     Ok(())

@@ -6,7 +6,7 @@ We used [Kani](https://model-checking.github.io/kani/), a formal verification to
 
 This is **not** a security audit. It proves the arithmetic is correct, but does not cover access control, account validation, or economic attacks. See [What Is NOT Verified](#what-is-not-verified) for full scope limitations.
 
-**58 proof harnesses. All passing. Zero failures.**
+**70 proof harnesses. All passing. Zero failures.**
 
 ---
 
@@ -16,7 +16,7 @@ torch_market's core arithmetic has been formally verified using [Kani](https://m
 
 **Tool:** Kani Rust Verifier 0.67.0 / CBMC 6.8.0
 **Target:** `torch_market` v10.2.0
-**Harnesses:** 58 proof harnesses, all passing
+**Harnesses:** 70 proof harnesses, all passing
 **Source:** `programs/torch_market/src/kani_proofs.rs`
 
 ## What Is Formally Verified
@@ -158,6 +158,53 @@ These harnesses verify the V5 short selling arithmetic — the mirror of lending
 | `verify_short_lifecycle_with_interest` | After open_short + 1 epoch interest + full close: treasury gains exactly the interest tokens, principal fully returned | Up to 10% supply, 2%/epoch, 1 epoch max |
 | `verify_short_collateral_reservation` | Reserved short SOL correctly excluded from lending pool; all-short = zero lendable; no-short = full treasury available | 1-1000 SOL treasury, symbolic short collateral |
 
+### Bad Debt Accounting (Harnesses 55-56) — V6
+
+These harnesses verify that liquidation bad debt write-offs correctly reduce aggregate utilization tracking, preventing cap drift after under-collateralized liquidations.
+
+| Harness | Property | Input Range |
+|---------|----------|-------------|
+| `verify_liquidation_bad_debt_accounting` | After liquidation with bad debt: `total_sol_lent` reduced by principal paid AND bad debt; fully liquidated loan reduces aggregate by at least `borrowed`; never underflows | 100 SOL / 50T pool, up to 50 SOL borrow, 0.5 SOL interest |
+| `verify_short_liquidation_bad_debt_accounting` | After short liquidation with bad debt: `total_tokens_lent` reduced by principal paid AND bad debt tokens; fully liquidated position reduces aggregate by at least `tokens_borrowed`; never underflows | 100 SOL / 50T pool, up to 50T tokens borrowed, 1B token interest |
+
+### Pool Reserve Guards (Harnesses 57-58) — V6
+
+These harnesses verify that the `pool_sol > 0 && pool_tokens > 0` guards prevent division-by-zero in collateral valuation and debt valuation, ensuring no stuck/unliquidatable positions.
+
+| Harness | Property | Input Range |
+|---------|----------|-------------|
+| `verify_pool_reserve_guards_prevent_div_zero` | With both-side reserve guards: `calculate_collateral_value` and `calculate_ltv_bps` always succeed | Symbolic pool reserves (> 0), collateral up to MAX_WALLET_TOKENS |
+| `verify_short_pool_reserve_guards` | With both-side reserve guards: `calculate_debt_value` always succeeds for short positions | Symbolic pool reserves (> 0), token debt up to TOTAL_SUPPLY |
+
+### Circuit Breakers (Harnesses 59-62) — V6
+
+These harnesses verify the V6 pool health circuit breakers that protect lending and short selling from price manipulation on thin or deviated pools.
+
+| Harness | Property | Input Range |
+|---------|----------|-------------|
+| `verify_circuit_breaker_baseline_passes` | Baseline price always passes its own deviation band check | 100 SOL / 50T pool at baseline |
+| `verify_circuit_breaker_rejects_doubled_price` | 2x price (100% increase) rejected by 50% deviation band | 200 SOL pool vs 100 SOL baseline |
+| `verify_circuit_breaker_band_edges` | +/-49% passes, +/-51% fails (symmetric band correctness) | 100 SOL / 100T baseline, four edge cases |
+| `verify_min_pool_liquidity_threshold` | Pool SOL >= 5 SOL passes, below fails; exact threshold = 5 SOL | 0-10 SOL symbolic |
+
+### Liquidation Formula Identity (Harnesses 63-64) — V6
+
+These harnesses prove that the on-chain bad debt formula (which uses an indirect expression via `total_debt`) is algebraically identical to the simple form `debt_to_cover - actual_debt_covered`, and that the liquidation slice is conserved: `bad_debt + actual_covered == debt_to_cover`.
+
+| Harness | Property | Input Range |
+|---------|----------|-------------|
+| `verify_bad_debt_formula_identity` | On-chain formula `total_debt - (covered + (total_debt - slice))` equals `slice - covered`; conservation: `bad_debt + covered == slice` | Up to 50 SOL borrow, symbolic coverage |
+| `verify_short_bad_debt_formula_identity` | Same algebraic identity for token-denominated short liquidation | Up to 50T tokens borrowed, symbolic coverage |
+
+### Treasury Ratio Gate & Sell Safety (Harnesses 65-66) — V6
+
+These harnesses verify the post-migration treasury sell mechanism: fee subtraction from vault balances before ratio computation, and sell amount bounding.
+
+| Harness | Property | Input Range |
+|---------|----------|-------------|
+| `verify_ratio_gate_fee_subtraction_safe` | After subtracting Raydium fees from vault balances: ratio computation succeeds when `pool_tokens > 0`; fees never inflate balances | Up to 10K SOL vault, fees bounded by vault balance |
+| `verify_treasury_sell_amount_bounded` | Sell amount never exceeds balance; 100% below 1M token threshold; exactly 15% above; non-zero for positive amounts | 0 to TOTAL_SUPPLY tokens |
+
 ## Verification Methodology
 
 ### How Kani Works
@@ -198,7 +245,7 @@ Eight harnesses were dropped during verification because they prove structurally
 | `verify_ltv_100_percent` | `(v * 10000) / v == 10000` is a mathematical tautology. SAT solvers cannot efficiently prove symbolic u128 division cancellation. |
 | `verify_buyback_respects_reserve` | Buyback reserve/amount constraints are enforced by handler-level checks, not arithmetic. Property is structural given the config validation. |
 
-These properties remain true by construction. The remaining 58 harnesses cover every non-tautological safety property.
+These properties remain true by construction. The remaining 70 harnesses cover every non-tautological safety property.
 
 ## What Is NOT Verified
 
@@ -239,7 +286,7 @@ cargo kani
 cargo kani --harness verify_buy_fee_conservation
 ```
 
-All 58 harnesses pass. Most complete in under 1 second; the slowest (`verify_transfer_fee_bounds`, `verify_treasury_rate_monotonic`) take 30-55 seconds due to larger SAT formula complexity.
+All 70 harnesses pass. Most complete in under 1 second; the slowest (`verify_transfer_fee_bounds`, `verify_treasury_rate_monotonic`) take 30-55 seconds due to larger SAT formula complexity.
 
 ## Constants Reference
 
@@ -279,4 +326,6 @@ All 58 harnesses pass. Most complete in under 1 second; the slowest (`verify_tra
 | `COMMUNITY_TOKEN_SENTINEL` | u64::MAX | [V35] Sentinel in Treasury.total_bought_back for community tokens (0% creator fees) |
 | `SHORT_ENABLED_SENTINEL` | u16::MAX | [V5] Sentinel in Treasury.buyback_percent_bps — short selling enabled |
 | `MIN_SHORT_TOKENS` | 1,000,000,000 | [V5] 1,000 tokens minimum short position (6 decimals) |
+| `MIN_POOL_SOL_LENDING` | 5,000,000,000 | [V6] 5 SOL minimum pool depth for lending/short operations |
+| `MAX_PRICE_DEVIATION_BPS` | 5,000 | [V6] 50% max price deviation from baseline for new borrows/shorts |
 | `MIN_SOL_AMOUNT` | 1,000,000 | 0.001 SOL minimum |
