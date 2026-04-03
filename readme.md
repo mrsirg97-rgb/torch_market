@@ -10,7 +10,6 @@ ProgramID: 8hbUkonssSEEtkqzwM7ZcZrD9evacM92TcWSooVF4BeT
 ## run kani proofs
 
 ```bash
-cd ./programs/torch_market
 anchor build
 cargo kani
 ```
