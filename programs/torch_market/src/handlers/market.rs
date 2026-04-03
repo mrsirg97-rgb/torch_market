@@ -6,14 +6,12 @@ use crate::contexts::*;
 use crate::errors::TorchMarketError;
 
 // Buy tokens from the bonding curve.
-//
 // This is the core trading function. When a user buys:
 // 1. Protocol takes 0.5% fee from SOL input
 // 2. Remaining SOL split: inverse decay from 17.5%→2.5% to treasury as bonding progresses
 // 3. Tokens are calculated using constant product formula
 // 4. [V36] 100% of tokens go to buyer (vote vault removed)
 // 5. If curve SOL reaches target, bonding completes
-//
 // The bonding curve uses: tokens_out = (virtual_tokens * sol_in) / (virtual_sol + sol_in)
 // This creates a smooth price curve where early buyers get more tokens.
 pub fn buy(ctx: Context<Buy>, args: BuyArgs) -> Result<()> {
@@ -389,13 +387,11 @@ pub fn buy(ctx: Context<Buy>, args: BuyArgs) -> Result<()> {
 }
 
 // Sell tokens back to the bonding curve.
-//
 // Users can sell their tokens to receive SOL back:
 // 1. User sends tokens to the token vault
 // 2. SOL amount is calculated using the bonding curve formula
 // 3. Protocol takes 1% fee from SOL output
 // 4. Remaining SOL is sent to the seller
-//
 // Note: No burn on sell - the burn only happens on buy.
 // The bonding curve formula ensures price decreases as tokens are sold back.
 pub fn sell(ctx: Context<Sell>, args: SellArgs) -> Result<()> {

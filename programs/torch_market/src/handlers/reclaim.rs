@@ -5,12 +5,10 @@ use crate::contexts::*;
 use crate::errors::TorchMarketError;
 
 // Reclaim SOL from a failed token (inactive and unbonded for 7+ days).
-//
 // Anyone can call this instruction to reclaim SOL from a token that:
 // - Has not completed bonding
 // - Has been inactive for 7+ days (1 epoch)
 // - Has not already been reclaimed
-//
 // All SOL from both the bonding curve and token treasury is transferred to the protocol treasury (merged from platform treasury).
 pub fn reclaim_failed_token(ctx: Context<ReclaimFailedToken>) -> Result<()> {
     require!(

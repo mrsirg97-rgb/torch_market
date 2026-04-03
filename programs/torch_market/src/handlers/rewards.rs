@@ -5,13 +5,10 @@ use crate::contexts::*;
 use crate::errors::TorchMarketError;
 
 // Star a token to show appreciation.
-//
 // Users can star tokens they appreciate. When a token reaches 2000 stars,
 // the accumulated star SOL is automatically sent to the creator.
-//
 // Each user can only star each token once. The star is recorded
 // on-chain via a StarRecord PDA.
-//
 // Costs 0.05 SOL per star (sybil protection) - sent to token treasury.
 // Auto-payout to creator when threshold (2000 stars) is reached.
 pub fn star_token(ctx: Context<StarToken>) -> Result<()> {

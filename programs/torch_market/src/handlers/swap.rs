@@ -8,12 +8,10 @@ use crate::errors::TorchMarketError;
 use crate::pool_validation::{is_wsol_vault_0, read_token_account_balance, validate_pool_accounts};
 
 // Fund vault WSOL ATA with lamports from vault PDA.
-//
 // Isolated instruction — direct lamport manipulation only, no CPIs.
 // Must be called before vault_swap (buy) in the same transaction.
 // This separation avoids the Solana runtime "sum of account balances"
 // error that occurs when direct lamport modifications precede CPIs.
-//
 // IMPORTANT: Decrements sol_balance here so that repeated calls without
 // a matching vault_swap cannot inflate the vault's accounting.
 pub fn fund_vault_wsol(ctx: Context<FundVaultWsol>, amount: u64) -> Result<()> {
@@ -51,11 +49,9 @@ pub fn fund_vault_wsol(ctx: Context<FundVaultWsol>, amount: u64) -> Result<()> {
 }
 
 // Vault-routed Raydium CPMM swap for migrated Torch tokens.
-//
 // One instruction handles both directions:
 // - Buy (SOL→Token): vault SOL → WSOL → Raydium → tokens to vault ATA
 // - Sell (Token→SOL): vault ATA → Raydium → WSOL → SOL to vault
-//
 // WSOL ATA is persistent: created once via create_idempotent, reused across swaps.
 // Closed only on sell (to unwrap proceeds back to SOL).
 pub fn vault_swap(

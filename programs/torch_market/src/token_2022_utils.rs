@@ -25,7 +25,6 @@ pub fn get_mint_with_transfer_fee_space() -> usize {
 
 // Build instruction to initialize transfer fee config extension
 // Must be called before InitializeMint2
-//
 // Instruction format (from Solana docs):
 // - Byte 0: 26 (0x1a) - Transfer fee extension discriminator
 // - Byte 1: 0 (0x00) - InitializeTransferFeeConfig sub-instruction
@@ -208,7 +207,6 @@ pub fn build_burn_instruction(
 
 // Build instruction to harvest withheld tokens to mint
 // This collects transfer fees from token accounts into the mint
-//
 // Transfer fee sub-instructions:
 // - 0: InitializeTransferFeeConfig
 // - 1: TransferCheckedWithFee

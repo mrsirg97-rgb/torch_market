@@ -8,7 +8,6 @@ use crate::pool_validation::{read_token_account_balance, validate_pool_accounts}
 use crate::state::ShortPosition;
 
 // Calculate token debt value in lamports using Raydium pool reserves.
-//
 // value = token_debt * pool_sol / pool_tokens
 fn calculate_debt_value(
     token_debt: u64,
@@ -38,7 +37,6 @@ fn calculate_ltv_bps(debt_value: u64, collateral_value: u64) -> Result<u64> {
 }
 
 // Accrue interest on a short position in token terms.
-//
 // interest = tokens_borrowed * rate_bps * slots_elapsed / (10000 * EPOCH_DURATION_SLOTS)
 fn accrue_interest(position: &mut Account<ShortPosition>, interest_rate_bps: u16) -> Result<()> {
     if position.tokens_borrowed == 0 {
@@ -73,7 +71,6 @@ fn accrue_interest(position: &mut Account<ShortPosition>, interest_rate_bps: u16
 }
 
 // Enable short selling for a specific token. Admin only.
-//
 // Creates ShortConfig PDA and sets Treasury sentinel flags.
 // Zeros out the repurposed `total_burned_from_buyback` field.
 pub fn enable_short_selling(ctx: Context<EnableShortSelling>) -> Result<()> {
@@ -97,7 +94,6 @@ pub fn enable_short_selling(ctx: Context<EnableShortSelling>) -> Result<()> {
 }
 
 // Open or add to a short position: post SOL collateral, borrow tokens.
-//
 // SOL collateral goes to Treasury. Tokens come from Treasury's token account.
 // Creates ShortPosition on first call. Subsequent calls can add collateral and/or borrow more.
 pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
@@ -325,7 +321,6 @@ pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
 }
 
 // Close or partially repay a short position: return tokens, receive SOL collateral.
-//
 // Partial close reduces token debt (interest first, then principal). Collateral stays locked.
 // Full close returns all SOL collateral and closes the position (rent reclaimed).
 pub fn close_short(ctx: Context<CloseShort>, token_amount: u64) -> Result<()> {
@@ -508,7 +503,6 @@ pub fn close_short(ctx: Context<CloseShort>, token_amount: u64) -> Result<()> {
 }
 
 // Liquidate an underwater short position.
-//
 // When token price rises and LTV exceeds liquidation threshold (65%), anyone can call this.
 // Liquidator sends tokens to cover debt, receives SOL collateral (+ bonus) from treasury.
 pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {

@@ -125,7 +125,7 @@ pub fn transfer_authority(ctx: Context<TransferVaultAuthority>) -> Result<()> {
     Ok(())
 }
 
-// [V18] Withdraw tokens from vault ATA to any destination.
+// Withdraw tokens from vault ATA to any destination.
 // Authority only. Composability escape hatch for external DeFi.
 pub fn withdraw_tokens(ctx: Context<WithdrawTokens>, amount: u64) -> Result<()> {
     require!(amount > 0, TorchMarketError::ZeroAmount);

@@ -6,19 +6,15 @@ use crate::contexts::*;
 use crate::errors::TorchMarketError;
 
 // Contribute SOL to revive a reclaimed token.
-//
 // Anyone can contribute SOL to a reclaimed token.
 // Contributors are essentially "patrons" who believe the token deserves another chance.
 // They do NOT receive tokens for their contribution - once the token is revived, they can buy via the normal buy instruction.
-//
-// [V27] When cumulative contributions reach the per-tier threshold, the token is automatically revived:
+// When cumulative contributions reach the per-tier threshold, the token is automatically revived:
 // - `reclaimed` is set to false
 // - `last_activity_slot` is updated to current slot
 // - Normal buy/sell trading can resume
-//
 // # Arguments
 // * `sol_amount` - Amount of SOL to contribute (in lamports)
-//
 // # Events
 // Emits `RevivalContribution` on every contribution.
 // Emits `TokenRevived` when threshold is reached.

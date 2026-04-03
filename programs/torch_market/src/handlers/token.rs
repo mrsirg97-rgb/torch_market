@@ -6,12 +6,10 @@ use crate::contexts::*;
 use crate::errors::TorchMarketError;
 use crate::token_2022_utils::*;
 
-// [V3] Create a new Token-2022 token with transfer fee extension.
-//
+// Create a new Token-2022 token with transfer fee extension.
 // This creates a Token-2022 mint with a 1% transfer fee that applies to
 // ALL transfers for the lifetime of the token. The fee is collected in
 // recipient accounts and can be harvested via the harvest_fees instruction.
-//
 // Transfer fee configuration:
 // - Fee: 1% (100 basis points)
 // - Max fee: Unlimited (u64::MAX)

@@ -6,7 +6,6 @@ use crate::errors::TorchMarketError;
 use crate::state::ProtocolTreasury;
 
 // Initialize the protocol treasury PDA.
-//
 // Called once after V11 deploy by protocol authority.
 pub fn initialize_protocol_treasury(ctx: Context<InitializeProtocolTreasury>) -> Result<()> {
     let protocol_treasury = &mut ctx.accounts.protocol_treasury;
@@ -27,7 +26,6 @@ pub fn initialize_protocol_treasury(ctx: Context<InitializeProtocolTreasury>) ->
 }
 
 // Advance the protocol treasury epoch.
-//
 // Permissionless crank - anyone can call after 7 days.
 // Calculates distributable amount (balance above reserve floor).
 pub fn advance_protocol_epoch(ctx: Context<AdvanceProtocolEpoch>) -> Result<()> {
@@ -63,7 +61,6 @@ pub fn advance_protocol_epoch(ctx: Context<AdvanceProtocolEpoch>) -> Result<()> 
 }
 
 // Claim protocol rewards based on trading volume.
-//
 // Users with >= 2 SOL volume in the previous epoch can claim their proportional share of the distributable amount. Minimum claim: 0.1 SOL.
 pub fn claim_protocol_rewards(ctx: Context<ClaimProtocolRewards>) -> Result<()> {
     if ctx.accounts.torch_vault.is_some() {

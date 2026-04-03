@@ -58,13 +58,11 @@ pub fn read_pubkey_at(data: &[u8], offset: usize) -> Result<Pubkey> {
 }
 
 // Validate that pool accounts belong to the correct Raydium CPMM pool for this token.
-//
 // Reads the pool_state account data to extract stored vault and mint addresses,
 // then verifies:
 // 1. pool_state is owned by Raydium CPMM program
 // 2. token_vault_0 and token_vault_1 match the pool's stored vaults
 // 3. One pool mint is our token, the other is WSOL
-//
 // Raydium CPMM PoolState layout (after 8-byte discriminator):
 //   amm_config: Pubkey (offset 8)
 //   pool_creator: Pubkey (offset 40)
@@ -121,13 +119,10 @@ pub fn is_wsol_vault_0(pool_state: &AccountInfo) -> Result<bool> {
 }
 
 // Read accumulated Raydium CPMM protocol + fund fees from pool state.
-//
 // Vault balances include trading reserves PLUS accumulated fees that have
 // not yet been claimed. For accurate price ratio calculations, subtract
 // these fees from vault balances to get actual trading reserves.
-//
 // Returns (sol_fees, token_fees).
-//
 // Raydium CPMM PoolState fee offsets (repr(C, packed), after 8-byte discriminator):
 //   protocol_fees_token_0: u64 @ offset 341
 //   protocol_fees_token_1: u64 @ offset 349

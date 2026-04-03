@@ -7,11 +7,9 @@ use crate::errors::TorchMarketError;
 use crate::pool_validation::{order_mints, read_pool_accumulated_fees, read_token_account_balance, validate_pool_accounts};
 use crate::token_2022_utils::*;
 
-// [V3] Harvest accumulated transfer fees.
-//
+// Harvest accumulated transfer fees.
 // This collects transfer fees that have been withheld from transfers
 // into the token treasury. Anyone can call this (permissionless).
-//
 // The harvested tokens can be used in future buybacks to reduce supply.
 pub fn harvest_fees<'info>(
     ctx: Context<'_, '_, 'info, 'info, HarvestFees<'info>>,
@@ -68,12 +66,10 @@ pub fn harvest_fees<'info>(
 }
 
 // Swap treasury tokens to SOL via Raydium CPMM.
-//
 // Ratio-gated: only sells when price is 20%+ above baseline.
 // Sells 15% of held tokens per call (or 100% if balance <= 1M tokens).
 // Shares cooldown with buyback — prevents rapid buy/sell cycles.
 // Pre-baseline tokens (migrated before V9) bypass ratio gating.
-//
 // Flow:
 // 1. Validate pool accounts (defense in depth)
 // 2. Ratio gate: check price is 20%+ above baseline

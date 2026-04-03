@@ -47,7 +47,7 @@ fn calculate_transfer_fee(amount: u64) -> Result<u64> {
     Ok(fee.min(MAX_TRANSFER_FEE))
 }
 
-// [V26] Fund bonding curve's WSOL ATA with bonding curve SOL.
+// Fund bonding curve's WSOL ATA with bonding curve SOL.
 // Separate instruction — isolates direct lamport manipulation from CPIs.
 // SOL stays in protocol-controlled bc_wsol until migrate_to_dex closes it.
 // Called BEFORE migrate_to_dex in the same transaction.
@@ -68,7 +68,7 @@ pub fn fund_migration_wsol_handler(ctx: Context<FundMigrationWsol>) -> Result<()
     Ok(())
 }
 
-// [V26] Migrate bonded token to Raydium CPMM
+// Migrate bonded token to Raydium CPMM
 // Permissionless — bc_wsol must be pre-funded via fund_migration_wsol.
 // No direct lamport manipulation — all SOL movement via CPIs only.
 pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
