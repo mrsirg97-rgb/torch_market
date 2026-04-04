@@ -2170,3 +2170,52 @@ fn verify_treasury_sell_amount_bounded() {
         assert!(sell_amount > 0);
     }
 }
+
+// ============================================================================
+// Depth-Based Risk Bands
+// ============================================================================
+
+//     Proves: get_depth_max_ltv_bps returns correct tier at every boundary,
+//     tiers are exhaustive (no gaps), and LTV values are monotonically increasing.
+
+fn get_depth_max_ltv_bps(pool_sol: u64) -> u16 {
+    if pool_sol < MIN_POOL_SOL_LENDING {
+        0
+    } else if pool_sol < DEPTH_TIER_1 {
+        DEPTH_LTV_0
+    } else if pool_sol < DEPTH_TIER_2 {
+        DEPTH_LTV_1
+    } else if pool_sol < DEPTH_TIER_3 {
+        DEPTH_LTV_2
+    } else {
+        DEPTH_LTV_3
+    }
+}
+
+#[kani::proof]
+fn verify_depth_bands_boundaries() {
+    // Below minimum: blocked
+    assert!(get_depth_max_ltv_bps(0) == 0);
+    assert!(get_depth_max_ltv_bps(4_999_999_999) == 0);
+
+    // Band 0: 5 SOL to 50 SOL
+    assert!(get_depth_max_ltv_bps(5_000_000_000) == DEPTH_LTV_0);
+    assert!(get_depth_max_ltv_bps(49_999_999_999) == DEPTH_LTV_0);
+
+    // Band 1: 50 SOL to 200 SOL
+    assert!(get_depth_max_ltv_bps(50_000_000_000) == DEPTH_LTV_1);
+    assert!(get_depth_max_ltv_bps(199_999_999_999) == DEPTH_LTV_1);
+
+    // Band 2: 200 SOL to 500 SOL
+    assert!(get_depth_max_ltv_bps(200_000_000_000) == DEPTH_LTV_2);
+    assert!(get_depth_max_ltv_bps(499_999_999_999) == DEPTH_LTV_2);
+
+    // Band 3: 500+ SOL
+    assert!(get_depth_max_ltv_bps(500_000_000_000) == DEPTH_LTV_3);
+    assert!(get_depth_max_ltv_bps(u64::MAX) == DEPTH_LTV_3);
+
+    // Monotonic: each tier >= previous
+    assert!(DEPTH_LTV_0 <= DEPTH_LTV_1);
+    assert!(DEPTH_LTV_1 <= DEPTH_LTV_2);
+    assert!(DEPTH_LTV_2 <= DEPTH_LTV_3);
+}

@@ -4,7 +4,7 @@
 
 Brightside Solutions, 2026
 
-[torch.market](https://torch.market) | [docs](https://torch-market-docs.vercel.app/) | [audit](https://torch.market/audit.md) | [@torch_market](https://x.com/torch_market/)
+[torch.market](https://torch.market) | [audit](https://torch.market/audit.md) | [@torch_market](https://x.com/torch_market/)
 
 ---
 
@@ -22,11 +22,11 @@ This is not a launchpad. This is a protocol that turns every token into a self-c
 
 - **Shorts are real, not synthetic.** Short sellers borrow real tokens from the treasury lock, sell them on the real market, and buy them back to close. This is not a perpetual contract. There is no funding rate. No mark price. Shorts contribute to price discovery because they ARE market participants.
 
-- **All parameters are immutable.** 50% max LTV. 65% liquidation threshold. 2% interest per epoch. 10% liquidation bonus. 80% utilization cap. Set at deployment. No admin key can change them. You can read every parameter, calculate every outcome, and know the rules won't change after you open a position.
+- **All parameters are immutable.** 25-50% max LTV (adaptive, based on pool depth). 65% liquidation threshold. 2% interest per epoch. 10% liquidation bonus. 80% utilization cap. Set at deployment. No admin key can change them. You can read every parameter, calculate every outcome, and know the rules won't change after you open a position.
 
-- **One user cannot collapse the pool.** Per-user borrow caps (5x collateral share of supply), utilization caps (20% of treasury always reserved), and isolated positions (one loan per user per token) mean the system stays available for everyone regardless of what any single actor does.
+- **One user cannot collapse the pool.** Per-user borrow caps (23x collateral share of supply), utilization caps (20% of treasury always reserved), and isolated positions (one loan per user per token) mean the system stays available for everyone regardless of what any single actor does.
 
-- **Circuit breakers protect against manipulation.** New margin positions are blocked when pool liquidity drops below 5 SOL or price deviates more than 50% from migration baseline. Liquidations remain functional (safety valve) but require minimum liquidity. No off-chain keepers, no oracles — the program reads pool state directly and refuses to act when the price signal is untrustworthy.
+- **Depth-based risk bands replace static circuit breakers.** Maximum LTV adapts to pool depth: 25% for thin pools (<50 SOL), scaling to 50% for deep pools (500+ SOL). Deeper pools are harder to manipulate, so higher leverage is permitted. Pools below 5 SOL block new positions entirely. Combined with per-user borrow caps, the effective LTV for long positions is typically <5% — making liquidation require a >90% price crash. No off-chain keepers, no oracles, no stored baseline — the pool itself is the sole source of truth.
 
 - **No rug pull is structurally possible.** Mint and freeze authority are revoked permanently at creation. LP tokens are burned. Liquidity is locked forever. Not by promise — by code.
 
@@ -39,6 +39,25 @@ This is not a launchpad. This is a protocol that turns every token into a self-c
 - **No loss.** Individual positions can be liquidated. In extreme conditions, a position can accumulate bad debt. But bad debt is isolated — it cannot spread. One position going underwater does not affect anyone else's collateral, LTV, or access to the lending pool. No cascading liquidations. No contagion. Your position's outcome is yours. Nobody else's failure makes your position unhealthy.
 
 - **Unlimited liquidity.** The lending pool is whatever the treasury has earned. The short pool is 300M tokens plus accrued interest. Real capital, real limits.
+
+## That's Not Lending. That's Trust.
+
+On Aave, a 50% LTV position can be liquidated in hours during a crash. On Torch, a borrower at a fresh-treasury token has over **385 days** before interest alone can trigger liquidation — even if they never repay a single lamport.
+
+This is a consequence of the depth-anchored risk model. Three independent caps — depth-based LTV, per-user borrow limits, and utilization ceiling — interact to produce effective LTV values far below the liquidation threshold. The math:
+
+| Treasury Depth | Effective LTV | Time to Liquidation (interest only) |
+|----------------|---------------|-------------------------------------|
+| 22 SOL (fresh) | 3% | Never (interest can't bridge the gap) |
+| 150 SOL | 20% | ~385 days |
+| 300 SOL | 41% | ~52 days |
+| 500+ SOL | 45% (depth capped) | ~38 days |
+
+Fresh tokens are structurally protected. Mature tokens graduate into real margin markets where liquidation is possible but requires either a significant crash or months of neglect. The protocol doesn't need to trust borrowers — the math makes default irrational.
+
+No DeFi protocol offers this. Not because they chose not to, but because their architecture requires high LTV for capital efficiency. Torch chose safety over efficiency, and the emergent result is a lending system where time is on the borrower's side.
+
+See [risk.md](https://torch.market/risk.md) for the formal analysis.
 
 ---
 
@@ -108,10 +127,10 @@ Both sides use the same parameters. Both are overcollateralized. Both are isolat
 | Interest rate | 2% per epoch (~7 days) |
 | Liquidation bonus | 10% |
 | Utilization cap | 80% |
-| Per-user cap | 5x collateral share of supply |
+| Per-user cap | 23x collateral share of supply |
 | Liquidation close | 50% per call |
 | Min pool liquidity | 5 SOL (blocks all margin ops below this) |
-| Max price deviation | 50% from baseline (blocks new positions only) |
+| Depth band LTV | 25% (<50 SOL), 35% (50-200), 45% (200-500), 50% (500+) |
 
 ---
 
@@ -145,7 +164,7 @@ On torch, shorts borrow real tokens and sell them on the real market. That sell 
 
 There is no oracle to manipulate. There is no funding rate to spike. There is no LP pool praying it stays solvent. The counterparty is 300M tokens that were locked at creation for exactly this purpose.
 
-Most perps protocols have a single point of failure: the off-chain price feed. If the keeper stops cranking, the oracle goes stale, and either liquidations halt (bad debt accumulates) or positions get liquidated against a stale price (users get robbed). Torch has zero off-chain dependencies — the program reads Raydium pool state directly, and when pool conditions are unhealthy, circuit breakers refuse to open new positions rather than acting on bad data.
+Most perps protocols have a single point of failure: the off-chain price feed. If the keeper stops cranking, the oracle goes stale, and either liquidations halt (bad debt accumulates) or positions get liquidated against a stale price (users get robbed). Torch has zero off-chain dependencies — the program reads Raydium pool state directly. Depth-based risk bands adapt LTV to pool manipulation resistance: thin pools get conservative limits, deep pools get full LTV. No stored baseline that can go stale, no oracle that can be manipulated, no keeper that can go offline.
 
 ---
 
@@ -175,11 +194,11 @@ Every parameter is readable on-chain. Every outcome is calculable before executi
 
 ## Verification
 
-70 Kani proof harnesses. 52 end-to-end tests. All passing. Cross-validated by independent audit (OpenAI o3).
+71 Kani proof harnesses. 55 end-to-end tests. All passing. Cross-validated by independent audit (OpenAI o3).
 
-Core arithmetic is formally verified with [Kani](https://model-checking.github.io/kani/) covering every possible input in constrained ranges: fee calculations, bonding curve pricing, lending formulas, liquidation lifecycle, short selling, bad debt accounting, circuit breaker band math, reward distribution, migration conservation, token distribution. No SOL created from nothing. No tokens minted from thin air. No fees exceeding stated rates.
+Core arithmetic is formally verified with [Kani](https://model-checking.github.io/kani/) covering every possible input in constrained ranges: fee calculations, bonding curve pricing, lending formulas, liquidation lifecycle, short selling, bad debt accounting, depth-based risk band boundaries, circuit breaker band math, reward distribution, migration conservation, token distribution. No SOL created from nothing. No tokens minted from thin air. No fees exceeding stated rates.
 
-See [VERIFICATION.md](https://torch.market/verification.md).
+See [verification.md](https://torch.market/verification.md).
 
 ---
 
@@ -197,14 +216,13 @@ See [VERIFICATION.md](https://torch.market/verification.md).
 | Creator SOL share | 0% → 1% (creator tokens only) |
 | Transfer fee | 0.04% (post-migration, immutable) |
 | Fee swap split | 100% treasury (community) / 85-15 treasury-creator |
-| Max LTV | 50% |
+| Max LTV | 25-50% (depth-adaptive: 25% <50 SOL, 35% 50-200, 45% 200-500, 50% 500+) |
 | Liquidation threshold | 65% |
 | Interest rate | 2% per epoch (~7 days) |
 | Liquidation bonus | 10% |
 | Utilization cap | 80% |
-| Per-user borrow cap | 5x collateral share of supply |
+| Per-user borrow cap | 23x collateral share of supply |
 | Min pool liquidity | 5 SOL |
-| Max price deviation | 50% from migration baseline |
 | Min borrow | 0.1 SOL |
 | Epoch duration | ~7 days |
 | Reward eligibility | 2 SOL volume per epoch |
@@ -215,4 +233,4 @@ See [VERIFICATION.md](https://torch.market/verification.md).
 
 *© 2026 Brightside Solutions. All rights reserved.*
 
-[Terms](https://torch.market/terms) | [Privacy](https://torch.market/privacy) | [torch.market](https://torch.market)
+[Terms](https://torch.market/terms) | [Privacy](https://torch.market/privacy) | [torch.market](https://torch.market) | [audit](https://torch.market/audit.md) | [verification.md](https://torch.market/verification.md) | [@torch_market](https://x.com/torch_market/)

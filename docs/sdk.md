@@ -123,7 +123,7 @@ All builders return `{ transaction: VersionedTransaction, message: string }`.
 
 ### Lending (post-migration)
 
-Treasury-backed margin lending. Borrow SOL against token collateral. 50% max LTV, 65% liquidation threshold, 2% interest per epoch. Circuit breakers block new positions when pool liquidity < 5 SOL or price deviates > 50% from baseline.
+Treasury-backed margin lending. Borrow SOL against token collateral. Depth-adaptive max LTV (25-50% based on pool SOL depth), 65% liquidation threshold, 2% interest per epoch. Deeper pools permit higher leverage — the pool itself is the risk engine. No oracles, no stored baseline.
 
 | Function | Description |
 |----------|-------------|
@@ -134,7 +134,7 @@ Treasury-backed margin lending. Borrow SOL against token collateral. 50% max LTV
 
 ### Short Selling (post-migration)
 
-Borrow real tokens from the 300M treasury lock, sell on the market, buy back to close. Same parameters and circuit breakers as lending — 50% max LTV, 65% liquidation, 2% per epoch interest.
+Borrow real tokens from the 300M treasury lock, sell on the market, buy back to close. Same depth-adaptive LTV and parameters as lending — 25-50% max LTV (pool-depth dependent), 65% liquidation, 2% per epoch interest.
 
 | Function | Description |
 |----------|-------------|

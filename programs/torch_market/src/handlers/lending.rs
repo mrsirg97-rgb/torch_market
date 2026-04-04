@@ -4,7 +4,7 @@ use anchor_spl::token_interface::{transfer_checked, TransferChecked};
 use crate::constants::*;
 use crate::contexts::*;
 use crate::errors::TorchMarketError;
-use crate::pool_validation::{read_token_account_balance, validate_pool_accounts, require_min_pool_liquidity, require_price_in_band, is_wsol_vault_0};
+use crate::pool_validation::{read_token_account_balance, validate_pool_accounts, require_min_pool_liquidity, get_depth_max_ltv_bps, is_wsol_vault_0};
 use crate::state::LoanPosition;
 
 // value = collateral_amount * pool_sol_reserves / pool_token_reserves
@@ -176,14 +176,9 @@ pub fn borrow(ctx: Context<Borrow>, args: BorrowArgs) -> Result<()> {
     let (pool_sol, pool_tokens) = if wsol_is_0 { (vault_0_bal, vault_1_bal) } else { (vault_1_bal, vault_0_bal) };
     require!(pool_sol > 0 && pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
 
-    require_min_pool_liquidity(pool_sol)?;
-    require!(treasury.baseline_initialized, TorchMarketError::BaselineNotInitialized);
-    require_price_in_band(
-        pool_sol,
-        pool_tokens,
-        treasury.baseline_sol_reserves,
-        treasury.baseline_token_reserves,
-    )?;
+    let depth_max_ltv = get_depth_max_ltv_bps(pool_sol);
+    require!(depth_max_ltv > 0, TorchMarketError::PoolTooThin);
+    let effective_max_ltv = depth_max_ltv.min(treasury.max_ltv_bps);
 
     let collateral_value = calculate_collateral_value(user_collateral, pool_sol, pool_tokens)?;
     let total_debt = loan
@@ -194,7 +189,7 @@ pub fn borrow(ctx: Context<Borrow>, args: BorrowArgs) -> Result<()> {
         .ok_or(TorchMarketError::MathOverflow)?;
     let new_ltv = calculate_ltv_bps(total_debt, collateral_value)?;
     require!(
-        new_ltv <= treasury.max_ltv_bps as u64,
+        new_ltv <= effective_max_ltv as u64,
         TorchMarketError::LtvExceeded
     );
 

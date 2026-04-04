@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::constants::{RAYDIUM_AMM_CONFIG, RAYDIUM_CPMM_PROGRAM_ID, MIN_POOL_SOL_LENDING, MAX_PRICE_DEVIATION_BPS, RATIO_PRECISION};
+use crate::constants::{RAYDIUM_AMM_CONFIG, RAYDIUM_CPMM_PROGRAM_ID, MIN_POOL_SOL_LENDING, MAX_PRICE_DEVIATION_BPS, RATIO_PRECISION, DEPTH_TIER_1, DEPTH_TIER_2, DEPTH_TIER_3, DEPTH_LTV_0, DEPTH_LTV_1, DEPTH_LTV_2, DEPTH_LTV_3};
 use crate::errors::TorchMarketError;
 use crate::migration::WSOL_MINT;
 
@@ -165,6 +165,23 @@ pub fn require_price_in_band(
     );
 
     Ok(())
+}
+
+// Depth-based risk band: returns max LTV in bps based on pool SOL depth.
+// More SOL = harder to manipulate = higher LTV allowed.
+// Returns 0 if pool is too thin for new margin positions.
+pub fn get_depth_max_ltv_bps(pool_sol: u64) -> u16 {
+    if pool_sol < MIN_POOL_SOL_LENDING {
+        0
+    } else if pool_sol < DEPTH_TIER_1 {
+        DEPTH_LTV_0
+    } else if pool_sol < DEPTH_TIER_2 {
+        DEPTH_LTV_1
+    } else if pool_sol < DEPTH_TIER_3 {
+        DEPTH_LTV_2
+    } else {
+        DEPTH_LTV_3
+    }
 }
 
 pub fn is_wsol_vault_0(pool_state: &AccountInfo) -> Result<bool> {

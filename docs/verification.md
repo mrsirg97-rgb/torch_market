@@ -6,7 +6,7 @@ We used [Kani](https://model-checking.github.io/kani/), a formal verification to
 
 This is **not** a security audit. It proves the arithmetic is correct, but does not cover access control, account validation, or economic attacks. See [What Is NOT Verified](#what-is-not-verified) for full scope limitations.
 
-**70 proof harnesses. All passing. Zero failures.**
+**71 proof harnesses. All passing. Zero failures.**
 
 ---
 
@@ -15,8 +15,8 @@ This is **not** a security audit. It proves the arithmetic is correct, but does 
 torch_market's core arithmetic has been formally verified using [Kani](https://model-checking.github.io/kani/), a Rust model checker backed by the CBMC bounded model checker. Kani exhaustively proves properties hold for **all** valid inputs within constrained ranges -- not just sampled test cases.
 
 **Tool:** Kani Rust Verifier 0.67.0 / CBMC 6.8.0
-**Target:** `torch_market` v10.2.2
-**Harnesses:** 70 proof harnesses, all passing
+**Target:** `torch_market` v10.2.4
+**Harnesses:** 71 proof harnesses, all passing
 **Source:** `programs/torch_market/src/kani_proofs.rs`
 
 ## What Is Formally Verified
@@ -60,7 +60,7 @@ The proofs cover the **pure arithmetic layer** -- every fee calculation, bonding
 | `verify_ltv_zero_debt` | Zero debt returns 0 LTV | All u64 collateral values |
 | `verify_interest_no_overflow` | Interest calculation doesn't overflow; interest <= principal | Up to 1000 SOL, 2%/epoch, 1 epoch |
 | `verify_liquidation_bonus_increases_seizure` | Liquidation bonus increases collateral seized | 100 SOL pool, up to 50 SOL debt |
-| `verify_per_user_borrow_cap_bounded` | Per-user cap no overflow, `<= max_lendable * 5`, zero collateral → zero cap, full supply → 5x cap | Concrete tier lendable caps (35/70/140 SOL), symbolic collateral up to TOTAL_SUPPLY |
+| `verify_per_user_borrow_cap_bounded` | Per-user cap no overflow, `<= max_lendable * 23`, zero collateral → zero cap, full supply → 23x cap | Concrete tier lendable caps (35/70/140 SOL), symbolic collateral up to TOTAL_SUPPLY |
 
 ### Protocol Rewards (Harnesses 19-20)
 
@@ -178,7 +178,7 @@ These harnesses verify that the `pool_sol > 0 && pool_tokens > 0` guards prevent
 
 ### Circuit Breakers (Harnesses 59-62) — V6
 
-These harnesses verify the V6 pool health circuit breakers that protect lending and short selling from price manipulation on thin or deviated pools.
+These harnesses verify the V6 pool health circuit breakers. Note: the baseline deviation band (`require_price_in_band`) is retained for `swap_fees_to_sol` ratio gating but is no longer used for margin operations (replaced by depth-based risk bands in V7).
 
 | Harness | Property | Input Range |
 |---------|----------|-------------|
@@ -186,6 +186,14 @@ These harnesses verify the V6 pool health circuit breakers that protect lending 
 | `verify_circuit_breaker_rejects_doubled_price` | 2x price (100% increase) rejected by 50% deviation band | 200 SOL pool vs 100 SOL baseline |
 | `verify_circuit_breaker_band_edges` | +/-49% passes, +/-51% fails (symmetric band correctness) | 100 SOL / 100T baseline, four edge cases |
 | `verify_min_pool_liquidity_threshold` | Pool SOL >= 5 SOL passes, below fails; exact threshold = 5 SOL | 0-10 SOL symbolic |
+
+### Depth-Based Risk Bands (Harness 71) — V7
+
+Verifies the `get_depth_max_ltv_bps()` function that maps pool SOL depth to maximum LTV for margin operations. Replaces static baseline circuit breaker.
+
+| Harness | Property | Input Range |
+|---------|----------|-------------|
+| `verify_depth_bands_boundaries` | Correct tier at every boundary (0, 5, 50, 200, 500 SOL and u64::MAX); tiers monotonically increasing | Concrete boundary values |
 
 ### Liquidation Formula Identity (Harnesses 63-64) — V6
 
@@ -312,7 +320,7 @@ All 70 harnesses pass. Most complete in under 1 second; the slowest (`verify_tra
 | `DEFAULT_INTEREST_RATE_BPS` | 200 | 2% lending interest per epoch |
 | `DEFAULT_LIQUIDATION_BONUS_BPS` | 1000 | 10% liquidation bonus |
 | `DEFAULT_LENDING_UTILIZATION_CAP_BPS` | 8000 | [V4.0] 80% max treasury SOL lendable (was 70%) |
-| `BORROW_SHARE_MULTIPLIER` | 5 | [V4.0] Per-user cap: max borrow = 5x collateral's share of lendable pool (was 3x) |
+| `BORROW_SHARE_MULTIPLIER` | 23 | [V10.2.4] Per-user cap: max borrow = 23x collateral's share of lendable pool (was 5x) |
 | `RATIO_PRECISION` | 1,000,000,000 | 1e9 ratio scale factor |
 | `DEFAULT_SELL_THRESHOLD_BPS` | 12,000 | 120% -- sell triggers at 20% above baseline |
 | `DEFAULT_SELL_PERCENT_BPS` | 1,500 | 15% of held tokens sold per call |
@@ -327,5 +335,12 @@ All 70 harnesses pass. Most complete in under 1 second; the slowest (`verify_tra
 | `SHORT_ENABLED_SENTINEL` | u16::MAX | [V5] Sentinel in Treasury.buyback_percent_bps — short selling enabled |
 | `MIN_SHORT_TOKENS` | 1,000,000,000 | [V5] 1,000 tokens minimum short position (6 decimals) |
 | `MIN_POOL_SOL_LENDING` | 5,000,000,000 | [V6] 5 SOL minimum pool depth for lending/short operations |
-| `MAX_PRICE_DEVIATION_BPS` | 5,000 | [V6] 50% max price deviation from baseline for new borrows/shorts |
+| `MAX_PRICE_DEVIATION_BPS` | 5,000 | [V6] 50% max price deviation from baseline for swap_fees_to_sol ratio gating |
+| `DEPTH_TIER_1` | 50,000,000,000 | [V7] 50 SOL — depth band tier 1 threshold |
+| `DEPTH_TIER_2` | 200,000,000,000 | [V7] 200 SOL — depth band tier 2 threshold |
+| `DEPTH_TIER_3` | 500,000,000,000 | [V7] 500 SOL — depth band tier 3 threshold |
+| `DEPTH_LTV_0` | 2,500 | [V7] 25% max LTV for pools <50 SOL |
+| `DEPTH_LTV_1` | 3,500 | [V7] 35% max LTV for pools 50-200 SOL |
+| `DEPTH_LTV_2` | 4,500 | [V7] 45% max LTV for pools 200-500 SOL |
+| `DEPTH_LTV_3` | 5,000 | [V7] 50% max LTV for pools >500 SOL |
 | `MIN_SOL_AMOUNT` | 1,000,000 | 0.001 SOL minimum |

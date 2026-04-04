@@ -103,7 +103,7 @@ pub const DEFAULT_LIQUIDATION_BONUS_BPS: u16 = 1000;
 pub const DEFAULT_LIQUIDATION_CLOSE_BPS: u16 = 5000;
 pub const DEFAULT_LENDING_UTILIZATION_CAP_BPS: u16 = 8000;
 pub const MIN_BORROW_AMOUNT: u64 = 100_000_000;
-pub const BORROW_SHARE_MULTIPLIER: u64 = 5; // Per-user cap: max borrow = lendable * (collateral / denominator) * multiplier
+pub const BORROW_SHARE_MULTIPLIER: u64 = 23; // Per-user cap: max borrow = lendable * (collateral / denominator) * multiplier
 pub const EPOCH_DURATION_SLOTS: u64 = 7 * 24 * 60 * 60 * 1000 / 400; // ~7 days at 400ms/slot
 pub const METADATA_POINTER_EXTENSION_SIZE: usize = 68;
 pub const TOKEN_METADATA_FIXED_SIZE: usize = 80;
@@ -117,4 +117,14 @@ pub const SHORT_CONFIG_SEED: &[u8] = b"short_config";
 pub const MIN_SHORT_TOKENS: u64 = 1_000_000_000;
 pub const MIN_POOL_SOL_LENDING: u64 = 5_000_000_000;
 pub const MAX_PRICE_DEVIATION_BPS: u64 = 5000;
+
+// Depth-based risk bands: pool SOL thresholds and corresponding max LTV (bps).
+// More SOL in pool = harder to manipulate = higher LTV allowed.
+pub const DEPTH_TIER_1: u64 = 50_000_000_000;   // 50 SOL
+pub const DEPTH_TIER_2: u64 = 200_000_000_000;  // 200 SOL
+pub const DEPTH_TIER_3: u64 = 500_000_000_000;  // 500 SOL
+pub const DEPTH_LTV_0: u16 = 2500;  // < 50 SOL  → 25%
+pub const DEPTH_LTV_1: u16 = 3500;  // 50-200 SOL → 35%
+pub const DEPTH_LTV_2: u16 = 4500;  // 200-500 SOL → 45%
+pub const DEPTH_LTV_3: u16 = 5000;  // 500+ SOL  → 50%
 pub const SHORT_ENABLED_SENTINEL: u16 = u16::MAX; // Stored in Treasury.buyback_percent_bps to flag short selling enabled
