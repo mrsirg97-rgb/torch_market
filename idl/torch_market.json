@@ -2,7 +2,7 @@
   "address": "8hbUkonssSEEtkqzwM7ZcZrD9evacM92TcWSooVF4BeT",
   "metadata": {
     "name": "torch_market",
-    "version": "10.2.1",
+    "version": "10.2.2",
     "spec": "0.1.0",
     "description": "torch.market"
   },

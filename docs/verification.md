@@ -15,7 +15,7 @@ This is **not** a security audit. It proves the arithmetic is correct, but does 
 torch_market's core arithmetic has been formally verified using [Kani](https://model-checking.github.io/kani/), a Rust model checker backed by the CBMC bounded model checker. Kani exhaustively proves properties hold for **all** valid inputs within constrained ranges -- not just sampled test cases.
 
 **Tool:** Kani Rust Verifier 0.67.0 / CBMC 6.8.0
-**Target:** `torch_market` v10.2.0
+**Target:** `torch_market` v10.2.2
 **Harnesses:** 70 proof harnesses, all passing
 **Source:** `programs/torch_market/src/kani_proofs.rs`
 

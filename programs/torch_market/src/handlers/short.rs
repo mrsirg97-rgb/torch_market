@@ -4,7 +4,7 @@ use anchor_spl::token_interface::{transfer_checked, TransferChecked};
 use crate::constants::*;
 use crate::contexts::*;
 use crate::errors::TorchMarketError;
-use crate::pool_validation::{read_token_account_balance, validate_pool_accounts, require_min_pool_liquidity, require_price_in_band};
+use crate::pool_validation::{read_token_account_balance, validate_pool_accounts, require_min_pool_liquidity, require_price_in_band, is_wsol_vault_0};
 use crate::state::ShortPosition;
 
 // Calculate token debt value in lamports using Raydium pool reserves.
@@ -179,11 +179,14 @@ pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
         &ctx.accounts.mint.key(),
     )?;
 
-    let pool_sol = read_token_account_balance(&ctx.accounts.token_vault_0)?;
-    let pool_tokens = read_token_account_balance(&ctx.accounts.token_vault_1)?;
+    let vault_0_bal = read_token_account_balance(&ctx.accounts.token_vault_0)?;
+    let vault_1_bal = read_token_account_balance(&ctx.accounts.token_vault_1)?;
+    let wsol_is_0 = is_wsol_vault_0(&ctx.accounts.pool_state)?;
+    let (pool_sol, pool_tokens) = if wsol_is_0 { (vault_0_bal, vault_1_bal) } else { (vault_1_bal, vault_0_bal) };
     require!(pool_sol > 0 && pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
 
     require_min_pool_liquidity(pool_sol)?;
+    require!(treasury.baseline_initialized, TorchMarketError::BaselineNotInitialized);
     require_price_in_band(
         pool_sol,
         pool_tokens,
@@ -537,8 +540,10 @@ pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
         &ctx.accounts.mint.key(),
     )?;
 
-    let pool_sol = read_token_account_balance(&ctx.accounts.token_vault_0)?;
-    let pool_tokens = read_token_account_balance(&ctx.accounts.token_vault_1)?;
+    let vault_0_bal = read_token_account_balance(&ctx.accounts.token_vault_0)?;
+    let vault_1_bal = read_token_account_balance(&ctx.accounts.token_vault_1)?;
+    let wsol_is_0 = is_wsol_vault_0(&ctx.accounts.pool_state)?;
+    let (pool_sol, pool_tokens) = if wsol_is_0 { (vault_0_bal, vault_1_bal) } else { (vault_1_bal, vault_0_bal) };
     require!(pool_sol > 0 && pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
 
     require_min_pool_liquidity(pool_sol)?;

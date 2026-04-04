@@ -132,10 +132,9 @@ pub fn require_price_in_band(
     baseline_sol: u64,
     baseline_tokens: u64,
 ) -> Result<()> {
-    // Skip if baseline not initialized (shouldn't happen post-migration, but defensive)
-    if baseline_sol == 0 || baseline_tokens == 0 {
-        return Ok(());
-    }
+    // Callers enforce treasury.baseline_initialized before calling this function.
+    // Zero baseline is a hard error — no silent bypass.
+    require!(baseline_sol > 0 && baseline_tokens > 0, TorchMarketError::BaselineNotInitialized);
 
     let current_ratio = (pool_sol as u128)
         .checked_mul(RATIO_PRECISION)
