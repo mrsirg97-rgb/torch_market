@@ -15,7 +15,7 @@ This is **not** a security audit. It proves the arithmetic is correct, but does 
 torch_market's core arithmetic has been formally verified using [Kani](https://model-checking.github.io/kani/), a Rust model checker backed by the CBMC bounded model checker. Kani exhaustively proves properties hold for **all** valid inputs within constrained ranges -- not just sampled test cases.
 
 **Tool:** Kani Rust Verifier 0.67.0 / CBMC 6.8.0
-**Target:** `torch_market` v10.2.4
+**Target:** `torch_market` v10.2.5
 **Harnesses:** 71 proof harnesses, all passing
 **Source:** `programs/torch_market/src/kani_proofs.rs`
 
@@ -320,7 +320,7 @@ All 70 harnesses pass. Most complete in under 1 second; the slowest (`verify_tra
 | `DEFAULT_INTEREST_RATE_BPS` | 200 | 2% lending interest per epoch |
 | `DEFAULT_LIQUIDATION_BONUS_BPS` | 1000 | 10% liquidation bonus |
 | `DEFAULT_LENDING_UTILIZATION_CAP_BPS` | 8000 | [V4.0] 80% max treasury SOL lendable (was 70%) |
-| `BORROW_SHARE_MULTIPLIER` | 23 | [V10.2.4] Per-user cap: max borrow = 23x collateral's share of lendable pool (was 5x) |
+| `BORROW_SHARE_MULTIPLIER` | 23 | [V10.2.5] Per-user cap: max borrow = 23x collateral's share of lendable pool (was 5x) |
 | `RATIO_PRECISION` | 1,000,000,000 | 1e9 ratio scale factor |
 | `DEFAULT_SELL_THRESHOLD_BPS` | 12,000 | 120% -- sell triggers at 20% above baseline |
 | `DEFAULT_SELL_PERCENT_BPS` | 1,500 | 15% of held tokens sold per call |

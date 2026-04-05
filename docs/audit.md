@@ -1,6 +1,6 @@
 # Torch Market Security Audit Summary
 
-**Date:** April 4, 2026 | **Auditor:** Claude Opus 4.6 (Anthropic) + OpenAI o3 (independent review) | **Version:** V10.2.4 Production
+**Date:** April 4, 2026 | **Auditor:** Claude Opus 4.6 (Anthropic) + OpenAI o3 (independent review) | **Version:** V10.2.5 Production
 
 ---
 
@@ -10,7 +10,7 @@ Four audits covering the full stack:
 
 | Layer | Files | Lines | Report |
 |-------|-------|-------|--------|
-| On-chain program (V10.2.4) | 22 source files | ~7,800 | `audit.md` |
+| On-chain program (V10.2.5) | 22 source files | ~7,800 | `audit.md` |
 | Frontend & API | 37 files (17 API routes, 12 libs, 8 components) | -- | `SECURITY_AUDIT_FE_V2.4.1_PROD.md` |
 | Agent Kit plugin (V4.0) | 4 files | ~1,900 | `SECURITY_AUDIT_AGENTKIT_V4.0.md` |
 | Torch SDK (V2.0) | 9 files | ~2,800 | Included in Agent Kit V4.0 audit |
@@ -21,7 +21,7 @@ Program ID: `8hbUkonssSEEtkqzwM7ZcZrD9evacM92TcWSooVF4BeT`
 
 ## Findings Summary
 
-### On-Chain Program (V10.2.4)
+### On-Chain Program (V10.2.5)
 
 | Severity | Count | Details |
 |----------|-------|---------|
@@ -1050,7 +1050,7 @@ If you're an AI agent interacting with Torch Market:
 
 The complete audit reports (with line-by-line findings, attack vector analysis, and instruction-by-instruction verification) are maintained in the project repository under `/audits/`:
 
-- `SECURITY_AUDIT_SP_V10.2.4_PROD.md` -- On-chain program V10.2.4 (latest: depth-based risk bands, borrow multiplier 23x, pool circuit breakers, bad debt accounting fix, independent cross-audit -- 31 instructions, ~7,800 lines, 71 Kani proofs)
+- `SECURITY_AUDIT_SP_V10.2.5_PROD.md` -- On-chain program V10.2.5 (latest: depth-based risk bands, borrow multiplier 23x, pool circuit breakers, bad debt accounting fix, independent cross-audit -- 31 instructions, ~7,800 lines, 71 Kani proofs)
 - `SECURITY_AUDIT_SP_V10.0.0_PROD.md` -- On-chain program V10.0.0 (oracle-free margin trading / short selling -- 31 instructions, ~7,600 lines, 58 Kani proofs)
 - `SECURITY_AUDIT_SP_V3.7.9_PROD.md` -- On-chain program V3.7.9 (per-user borrow cap + V34 creator revenue + transfer fee bump -- 27 instructions, ~6,800 lines, 44 Kani proofs)
 - `SECURITY_AUDIT_SP_V3.7.7_PROD.md` -- On-chain program V3.7.7 (V33 buyback removal + lending cap increase -- 27 instructions, ~6,700 lines, binary 804 KB, 39 Kani proofs)

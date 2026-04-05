@@ -1,6 +1,6 @@
 [package]
 name = "torch_market"
-version = "10.2.4"
+version = "10.2.5"
 description = "torch.market"
 edition = "2021"
 

@@ -215,9 +215,9 @@ pub enum TorchMarketError {
     #[msg("Short selling already enabled for this token")]
     ShortAlreadyEnabled,
 
-    #[msg("Pool liquidity too low for safe collateral valuation")]
+    #[msg("Pool depth below minimum for margin operations")]
     PoolTooThin,
 
-    #[msg("Pool price deviates too far from baseline for new margin positions")]
+    #[msg("Pool price deviates too far from baseline")]
     PriceDeviationTooHigh,
 }

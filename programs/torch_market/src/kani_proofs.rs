@@ -1178,9 +1178,9 @@ fn verify_lending_lifecycle_with_interest() {
 
 // ============================================================================
 // 33. LENDING: Per-User Borrow Cap (Supply-Proportional)
-//     Proves: max_user_borrow = max_lendable * collateral * 5 / total_supply
+//     Proves: max_user_borrow = max_lendable * collateral * 23 / total_supply
 //     never overflows and correctly bounds user borrows proportionally.
-//     Uses concrete max_lendable at each tier's 70% cap (same pattern as
+//     Uses concrete max_lendable at each tier's 80% cap (same pattern as
 //     migration price-match proofs) to keep SAT formula tractable.
 // ============================================================================
 
@@ -1204,7 +1204,7 @@ fn check_per_user_cap(max_lendable: u64) {
     if user_collateral == 0 {
         assert!(max_user_borrow == 0);
     }
-    // Boundary: 100% of supply → exactly 5x lendable
+    // Boundary: 100% of supply → exactly 23x lendable
     if user_collateral == TOTAL_SUPPLY {
         assert!(max_user_borrow == max_lendable * BORROW_SHARE_MULTIPLIER);
     }
