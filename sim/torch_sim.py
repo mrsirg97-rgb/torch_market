@@ -3,7 +3,7 @@ Torch Market Economic Simulator
 
 Pure-Python simulation of the Torch Market protocol:
   - Bonding curve (constant product with dynamic fee splits)
-  - Post-migration CPMM pool
+  - Post-migration DeepPool
   - Treasury lending (SOL loans against token collateral)
   - Short selling (token loans against SOL collateral)
   - Liquidation cascades
@@ -112,7 +112,7 @@ class BondingCurve:
 
 @dataclass
 class Pool:
-    """Post-migration CPMM pool."""
+    """Post-migration DeepPool. 0.25% fee auto-compounds into reserves."""
     sol_reserves: int = 0
     token_reserves: int = 0
 
@@ -126,23 +126,29 @@ class Pool:
             return float('inf')
         return self.sol_reserves / self.token_reserves
 
+    FEE_BPS: int = 25  # 0.25% — auto-compounds into reserves
+
     def swap_sol_for_tokens(self, sol_in: int) -> int:
-        """Constant product swap. Returns tokens out."""
+        """Constant product swap with fee. Returns tokens out."""
         if sol_in <= 0 or self.sol_reserves <= 0 or self.token_reserves <= 0:
             return 0
-        tokens_out = (self.token_reserves * sol_in) // (self.sol_reserves + sol_in)
+        fee = (sol_in * self.FEE_BPS) // 10000
+        effective_in = sol_in - fee
+        tokens_out = (self.token_reserves * effective_in) // (self.sol_reserves + effective_in)
         tokens_out = min(tokens_out, self.token_reserves - 1)  # can't drain pool
-        self.sol_reserves += sol_in
+        self.sol_reserves += sol_in  # full amount including fee stays in pool
         self.token_reserves -= tokens_out
         return tokens_out
 
     def swap_tokens_for_sol(self, tokens_in: int) -> int:
-        """Constant product swap. Returns SOL out."""
+        """Constant product swap with fee. Returns SOL out."""
         if tokens_in <= 0 or self.sol_reserves <= 0 or self.token_reserves <= 0:
             return 0
-        sol_out = (self.sol_reserves * tokens_in) // (self.token_reserves + tokens_in)
+        fee = (tokens_in * self.FEE_BPS) // 10000
+        effective_in = tokens_in - fee
+        sol_out = (self.sol_reserves * effective_in) // (self.token_reserves + effective_in)
         sol_out = min(sol_out, self.sol_reserves - 1)
-        self.token_reserves += tokens_in
+        self.token_reserves += tokens_in  # full amount including fee stays in pool
         self.sol_reserves -= sol_out
         return sol_out
 
@@ -433,7 +439,7 @@ class TorchSim:
     # ------------------------------------------------------------------
 
     def migrate(self) -> dict:
-        """Migrate bonding curve to CPMM pool."""
+        """Migrate bonding curve to DeepPool."""
         assert self.curve.bonding_complete, "Bonding not complete"
         assert not self.migrated, "Already migrated"
 
@@ -456,7 +462,7 @@ class TorchSim:
     # ------------------------------------------------------------------
 
     def pool_buy(self, user_id: int, sol_amount: int) -> dict:
-        """Buy tokens from CPMM pool (post-migration)."""
+        """Buy tokens from DeepPool (post-migration)."""
         assert self.migrated, "Not migrated"
         sol_spent = self._debit_sol(user_id, sol_amount)
         if sol_spent == 0:
@@ -471,7 +477,7 @@ class TorchSim:
                 "price": self.pool.price}
 
     def pool_sell(self, user_id: int, token_amount: int) -> dict:
-        """Sell tokens to CPMM pool (post-migration)."""
+        """Sell tokens to DeepPool (post-migration)."""
         assert self.migrated, "Not migrated"
         tokens = self._debit_tokens(user_id, token_amount)
         if tokens == 0:

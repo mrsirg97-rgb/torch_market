@@ -1,10 +1,9 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::invoke_signed;
-use anchor_spl::token::spl_token;
 use crate::constants::*;
 use crate::contexts::*;
 use crate::errors::TorchMarketError;
-use crate::pool_validation::{order_mints, read_pool_accumulated_fees, read_token_account_balance, validate_pool_accounts};
+use crate::pool_validation::read_deep_pool_reserves;
 use crate::token_2022_utils::*;
 
 // Harvest accumulated transfer fees.
@@ -65,38 +64,23 @@ pub fn harvest_fees<'info>(
     Ok(())
 }
 
-// Swap treasury tokens to SOL via Raydium CPMM.
+// Swap treasury tokens to SOL via DeepPool.
 // Ratio-gated: only sells when price is 20%+ above baseline.
 // Sells 15% of held tokens per call (or 100% if balance <= 1M tokens).
 // Shares cooldown with buyback — prevents rapid buy/sell cycles.
 // Pre-baseline tokens (migrated before V9) bypass ratio gating.
 // Flow:
-// 1. Validate pool accounts (defense in depth)
+// 1. Read DeepPool reserves (pool lamports + vault balance)
 // 2. Ratio gate: check price is 20%+ above baseline
 // 3. Calculate sell amount (15% or 100% if small balance)
-// 4. Read WSOL balance before swap (handles pre-existing WSOL)
-// 5. Raydium swap_base_input CPI (Token-2022 → WSOL)
-// 6. Slippage check: sol_received >= minimum_amount_out
-// 7. Close WSOL ATA → treasury PDA (unwrap to SOL)
+// 4. Record treasury lamports before swap
+// 5. DeepPool swap CPI (Token-2022 → SOL)
+// 6. Measure SOL received from lamport delta
+// 7. Creator fee split (direct lamport manipulation — after CPI)
 // 8. Update treasury state + shared cooldown
 pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) -> Result<()> {
     let mint_key = ctx.accounts.mint.key();
     let current_slot = Clock::get()?.slot;
-    let (mint_0, _) = order_mints(&mint_key);
-    let (vault_0, vault_1) = if mint_0 == mint_key {
-        // Our token is token_0, WSOL is token_1
-        (&ctx.accounts.token_vault, &ctx.accounts.wsol_vault)
-    } else {
-        // WSOL is token_0, our token is token_1
-        (&ctx.accounts.wsol_vault, &ctx.accounts.token_vault)
-    };
-
-    validate_pool_accounts(
-        &ctx.accounts.pool_state,
-        vault_0,
-        vault_1,
-        &mint_key,
-    )?;
 
     let token_amount = ctx.accounts.treasury_token_account.amount;
     require!(token_amount > 0, TorchMarketError::AmountTooSmall);
@@ -110,21 +94,16 @@ pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) ->
             return Ok(());
         }
 
-        let pool_sol_balance = read_token_account_balance(&ctx.accounts.wsol_vault)?;
-        let pool_token_balance = read_token_account_balance(&ctx.accounts.token_vault)?;
-        let is_wsol_token_0 = mint_0 != mint_key; // if our mint is token_0, WSOL isn't
-        let (sol_fees, token_fees) = read_pool_accumulated_fees(
-            &ctx.accounts.pool_state,
-            is_wsol_token_0,
+        let (pool_sol, pool_tokens) = read_deep_pool_reserves(
+            &ctx.accounts.deep_pool,
+            &ctx.accounts.deep_pool_token_vault,
         )?;
-        let pool_sol_balance = pool_sol_balance.saturating_sub(sol_fees);
-        let pool_token_balance = pool_token_balance.saturating_sub(token_fees);
-        require!(pool_token_balance > 0, TorchMarketError::ZeroPoolReserves);
+        require!(pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
 
-        let current_ratio = (pool_sol_balance as u128)
+        let current_ratio = (pool_sol as u128)
             .checked_mul(RATIO_PRECISION)
             .ok_or(TorchMarketError::MathOverflow)?
-            .checked_div(pool_token_balance as u128)
+            .checked_div(pool_tokens as u128)
             .ok_or(TorchMarketError::MathOverflow)? as u64;
         let baseline_ratio = (ctx.accounts.treasury.baseline_sol_reserves as u128)
             .checked_mul(RATIO_PRECISION)
@@ -157,64 +136,52 @@ pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) ->
         return Ok(());
     }
 
-    let wsol_balance_before = read_token_account_balance(&ctx.accounts.treasury_wsol)?;
+    // Record treasury lamports before swap
+    let treasury_lamports_before = ctx.accounts.treasury.to_account_info().lamports();
+
+    // DeepPool swap CPI: sell tokens for SOL
     let treasury_seeds = &[
         TREASURY_SEED,
         mint_key.as_ref(),
         &[ctx.accounts.treasury.bump],
     ];
     let treasury_signer = &[&treasury_seeds[..]][..];
-    let swap_accounts = raydium_cpmm_cpi::cpi::accounts::Swap {
-        payer: ctx.accounts.treasury.to_account_info(),
-        authority: ctx.accounts.raydium_authority.to_account_info(),
-        amm_config: ctx.accounts.amm_config.to_account_info(),
-        pool_state: ctx.accounts.pool_state.to_account_info(),
-        input_token_account: ctx.accounts.treasury_token_account.to_account_info(),
-        output_token_account: ctx.accounts.treasury_wsol.to_account_info(),
-        input_vault: ctx.accounts.token_vault.to_account_info(),
-        output_vault: ctx.accounts.wsol_vault.to_account_info(),
-        input_token_program: ctx.accounts.token_2022_program.to_account_info(),
-        output_token_program: ctx.accounts.token_program.to_account_info(),
-        input_token_mint: ctx.accounts.mint.to_account_info(),
-        output_token_mint: ctx.accounts.wsol_mint.to_account_info(),
-        observation_state: ctx.accounts.observation_state.to_account_info(),
+
+    let swap_accounts = deep_pool::cpi::accounts::Swap {
+        user: ctx.accounts.treasury.to_account_info(),
+        pool: ctx.accounts.deep_pool.to_account_info(),
+        token_mint: ctx.accounts.mint.to_account_info(),
+        token_vault: ctx.accounts.deep_pool_token_vault.to_account_info(),
+        user_token_account: ctx.accounts.treasury_token_account.to_account_info(),
+        token_program: ctx.accounts.token_2022_program.to_account_info(),
+        associated_token_program: ctx.accounts.associated_token_program.to_account_info(),
+        system_program: ctx.accounts.system_program.to_account_info(),
     };
 
-    raydium_cpmm_cpi::cpi::swap_base_input(
+    deep_pool::cpi::swap(
         CpiContext::new_with_signer(
-            ctx.accounts.raydium_program.to_account_info(),
+            ctx.accounts.deep_pool_program.to_account_info(),
             swap_accounts,
             treasury_signer,
         ),
-        sell_amount,
-        minimum_amount_out,
+        deep_pool::SwapArgs {
+            amount_in: sell_amount,
+            minimum_out: minimum_amount_out,
+            buy: false,
+        },
     )?;
 
-    let wsol_balance_after = read_token_account_balance(&ctx.accounts.treasury_wsol)?;
-    let sol_received = wsol_balance_after
-        .checked_sub(wsol_balance_before)
+    // Measure SOL received from lamport delta
+    let treasury_lamports_after = ctx.accounts.treasury.to_account_info().lamports();
+    let sol_received = treasury_lamports_after
+        .checked_sub(treasury_lamports_before)
         .ok_or(TorchMarketError::MathOverflow)?;
     require!(
         sol_received >= minimum_amount_out,
         TorchMarketError::SlippageExceeded
     );
 
-    invoke_signed(
-        &spl_token::instruction::close_account(
-            &ctx.accounts.token_program.key(),
-            &ctx.accounts.treasury_wsol.key(),
-            &ctx.accounts.treasury.key(),
-            &ctx.accounts.treasury.key(),
-            &[],
-        )?,
-        &[
-            ctx.accounts.treasury_wsol.to_account_info(),
-            ctx.accounts.treasury.to_account_info(),
-            ctx.accounts.treasury.to_account_info(),
-        ],
-        treasury_signer,
-    )?;
-
+    // Creator fee split (direct lamport manipulation — after all CPIs)
     let is_community_token = ctx.accounts.treasury.total_bought_back == COMMUNITY_TOKEN_SENTINEL;
     let (creator_amount, treasury_amount) = if is_community_token {
         (0u64, sol_received)

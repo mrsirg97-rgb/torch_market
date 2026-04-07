@@ -4,10 +4,10 @@ use anchor_spl::token_interface::{transfer_checked, TransferChecked};
 use crate::constants::*;
 use crate::contexts::*;
 use crate::errors::TorchMarketError;
-use crate::pool_validation::{read_token_account_balance, validate_pool_accounts, require_min_pool_liquidity, get_depth_max_ltv_bps, is_wsol_vault_0};
+use crate::pool_validation::{read_deep_pool_reserves, require_min_pool_liquidity, get_depth_max_ltv_bps};
 use crate::state::ShortPosition;
 
-// Calculate token debt value in lamports using Raydium pool reserves.
+// Calculate token debt value in lamports using DeepPool reserves.
 // value = token_debt * pool_sol / pool_tokens
 fn calculate_debt_value(
     token_debt: u64,
@@ -172,17 +172,10 @@ pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
         .checked_add(args.sol_collateral)
         .ok_or(TorchMarketError::MathOverflow)?;
 
-    validate_pool_accounts(
-        &ctx.accounts.pool_state,
-        &ctx.accounts.token_vault_0,
-        &ctx.accounts.token_vault_1,
-        &ctx.accounts.mint.key(),
+    let (pool_sol, pool_tokens) = read_deep_pool_reserves(
+        &ctx.accounts.deep_pool,
+        &ctx.accounts.deep_pool_token_vault,
     )?;
-
-    let vault_0_bal = read_token_account_balance(&ctx.accounts.token_vault_0)?;
-    let vault_1_bal = read_token_account_balance(&ctx.accounts.token_vault_1)?;
-    let wsol_is_0 = is_wsol_vault_0(&ctx.accounts.pool_state)?;
-    let (pool_sol, pool_tokens) = if wsol_is_0 { (vault_0_bal, vault_1_bal) } else { (vault_1_bal, vault_0_bal) };
     require!(pool_sol > 0 && pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
 
     let depth_max_ltv = get_depth_max_ltv_bps(pool_sol);
@@ -528,17 +521,11 @@ pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
     let mint_key = ctx.accounts.mint.key();
 
     accrue_interest(position, treasury.interest_rate_bps)?;
-    validate_pool_accounts(
-        &ctx.accounts.pool_state,
-        &ctx.accounts.token_vault_0,
-        &ctx.accounts.token_vault_1,
-        &ctx.accounts.mint.key(),
-    )?;
 
-    let vault_0_bal = read_token_account_balance(&ctx.accounts.token_vault_0)?;
-    let vault_1_bal = read_token_account_balance(&ctx.accounts.token_vault_1)?;
-    let wsol_is_0 = is_wsol_vault_0(&ctx.accounts.pool_state)?;
-    let (pool_sol, pool_tokens) = if wsol_is_0 { (vault_0_bal, vault_1_bal) } else { (vault_1_bal, vault_0_bal) };
+    let (pool_sol, pool_tokens) = read_deep_pool_reserves(
+        &ctx.accounts.deep_pool,
+        &ctx.accounts.deep_pool_token_vault,
+    )?;
     require!(pool_sol > 0 && pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
 
     require_min_pool_liquidity(pool_sol)?;

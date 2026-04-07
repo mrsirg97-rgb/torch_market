@@ -7,7 +7,7 @@ use anchor_spl::{
 
 use crate::constants::*;
 use crate::errors::TorchMarketError;
-use crate::pool_validation::{order_mints, derive_pool_state, derive_pool_vault, derive_observation_state};
+use crate::pool_validation::{derive_deep_pool, derive_deep_pool_vault, derive_deep_pool_lp_mint};
 use crate::state::*;
 use crate::token_2022_utils::TOKEN_2022_PROGRAM_ID;
 
@@ -364,42 +364,19 @@ pub struct SwapFeesToSol<'info> {
         associated_token::token_program = token_2022_program,
     )]
     pub treasury_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
-    /// CHECK: Validated by address constraint (ATA derivation)
-    #[account(
-        mut,
-        address = anchor_spl::associated_token::get_associated_token_address(
-            &treasury.key(),
-            &WSOL_MINT,
-        ) @ TorchMarketError::InvalidWsolAccount,
-    )]
-    pub treasury_wsol: AccountInfo<'info>,
-    /// CHECK: Raydium CPMM program - validated by address constraint
-    #[account(address = crate::constants::RAYDIUM_CPMM_PROGRAM_ID)]
-    pub raydium_program: AccountInfo<'info>,
-    /// CHECK: Raydium authority PDA - derived from Raydium program
-    pub raydium_authority: AccountInfo<'info>,
-    /// CHECK: Validated by address constraint
-    #[account(address = crate::constants::RAYDIUM_AMM_CONFIG @ TorchMarketError::InvalidPoolAccount)]
-    pub amm_config: AccountInfo<'info>,
-    /// CHECK: Validated by address constraint (PDA derived from token mint)
-    #[account(mut, address = derive_pool_state(&mint.key()) @ TorchMarketError::InvalidPoolAccount)]
-    pub pool_state: AccountInfo<'info>,
-    /// CHECK: Validated by address constraint (PDA derived from pool_state + token mint)
-    #[account(mut, address = derive_pool_vault(&pool_state.key(), &mint.key()) @ TorchMarketError::InvalidPoolAccount)]
-    pub token_vault: AccountInfo<'info>,
-    /// CHECK: Validated by address constraint (PDA derived from pool_state + WSOL mint)
-    #[account(mut, address = derive_pool_vault(&pool_state.key(), &WSOL_MINT) @ TorchMarketError::InvalidPoolAccount)]
-    pub wsol_vault: AccountInfo<'info>,
-    /// CHECK: Validated as WSOL
-    #[account(address = WSOL_MINT)]
-    pub wsol_mint: AccountInfo<'info>,
-    /// CHECK: Validated by address constraint (PDA derived from pool_state)
-    #[account(mut, address = derive_observation_state(&pool_state.key()) @ TorchMarketError::InvalidPoolAccount)]
-    pub observation_state: AccountInfo<'info>,
-    pub token_program: Interface<'info, TokenInterface>,
+    /// CHECK: DeepPool program - validated by address constraint
+    #[account(address = DEEP_POOL_PROGRAM_ID)]
+    pub deep_pool_program: AccountInfo<'info>,
+    /// CHECK: DeepPool pool PDA - validated by address constraint
+    #[account(mut, address = derive_deep_pool(&mint.key()) @ TorchMarketError::InvalidPoolAccount)]
+    pub deep_pool: AccountInfo<'info>,
+    /// CHECK: DeepPool token vault - validated by address constraint
+    #[account(mut, address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
+    pub deep_pool_token_vault: AccountInfo<'info>,
     /// CHECK: Token-2022 program for project tokens
     #[account(address = TOKEN_2022_PROGRAM_ID)]
     pub token_2022_program: AccountInfo<'info>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 
@@ -489,8 +466,6 @@ pub struct StarToken<'info> {
     pub system_program: Program<'info, System>,
 }
 
-use crate::migration::WSOL_MINT;
-
 #[derive(Accounts)]
 pub struct InitializeProtocolTreasury<'info> {
     #[account(mut)]
@@ -553,7 +528,8 @@ pub struct ClaimProtocolRewards<'info> {
 }
 
 #[derive(Accounts)]
-pub struct FundMigrationWsol<'info> {
+pub struct FundMigrationSol<'info> {
+    #[account(mut)]
     pub payer: Signer<'info>,
     pub mint: Box<InterfaceAccount<'info, MintInterface>>,
     #[account(
@@ -565,15 +541,6 @@ pub struct FundMigrationWsol<'info> {
         constraint = !bonding_curve.migrated @ TorchMarketError::AlreadyMigrated,
     )]
     pub bonding_curve: Box<Account<'info, BondingCurve>>,
-    /// CHECK: Validated as bonding curve's WSOL ATA via address constraint.
-    #[account(
-        mut,
-        address = anchor_spl::associated_token::get_associated_token_address(
-            &bonding_curve.key(),
-            &WSOL_MINT,
-        ) @ TorchMarketError::InvalidWsolAccount,
-    )]
-    pub bc_wsol: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]
@@ -625,61 +592,30 @@ pub struct MigrateToDex<'info> {
         bump = treasury_lock.bump,
     )]
     pub treasury_lock: Box<Account<'info, TreasuryLock>>,
-    /// CHECK: Validated as bonding curve's WSOL ATA via address constraint.
-    #[account(
-        mut,
-        address = anchor_spl::associated_token::get_associated_token_address(
-            &bonding_curve.key(),
-            &WSOL_MINT,
-        ) @ TorchMarketError::InvalidWsolAccount,
-    )]
-    pub bc_wsol: AccountInfo<'info>,
-    /// CHECK: SPL Token ATA for payer
-    #[account(mut)]
-    pub payer_wsol: AccountInfo<'info>,
-    /// CHECK: Token-2022 ATA for payer
+    /// CHECK: Token-2022 ATA for payer — receives tokens from bonding curve, deposits to DeepPool
     #[account(mut)]
     pub payer_token: AccountInfo<'info>,
-    /// CHECK: Raydium CPMM program - validated by address constraint
-    #[account(address = crate::constants::RAYDIUM_CPMM_PROGRAM_ID)]
-    pub raydium_program: AccountInfo<'info>,
-    /// CHECK: Validated by address constraint
-    #[account(address = crate::constants::RAYDIUM_AMM_CONFIG @ TorchMarketError::InvalidPoolAccount)]
-    pub amm_config: AccountInfo<'info>,
-    /// CHECK: Derived from Raydium program
-    pub raydium_authority: AccountInfo<'info>,
-    /// CHECK: Passed to Raydium CPI - Raydium validates/creates this
+    /// CHECK: DeepPool program - validated by address constraint
+    #[account(address = DEEP_POOL_PROGRAM_ID)]
+    pub deep_pool_program: AccountInfo<'info>,
+    /// CHECK: DeepPool pool PDA — will be initialized by create_pool CPI
+    #[account(mut, address = derive_deep_pool(&mint.key()) @ TorchMarketError::InvalidPoolAccount)]
+    pub deep_pool: AccountInfo<'info>,
+    /// CHECK: DeepPool token vault PDA — will be initialized by create_pool CPI
+    #[account(mut, address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
+    pub deep_pool_token_vault: AccountInfo<'info>,
+    /// CHECK: DeepPool LP mint PDA — will be initialized by create_pool CPI
+    #[account(mut, address = derive_deep_pool_lp_mint(&deep_pool.key()) @ TorchMarketError::InvalidPoolAccount)]
+    pub deep_pool_lp_mint: AccountInfo<'info>,
+    /// CHECK: Payer's LP ATA — receives LP tokens from create_pool, then burned
     #[account(mut)]
-    pub pool_state: AccountInfo<'info>,
-    /// CHECK: Validated as WSOL
-    #[account(address = WSOL_MINT)]
-    pub wsol_mint: AccountInfo<'info>,
-    /// CHECK: Created by Raydium CPI
-    #[account(mut)]
-    pub token_0_vault: AccountInfo<'info>,
-    /// CHECK: Created by Raydium CPI
-    #[account(mut)]
-    pub token_1_vault: AccountInfo<'info>,
-    /// CHECK: Passed to Raydium CPI - Raydium validates/creates this
-    #[account(mut)]
-    pub lp_mint: AccountInfo<'info>,
-    /// CHECK: Created for receiving LP tokens
-    #[account(mut)]
-    pub payer_lp_token: AccountInfo<'info>,
-    /// CHECK: Passed to Raydium CPI - Raydium validates/creates this
-    #[account(mut)]
-    pub observation_state: AccountInfo<'info>,
-    /// CHECK: Raydium's fee receiver — validated by Raydium CPI
-    #[account(mut)]
-    pub create_pool_fee: AccountInfo<'info>,
+    pub payer_lp_account: AccountInfo<'info>,
     pub token_program: Interface<'info, TokenInterface>,
     /// CHECK: Token-2022 program for project tokens
     #[account(address = TOKEN_2022_PROGRAM_ID)]
     pub token_2022_program: AccountInfo<'info>,
-    /// CHECK: Associated token program
-    pub associated_token_program: AccountInfo<'info>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
-    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
@@ -726,15 +662,12 @@ pub struct Borrow<'info> {
         bump
     )]
     pub loan_position: Box<Account<'info, LoanPosition>>,
-    /// CHECK: Validated by address constraint (PDA derived from token mint)
-    #[account(address = derive_pool_state(&mint.key()) @ TorchMarketError::InvalidPoolAccount)]
-    pub pool_state: AccountInfo<'info>,
-    /// CHECK: Validated by address constraint (PDA derived from pool_state + token0 mint)
-    #[account(address = derive_pool_vault(&pool_state.key(), &order_mints(&mint.key()).0) @ TorchMarketError::InvalidPoolAccount)]
-    pub token_vault_0: AccountInfo<'info>,
-    /// CHECK: Validated by address constraint (PDA derived from pool_state + token1 mint)
-    #[account(address = derive_pool_vault(&pool_state.key(), &order_mints(&mint.key()).1) @ TorchMarketError::InvalidPoolAccount)]
-    pub token_vault_1: AccountInfo<'info>,
+    /// CHECK: DeepPool pool PDA - validated by address constraint
+    #[account(address = derive_deep_pool(&mint.key()) @ TorchMarketError::InvalidPoolAccount)]
+    pub deep_pool: AccountInfo<'info>,
+    /// CHECK: DeepPool token vault - validated by address constraint
+    #[account(address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
+    pub deep_pool_token_vault: AccountInfo<'info>,
     #[account(mut)]
     pub torch_vault: Option<Box<Account<'info, TorchVault>>>,
     #[account(
@@ -852,15 +785,12 @@ pub struct Liquidate<'info> {
         constraint = loan_position.borrowed_amount > 0 @ TorchMarketError::NoActiveLoan,
     )]
     pub loan_position: Box<Account<'info, LoanPosition>>,
-    /// CHECK: Validated by address constraint (PDA derived from token mint)
-    #[account(address = derive_pool_state(&mint.key()) @ TorchMarketError::InvalidPoolAccount)]
-    pub pool_state: AccountInfo<'info>,
-    /// CHECK: Validated by address constraint (PDA derived from pool_state + token0 mint)
-    #[account(address = derive_pool_vault(&pool_state.key(), &order_mints(&mint.key()).0) @ TorchMarketError::InvalidPoolAccount)]
-    pub token_vault_0: AccountInfo<'info>,
-    /// CHECK: Validated by address constraint (PDA derived from pool_state + token1 mint)
-    #[account(address = derive_pool_vault(&pool_state.key(), &order_mints(&mint.key()).1) @ TorchMarketError::InvalidPoolAccount)]
-    pub token_vault_1: AccountInfo<'info>,
+    /// CHECK: DeepPool pool PDA - validated by address constraint
+    #[account(address = derive_deep_pool(&mint.key()) @ TorchMarketError::InvalidPoolAccount)]
+    pub deep_pool: AccountInfo<'info>,
+    /// CHECK: DeepPool token vault - validated by address constraint
+    #[account(address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
+    pub deep_pool_token_vault: AccountInfo<'info>,
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
@@ -1019,33 +949,6 @@ pub struct WithdrawTokens<'info> {
 }
 
 #[derive(Accounts)]
-pub struct FundVaultWsol<'info> {
-    pub signer: Signer<'info>,
-    #[account(
-        mut,
-        seeds = [TORCH_VAULT_SEED, torch_vault.creator.as_ref()],
-        bump = torch_vault.bump,
-    )]
-    pub torch_vault: Account<'info, TorchVault>,
-    #[account(
-        seeds = [VAULT_WALLET_LINK_SEED, signer.key().as_ref()],
-        bump = vault_wallet_link.bump,
-        constraint = vault_wallet_link.vault == torch_vault.key()
-            @ TorchMarketError::VaultWalletLinkMismatch,
-    )]
-    pub vault_wallet_link: Account<'info, VaultWalletLink>,
-    /// CHECK: Address validated as vault's WSOL ATA via PDA derivation.
-    #[account(
-        mut,
-        address = anchor_spl::associated_token::get_associated_token_address(
-            &torch_vault.key(),
-            &crate::migration::WSOL_MINT,
-        ) @ TorchMarketError::InvalidWsolAccount,
-    )]
-    pub vault_wsol_account: AccountInfo<'info>,
-}
-
-#[derive(Accounts)]
 pub struct VaultSwap<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
@@ -1077,39 +980,15 @@ pub struct VaultSwap<'info> {
         associated_token::token_program = token_2022_program,
     )]
     pub vault_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
-    /// CHECK: Address validated as vault's WSOL ATA via PDA derivation.
-    #[account(
-        mut,
-        address = anchor_spl::associated_token::get_associated_token_address(
-            &torch_vault.key(),
-            &crate::migration::WSOL_MINT,
-        ) @ TorchMarketError::InvalidWsolAccount,
-    )]
-    pub vault_wsol_account: AccountInfo<'info>,
-    /// CHECK: Raydium CPMM program - validated by address constraint
-    #[account(address = crate::constants::RAYDIUM_CPMM_PROGRAM_ID)]
-    pub raydium_program: AccountInfo<'info>,
-    /// CHECK: Raydium authority PDA - derived from Raydium program
-    pub raydium_authority: AccountInfo<'info>,
-    /// CHECK: Validated by address constraint
-    #[account(address = crate::constants::RAYDIUM_AMM_CONFIG @ TorchMarketError::InvalidPoolAccount)]
-    pub amm_config: AccountInfo<'info>,
-    /// CHECK: Validated by address constraint (PDA derived from token mint)
-    #[account(mut, address = derive_pool_state(&mint.key()) @ TorchMarketError::InvalidPoolAccount)]
-    pub pool_state: AccountInfo<'info>,
-    /// CHECK: Validated by address constraint (PDA derived from pool_state + token0 mint)
-    #[account(mut, address = derive_pool_vault(&pool_state.key(), &order_mints(&mint.key()).0) @ TorchMarketError::InvalidPoolAccount)]
-    pub pool_token_vault_0: AccountInfo<'info>,
-    /// CHECK: Validated by address constraint (PDA derived from pool_state + token1 mint)
-    #[account(mut, address = derive_pool_vault(&pool_state.key(), &order_mints(&mint.key()).1) @ TorchMarketError::InvalidPoolAccount)]
-    pub pool_token_vault_1: AccountInfo<'info>,
-    /// CHECK: Validated by address constraint (PDA derived from pool_state)
-    #[account(mut, address = derive_observation_state(&pool_state.key()) @ TorchMarketError::InvalidPoolAccount)]
-    pub observation_state: AccountInfo<'info>,
-    /// CHECK: Validated as WSOL by address constraint
-    #[account(address = WSOL_MINT)]
-    pub wsol_mint: AccountInfo<'info>,
-    pub token_program: Interface<'info, TokenInterface>,
+    /// CHECK: DeepPool program - validated by address constraint
+    #[account(address = DEEP_POOL_PROGRAM_ID)]
+    pub deep_pool_program: AccountInfo<'info>,
+    /// CHECK: DeepPool pool PDA - validated by address constraint
+    #[account(mut, address = derive_deep_pool(&mint.key()) @ TorchMarketError::InvalidPoolAccount)]
+    pub deep_pool: AccountInfo<'info>,
+    /// CHECK: DeepPool token vault - validated by address constraint
+    #[account(mut, address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
+    pub deep_pool_token_vault: AccountInfo<'info>,
     /// CHECK: Validated by address constraint
     #[account(address = TOKEN_2022_PROGRAM_ID)]
     pub token_2022_program: AccountInfo<'info>,
@@ -1208,12 +1087,12 @@ pub struct OpenShort<'info> {
         associated_token::token_program = token_program,
     )]
     pub shorter_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
-    /// CHECK: Validated in handler via validate_pool_accounts
-    pub pool_state: AccountInfo<'info>,
-    /// CHECK: Validated in handler via validate_pool_accounts
-    pub token_vault_0: AccountInfo<'info>,
-    /// CHECK: Validated in handler via validate_pool_accounts
-    pub token_vault_1: AccountInfo<'info>,
+    /// CHECK: DeepPool pool PDA - validated by address constraint
+    #[account(address = derive_deep_pool(&mint.key()) @ TorchMarketError::InvalidPoolAccount)]
+    pub deep_pool: AccountInfo<'info>,
+    /// CHECK: DeepPool token vault - validated by address constraint
+    #[account(address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
+    pub deep_pool_token_vault: AccountInfo<'info>,
     #[account(mut)]
     pub torch_vault: Option<Box<Account<'info, TorchVault>>>,
     pub vault_wallet_link: Option<Box<Account<'info, VaultWalletLink>>>,
@@ -1331,12 +1210,12 @@ pub struct LiquidateShort<'info> {
         associated_token::token_program = token_program,
     )]
     pub liquidator_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
-    /// CHECK: Validated in handler via validate_pool_accounts
-    pub pool_state: AccountInfo<'info>,
-    /// CHECK: Validated in handler via validate_pool_accounts
-    pub token_vault_0: AccountInfo<'info>,
-    /// CHECK: Validated in handler via validate_pool_accounts
-    pub token_vault_1: AccountInfo<'info>,
+    /// CHECK: DeepPool pool PDA - validated by address constraint
+    #[account(address = derive_deep_pool(&mint.key()) @ TorchMarketError::InvalidPoolAccount)]
+    pub deep_pool: AccountInfo<'info>,
+    /// CHECK: DeepPool token vault - validated by address constraint
+    #[account(address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
+    pub deep_pool_token_vault: AccountInfo<'info>,
     #[account(mut)]
     pub torch_vault: Option<Box<Account<'info, TorchVault>>>,
     pub vault_wallet_link: Option<Box<Account<'info, VaultWalletLink>>>,

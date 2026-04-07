@@ -28,7 +28,7 @@ This is not a launchpad. This is a protocol that turns every token into a self-c
 
 - **Depth-based risk bands replace static circuit breakers.** Maximum LTV adapts to pool depth: 25% for thin pools (<50 SOL), scaling to 50% for deep pools (500+ SOL). Deeper pools are harder to manipulate, so higher leverage is permitted. Pools below 5 SOL block new positions entirely. Combined with per-user borrow caps, the effective LTV for long positions is typically <5% — making liquidation require a >90% price crash. No off-chain keepers, no oracles, no stored baseline — the pool itself is the sole source of truth.
 
-- **No rug pull is structurally possible.** Mint and freeze authority are revoked permanently at creation. LP tokens are burned. Liquidity is locked forever. Not by promise — by code.
+- **No rug pull is structurally possible.** Mint and freeze authority are revoked permanently at creation. DeepPool liquidity is protocol-owned and immutable — there are no LP tokens to extract. Not by promise — by code.
 
 - **Creator economics are immutable.** Creators choose at launch: community token (100% of fees to treasury, zero extraction) or creator token (85/15 split). The default is community. The choice is permanent.
 
@@ -88,11 +88,11 @@ Bonding completes at 100 SOL (Flame) or 200 SOL (Torch). Every wallet is capped 
 
 When bonding completes, anyone can trigger migration. No creator, no admin, no single party can block it.
 
-The protocol creates a Raydium CPMM pool with the curve's SOL and remaining tokens, **burns all LP tokens** (liquidity locked forever), activates the 0.04% transfer fee, and **revokes mint and freeze authority permanently**.
+The protocol creates a DeepPool with the curve's SOL and remaining tokens, activates the 0.04% transfer fee, and **revokes mint and freeze authority permanently**. DeepPool is torch.market's own CPMM — no external AMM dependency. Swap fees auto-compound into pool reserves, growing liquidity from volume alone.
 
 ### Phase 3: Trading
 
-Post-migration, the token trades on Raydium. The 0.04% transfer fee collects on every transfer — wallet to wallet, DEX swaps, everything. Anyone can harvest these fees and swap them to SOL, growing the treasury.
+Post-migration, the token trades on DeepPool. The 0.04% transfer fee collects on every transfer — wallet to wallet, DEX swaps, everything. Anyone can harvest these fees and swap them to SOL, growing the treasury. Meanwhile, DeepPool's 0.25% swap fee auto-compounds into pool reserves — the pool grows deeper with every trade.
 
 The harvest cycle:
 
@@ -150,7 +150,7 @@ On torch:
 |-----------|--------|
 | Lending pool | Token treasury — funded by its own fees |
 | Short pool | Treasury lock — 300M tokens locked at creation |
-| Price feed | Raydium pool reserves — created at migration |
+| Price feed | DeepPool reserves — created at migration, auto-compounding |
 | Liquidation | Permissionless — anyone can call |
 | Recapitalization | 0.04% transfer fee — perpetual |
 
@@ -164,7 +164,7 @@ On torch, shorts borrow real tokens and sell them on the real market. That sell 
 
 There is no oracle to manipulate. There is no funding rate to spike. There is no LP pool praying it stays solvent. The counterparty is 300M tokens that were locked at creation for exactly this purpose.
 
-Most perps protocols have a single point of failure: the off-chain price feed. If the keeper stops cranking, the oracle goes stale, and either liquidations halt (bad debt accumulates) or positions get liquidated against a stale price (users get robbed). Torch has zero off-chain dependencies — the program reads Raydium pool state directly. Depth-based risk bands adapt LTV to pool manipulation resistance: thin pools get conservative limits, deep pools get full LTV. No stored baseline that can go stale, no oracle that can be manipulated, no keeper that can go offline.
+Most perps protocols have a single point of failure: the off-chain price feed. If the keeper stops cranking, the oracle goes stale, and either liquidations halt (bad debt accumulates) or positions get liquidated against a stale price (users get robbed). Torch has zero off-chain dependencies — the program reads DeepPool state directly. Depth-based risk bands adapt LTV to pool manipulation resistance: thin pools get conservative limits, deep pools get full LTV. No stored baseline that can go stale, no oracle that can be manipulated, no keeper that can go offline.
 
 ---
 
@@ -194,9 +194,9 @@ Every parameter is readable on-chain. Every outcome is calculable before executi
 
 ## Verification
 
-71 Kani proof harnesses. 55 end-to-end tests. All passing. Cross-validated by independent audit (OpenAI o3).
+73 Kani proof harnesses. 53 end-to-end tests. All passing. Cross-validated by independent audit (OpenAI o3).
 
-Core arithmetic is formally verified with [Kani](https://model-checking.github.io/kani/) covering every possible input in constrained ranges: fee calculations, bonding curve pricing, lending formulas, liquidation lifecycle, short selling, bad debt accounting, depth-based risk band boundaries, circuit breaker band math, reward distribution, migration conservation, token distribution. No SOL created from nothing. No tokens minted from thin air. No fees exceeding stated rates.
+Core arithmetic is formally verified with [Kani](https://model-checking.github.io/kani/) covering every possible input in constrained ranges: fee calculations, bonding curve pricing, lending formulas, liquidation lifecycle, short selling, bad debt accounting, depth-based risk band boundaries, circuit breaker band math, reward distribution, migration conservation, token distribution, and DeepPool integration. No SOL created from nothing. No tokens minted from thin air. No fees exceeding stated rates.
 
 See [verification.md](https://torch.market/verification.md).
 

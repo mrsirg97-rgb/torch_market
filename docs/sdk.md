@@ -2,7 +2,7 @@
 
 TypeScript SDK for [torch.market](https://torch.market) — a protocol where every token launches with its own margin market.
 
-Every token on Torch gets a bonding curve for price discovery, a treasury funded by a dynamic 17.5%→2.5% SOL rate, a 300M token lending reserve locked at creation, and a full margin system (lending + short selling) that activates after migration to Raydium. 100% of tokens go to buyers — no vote vault, no splits. The SDK builds transactions locally from the on-chain Anchor IDL, reads all state directly from Solana RPC, and handles routing between bonding curves and DEX pools automatically. No API server. No middleman.
+Every token on Torch gets a bonding curve for price discovery, a treasury funded by a dynamic 17.5%→2.5% SOL rate, a 300M token lending reserve locked at creation, and a full margin system (lending + short selling) that activates after migration to DeepPool. 100% of tokens go to buyers — no vote vault, no splits. The SDK builds transactions locally from the on-chain Anchor IDL, reads all state directly from Solana RPC, and handles routing between bonding curves and DEX pools automatically. No API server. No middleman.
 
 ## Install
 
@@ -107,7 +107,7 @@ All builders return `{ transaction: VersionedTransaction, message: string }`.
 | `buildCreateTokenTransaction(connection, params)` | Launch a new token with bonding curve + treasury + 300M token lock |
 | `sendCreateToken(connection, wallet, params)` | Build + simulate + submit token creation via `signAndSendTransaction` |
 | `buildStarTransaction(connection, params)` | Star a token (0.02 SOL, sybil-resistant) |
-| `buildMigrateTransaction(connection, params)` | Migrate bonding-complete token to Raydium (permissionless) |
+| `buildMigrateTransaction(connection, params)` | Migrate bonding-complete token to DeepPool (permissionless) |
 
 ### Vault Management
 
@@ -148,7 +148,7 @@ Borrow real tokens from the 300M treasury lock, sell on the market, buy back to 
 | Function | Description |
 |----------|-------------|
 | `buildHarvestFeesTransaction(connection, params)` | Harvest Token-2022 transfer fees (0.04%) into treasury |
-| `buildSwapFeesToSolTransaction(connection, params)` | Swap harvested tokens to SOL via Raydium |
+| `buildSwapFeesToSolTransaction(connection, params)` | Swap harvested tokens to SOL via DeepPool |
 | `buildReclaimFailedTokenTransaction(connection, params)` | Reclaim tokens inactive 7+ days |
 
 ### SAID Protocol

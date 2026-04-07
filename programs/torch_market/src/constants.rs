@@ -48,35 +48,11 @@ pub const STAR_RECORD_SEED: &[u8] = b"star_record";
 pub const CREATOR_REWARD_THRESHOLD: u64 = 2000;
 pub const MIN_MIGRATION_SOL: u64 = 1_500_000_000; // 1.5 SOL
 
-// Raydium CPMM Program ID
-// Mainnet: CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C
-// Devnet:  CPMDWBwJDtYax9qW7AyRuVC19Cc4L4Vcy4n2BHAbHkCW
-#[cfg(not(feature = "devnet"))]
-pub const RAYDIUM_CPMM_PROGRAM_ID: anchor_lang::prelude::Pubkey = anchor_lang::prelude::Pubkey::new_from_array([
-    169, 42, 90, 139, 79, 41, 89, 82, 132, 37, 80, 170, 147, 253, 91, 149,
-    181, 172, 230, 168, 235, 146, 12, 147, 148, 46, 67, 105, 12, 32, 236, 115,
-]);
-#[cfg(feature = "devnet")]
-pub const RAYDIUM_CPMM_PROGRAM_ID: anchor_lang::prelude::Pubkey = anchor_lang::prelude::Pubkey::new_from_array([
-    169, 42, 49, 26, 136, 152, 134, 77, 32, 99, 200, 252, 203, 83, 110, 30,
-    138, 48, 77, 141, 83, 152, 76, 10, 78, 179, 193, 68, 7, 214, 116, 231,
-]);
-
-// Raydium AMM Config
-// Constrains which Raydium pool can be used for vault swaps.
-// Prevents account substitution with a rogue pool using a different fee tier.
-// Mainnet: D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2
-// Devnet:  9zSzfkYy6awexsHvmggeH36pfVUdDGyCcwmjT3AQPBj6
-#[cfg(not(feature = "devnet"))]
-pub const RAYDIUM_AMM_CONFIG: anchor_lang::prelude::Pubkey = anchor_lang::prelude::Pubkey::new_from_array([
-    179, 33, 63, 186, 139, 249, 200, 127, 169, 30, 71, 129, 150, 40, 195, 131,
-    224, 11, 234, 126, 152, 199, 160, 62, 3, 186, 16, 105, 207, 195, 246, 243,
-]);
-#[cfg(feature = "devnet")]
-pub const RAYDIUM_AMM_CONFIG: anchor_lang::prelude::Pubkey = anchor_lang::prelude::Pubkey::new_from_array([
-    133, 148, 254, 76, 78, 52, 206, 247, 143, 191, 153, 193, 196, 159, 191, 131,
-    75, 191, 127, 200, 157, 54, 17, 92, 40, 71, 106, 78, 131, 72, 250, 241,
-]);
+// DeepPool Program ID: CcwF61GW14AcxCS4E2zedHXdFXy8x8GQPvfxZrs2x2eT
+pub const DEEP_POOL_PROGRAM_ID: anchor_lang::prelude::Pubkey = deep_pool::ID;
+pub const DEEP_POOL_POOL_SEED: &[u8] = b"deep_pool";
+pub const DEEP_POOL_VAULT_SEED: &[u8] = b"pool_vault";
+pub const DEEP_POOL_LP_MINT_SEED: &[u8] = b"pool_lp_mint";
 
 pub const STAR_COST_LAMPORTS: u64 = 20_000_000;
 pub const CREATOR_FEE_SHARE_BPS: u16 = 1500;

@@ -95,7 +95,7 @@ pub enum TorchMarketError {
     #[msg("Token not migrated to DEX yet")]
     NotMigrated,
 
-    #[msg("Raydium pool creation failed")]
+    #[msg("DEX pool creation failed")]
     PoolCreationFailed,
 
     #[msg("Insufficient treasury balance for migration fee")]
@@ -164,7 +164,7 @@ pub enum TorchMarketError {
     #[msg("Repay amount exceeds total owed")]
     RepayExceedsDebt,
 
-    #[msg("Invalid Raydium pool account (wrong owner, vault, or mint)")]
+    #[msg("Invalid pool account")]
     InvalidPoolAccount,
 
     #[msg("Insufficient vault balance")]
@@ -179,8 +179,8 @@ pub enum TorchMarketError {
     #[msg("Wallet link does not point to the provided vault")]
     VaultWalletLinkMismatch,
 
-    #[msg("Invalid WSOL account - must be vault's WSOL ATA")]
-    InvalidWsolAccount,
+    #[msg("Invalid pool vault account")]
+    InvalidPoolVault,
 
     #[msg("Invalid bonding target: must be 50, 100, or 200 SOL")]
     InvalidBondingTarget,

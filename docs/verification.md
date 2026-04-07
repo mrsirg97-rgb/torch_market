@@ -6,7 +6,7 @@ We used [Kani](https://model-checking.github.io/kani/), a formal verification to
 
 This is **not** a security audit. It proves the arithmetic is correct, but does not cover access control, account validation, or economic attacks. See [What Is NOT Verified](#what-is-not-verified) for full scope limitations.
 
-**71 proof harnesses. All passing. Zero failures.**
+**73 proof harnesses. All passing. Zero failures.**
 
 ---
 
@@ -16,7 +16,7 @@ torch_market's core arithmetic has been formally verified using [Kani](https://m
 
 **Tool:** Kani Rust Verifier 0.67.0 / CBMC 6.8.0
 **Target:** `torch_market` v10.2.5
-**Harnesses:** 71 proof harnesses, all passing
+**Harnesses:** 73 proof harnesses, all passing
 **Source:** `programs/torch_market/src/kani_proofs.rs`
 
 ## What Is Formally Verified
@@ -210,7 +210,7 @@ These harnesses verify the post-migration treasury sell mechanism: fee subtracti
 
 | Harness | Property | Input Range |
 |---------|----------|-------------|
-| `verify_ratio_gate_fee_subtraction_safe` | After subtracting Raydium fees from vault balances: ratio computation succeeds when `pool_tokens > 0`; fees never inflate balances | Up to 10K SOL vault, fees bounded by vault balance |
+| `verify_ratio_gate_fee_subtraction_safe` | After subtracting swap fees from vault balances: ratio computation succeeds when `pool_tokens > 0`; fees never inflate balances | Up to 10K SOL vault, fees bounded by vault balance |
 | `verify_treasury_sell_amount_bounded` | Sell amount never exceeds balance; 100% below 1M token threshold; exactly 15% above; non-zero for positive amounts | 0 to TOTAL_SUPPLY tokens |
 
 ## Verification Methodology
@@ -253,7 +253,7 @@ Eight harnesses were dropped during verification because they prove structurally
 | `verify_ltv_100_percent` | `(v * 10000) / v == 10000` is a mathematical tautology. SAT solvers cannot efficiently prove symbolic u128 division cancellation. |
 | `verify_buyback_respects_reserve` | Buyback reserve/amount constraints are enforced by handler-level checks, not arithmetic. Property is structural given the config validation. |
 
-These properties remain true by construction. The remaining 70 harnesses cover every non-tautological safety property.
+These properties remain true by construction. The remaining 73 harnesses cover every non-tautological safety property.
 
 ## What Is NOT Verified
 
@@ -264,7 +264,7 @@ Kani proofs verify **isolated pure functions** extracted from the handlers. They
 | **Access control** | Who can call `migrate_to_dex`, `update_dev_wallet` | Enforced by Anchor `#[derive(Accounts)]` constraints, not arithmetic |
 | **Account validation** | Fake PDAs, wrong mints, account substitution | Requires on-chain runtime context |
 | **State machine transitions** | Can you sell before buying? Migrate before bonding completes? | Requires multi-instruction sequencing |
-| **CPI safety** | Reentrancy via Raydium CPIs, privilege escalation | Cross-program invocation is outside arithmetic scope |
+| **CPI safety** | Reentrancy via DeepPool CPIs, privilege escalation | Cross-program invocation is outside arithmetic scope |
 | **Economic attacks** | Sandwich attacks, oracle manipulation, flash loans | Require multi-transaction economic modeling |
 | **Anchor framework correctness** | `init-if-needed` edge cases, PDA derivation | Framework-level concerns |
 | **Concurrency** | Parallel transaction ordering, front-running | Solana runtime behavior |
@@ -275,7 +275,7 @@ The arithmetic layer is formally verified. Audit effort should focus on:
 
 1. **Access control and account validation** -- can unauthorized callers invoke privileged instructions?
 2. **State transition integrity** -- are there invalid state transitions (e.g., double migration, selling into an empty curve)?
-3. **CPI safety** -- can Raydium CPIs be exploited for reentrancy or privilege escalation?
+3. **CPI safety** -- can DeepPool CPIs be exploited for reentrancy or privilege escalation?
 4. **Economic attack surface** -- sandwich attacks on bonding curve buys, oracle-free lending price manipulation
 5. **Token-2022 edge cases** -- transfer fee interaction with Token-2022 extensions across CPIs
 
@@ -294,7 +294,7 @@ cargo kani
 cargo kani --harness verify_buy_fee_conservation
 ```
 
-All 70 harnesses pass. Most complete in under 1 second; the slowest (`verify_transfer_fee_bounds`, `verify_treasury_rate_monotonic`) take 30-55 seconds due to larger SAT formula complexity.
+All 73 harnesses pass. Most complete in under 1 second; the slowest (`verify_transfer_fee_bounds`, `verify_treasury_rate_monotonic`) take 30-55 seconds due to larger SAT formula complexity.
 
 ## Constants Reference
 

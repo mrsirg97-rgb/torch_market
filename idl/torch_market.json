@@ -2,7 +2,7 @@
   "address": "8hbUkonssSEEtkqzwM7ZcZrD9evacM92TcWSooVF4BeT",
   "metadata": {
     "name": "torch_market",
-    "version": "10.2.5",
+    "version": "20.0.0",
     "spec": "0.1.0",
     "description": "torch.market"
   },
@@ -253,13 +253,10 @@
           }
         },
         {
-          "name": "pool_state"
+          "name": "deep_pool"
         },
         {
-          "name": "token_vault_0"
-        },
-        {
-          "name": "token_vault_1"
+          "name": "deep_pool_token_vault"
         },
         {
           "name": "torch_vault",
@@ -1799,20 +1796,21 @@
       "args": []
     },
     {
-      "name": "fund_migration_wsol",
+      "name": "fund_migration_sol",
       "discriminator": [
-        143,
-        163,
-        2,
-        0,
-        85,
-        235,
-        44,
-        150
+        173,
+        179,
+        142,
+        58,
+        105,
+        37,
+        185,
+        50
       ],
       "accounts": [
         {
           "name": "payer",
+          "writable": true,
           "signer": true
         },
         {
@@ -1847,99 +1845,9 @@
               }
             ]
           }
-        },
-        {
-          "name": "bc_wsol",
-          "writable": true
         }
       ],
       "args": []
-    },
-    {
-      "name": "fund_vault_wsol",
-      "discriminator": [
-        100,
-        184,
-        41,
-        110,
-        24,
-        100,
-        34,
-        246
-      ],
-      "accounts": [
-        {
-          "name": "signer",
-          "signer": true
-        },
-        {
-          "name": "torch_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  116,
-                  111,
-                  114,
-                  99,
-                  104,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "torch_vault.creator",
-                "account": "TorchVault"
-              }
-            ]
-          }
-        },
-        {
-          "name": "vault_wallet_link",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  118,
-                  97,
-                  117,
-                  108,
-                  116,
-                  95,
-                  119,
-                  97,
-                  108,
-                  108,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "signer"
-              }
-            ]
-          }
-        },
-        {
-          "name": "vault_wsol_account",
-          "writable": true
-        }
-      ],
-      "args": [
-        {
-          "name": "amount",
-          "type": "u64"
-        }
-      ]
     },
     {
       "name": "harvest_fees",
@@ -2512,13 +2420,10 @@
           }
         },
         {
-          "name": "pool_state"
+          "name": "deep_pool"
         },
         {
-          "name": "token_vault_0"
-        },
-        {
-          "name": "token_vault_1"
+          "name": "deep_pool_token_vault"
         },
         {
           "name": "token_program"
@@ -2904,13 +2809,10 @@
           }
         },
         {
-          "name": "pool_state"
+          "name": "deep_pool"
         },
         {
-          "name": "token_vault_0"
-        },
-        {
-          "name": "token_vault_1"
+          "name": "deep_pool_token_vault"
         },
         {
           "name": "torch_vault",
@@ -3186,58 +3088,27 @@
           }
         },
         {
-          "name": "bc_wsol",
-          "writable": true
-        },
-        {
-          "name": "payer_wsol",
-          "writable": true
-        },
-        {
           "name": "payer_token",
           "writable": true
         },
         {
-          "name": "raydium_program",
-          "address": "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C"
+          "name": "deep_pool_program",
+          "address": "CcwF61GW14AcxCS4E2zedHXdFXy8x8GQPvfxZrs2x2eT"
         },
         {
-          "name": "amm_config",
-          "address": "D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2"
-        },
-        {
-          "name": "raydium_authority"
-        },
-        {
-          "name": "pool_state",
+          "name": "deep_pool",
           "writable": true
         },
         {
-          "name": "wsol_mint",
-          "address": "So11111111111111111111111111111111111111112"
-        },
-        {
-          "name": "token_0_vault",
+          "name": "deep_pool_token_vault",
           "writable": true
         },
         {
-          "name": "token_1_vault",
+          "name": "deep_pool_lp_mint",
           "writable": true
         },
         {
-          "name": "lp_mint",
-          "writable": true
-        },
-        {
-          "name": "payer_lp_token",
-          "writable": true
-        },
-        {
-          "name": "observation_state",
-          "writable": true
-        },
-        {
-          "name": "create_pool_fee",
+          "name": "payer_lp_account",
           "writable": true
         },
         {
@@ -3247,15 +3118,12 @@
           "name": "token_2022_program"
         },
         {
-          "name": "associated_token_program"
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
         },
         {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
-        },
-        {
-          "name": "rent",
-          "address": "SysvarRent111111111111111111111111111111111"
         }
       ],
       "args": []
@@ -3534,13 +3402,10 @@
           }
         },
         {
-          "name": "pool_state"
+          "name": "deep_pool"
         },
         {
-          "name": "token_vault_0"
-        },
-        {
-          "name": "token_vault_1"
+          "name": "deep_pool_token_vault"
         },
         {
           "name": "torch_vault",
@@ -4648,45 +4513,23 @@
           }
         },
         {
-          "name": "treasury_wsol",
+          "name": "deep_pool_program",
+          "address": "CcwF61GW14AcxCS4E2zedHXdFXy8x8GQPvfxZrs2x2eT"
+        },
+        {
+          "name": "deep_pool",
           "writable": true
         },
         {
-          "name": "raydium_program",
-          "address": "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C"
-        },
-        {
-          "name": "raydium_authority"
-        },
-        {
-          "name": "amm_config",
-          "address": "D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2"
-        },
-        {
-          "name": "pool_state",
+          "name": "deep_pool_token_vault",
           "writable": true
-        },
-        {
-          "name": "token_vault",
-          "writable": true
-        },
-        {
-          "name": "wsol_vault",
-          "writable": true
-        },
-        {
-          "name": "wsol_mint",
-          "address": "So11111111111111111111111111111111111111112"
-        },
-        {
-          "name": "observation_state",
-          "writable": true
-        },
-        {
-          "name": "token_program"
         },
         {
           "name": "token_2022_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
         },
         {
           "name": "system_program",
@@ -5062,42 +4905,16 @@
           }
         },
         {
-          "name": "vault_wsol_account",
+          "name": "deep_pool_program",
+          "address": "CcwF61GW14AcxCS4E2zedHXdFXy8x8GQPvfxZrs2x2eT"
+        },
+        {
+          "name": "deep_pool",
           "writable": true
         },
         {
-          "name": "raydium_program",
-          "address": "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C"
-        },
-        {
-          "name": "raydium_authority"
-        },
-        {
-          "name": "amm_config",
-          "address": "D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2"
-        },
-        {
-          "name": "pool_state",
+          "name": "deep_pool_token_vault",
           "writable": true
-        },
-        {
-          "name": "pool_token_vault_0",
-          "writable": true
-        },
-        {
-          "name": "pool_token_vault_1",
-          "writable": true
-        },
-        {
-          "name": "observation_state",
-          "writable": true
-        },
-        {
-          "name": "wsol_mint",
-          "address": "So11111111111111111111111111111111111111112"
-        },
-        {
-          "name": "token_program"
         },
         {
           "name": "token_2022_program"
@@ -5776,7 +5593,7 @@
     {
       "code": 6031,
       "name": "PoolCreationFailed",
-      "msg": "Raydium pool creation failed"
+      "msg": "DEX pool creation failed"
     },
     {
       "code": 6032,
@@ -5891,7 +5708,7 @@
     {
       "code": 6054,
       "name": "InvalidPoolAccount",
-      "msg": "Invalid Raydium pool account (wrong owner, vault, or mint)"
+      "msg": "Invalid pool account"
     },
     {
       "code": 6055,
@@ -5915,8 +5732,8 @@
     },
     {
       "code": 6059,
-      "name": "InvalidWsolAccount",
-      "msg": "Invalid WSOL account - must be vault's WSOL ATA"
+      "name": "InvalidPoolVault",
+      "msg": "Invalid pool vault account"
     },
     {
       "code": 6060,

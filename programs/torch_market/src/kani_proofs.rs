@@ -647,13 +647,13 @@ fn verify_double_transfer_fee_positive() {
 }
 
 // ============================================================================
-// 21. V26 MIGRATION: SOL Wrapping Conservation
-//     Proves: bonding curve SOL debited == WSOL ATA credited (exact, no loss).
-//     For any valid reserves amount, the lamport transfer is conserving.
+// 21. MIGRATION: fund_migration_sol Lamport Conservation
+//     Proves: bonding curve SOL debited == payer credited (exact, no loss).
+//     BC retains rent-exempt minimum. Total lamports conserved.
 // ============================================================================
 
 #[kani::proof]
-fn verify_sol_wrapping_conservation() {
+fn verify_fund_migration_sol_conservation() {
     let real_sol_reserves: u64 = kani::any();
     kani::assume(real_sol_reserves > 0);
     kani::assume(real_sol_reserves <= BONDING_TARGET_LAMPORTS);
@@ -668,14 +668,14 @@ fn verify_sol_wrapping_conservation() {
     let bc_after = bc_lamports.checked_sub(real_sol_reserves).unwrap();
     assert!(bc_after == rent_exempt); // BC retains rent-exempt
 
-    // WSOL ATA receives exactly real_sol_reserves
-    let wsol_before: u64 = kani::any();
-    kani::assume(wsol_before <= u64::MAX - real_sol_reserves);
-    let wsol_after = wsol_before.checked_add(real_sol_reserves).unwrap();
-    assert!(wsol_after - wsol_before == real_sol_reserves);
+    // Payer receives exactly real_sol_reserves
+    let payer_before: u64 = kani::any();
+    kani::assume(payer_before <= u64::MAX - real_sol_reserves);
+    let payer_after = payer_before.checked_add(real_sol_reserves).unwrap();
+    assert!(payer_after - payer_before == real_sol_reserves);
 
-    // Total lamports conserved (u128 to avoid overflow in the assertion itself)
-    assert!(bc_after as u128 + wsol_after as u128 == bc_lamports as u128 + wsol_before as u128);
+    // Total lamports conserved
+    assert!(bc_after as u128 + payer_after as u128 == bc_lamports as u128 + payer_before as u128);
 }
 
 // ============================================================================
@@ -2097,40 +2097,41 @@ fn verify_short_bad_debt_formula_identity() {
 }
 
 // ============================================================================
-// 65. TREASURY: Ratio Gate Fee Subtraction Safety
-//     Proves: after saturating_sub of accumulated fees from vault balances,
-//     the ratio calculation either succeeds or is blocked by the pool_tokens > 0
-//     guard. No division by zero, no inflated ratio from negative balances.
+// 65. DEEPPOOL: Reserve Reading Safety
+//     Proves: pool_lamports.saturating_sub(rent_exempt) never produces
+//     inflated values. Ratio calculation succeeds when pool_tokens > 0.
+//     No accumulated fee subtraction needed — DeepPool has no protocol fees.
 // ============================================================================
 
 #[kani::proof]
-fn verify_ratio_gate_fee_subtraction_safe() {
-    let vault_sol: u64 = kani::any();
-    let vault_tokens: u64 = kani::any();
-    let sol_fees: u64 = kani::any();
-    let token_fees: u64 = kani::any();
+fn verify_deep_pool_reserve_reading_safe() {
+    let pool_lamports: u64 = kani::any();
+    let rent_exempt: u64 = kani::any();
+    let token_vault_balance: u64 = kani::any();
 
-    kani::assume(vault_sol <= 10_000_000_000_000);  // Max 10K SOL
-    kani::assume(vault_tokens <= TOTAL_SUPPLY);
-    kani::assume(sol_fees <= vault_sol);             // Fees can't exceed vault (Raydium invariant)
-    kani::assume(token_fees <= vault_tokens);
+    kani::assume(pool_lamports <= 10_000_000_000_000); // Max 10K SOL
+    kani::assume(rent_exempt > 0);
+    kani::assume(rent_exempt <= 10_000_000);           // ~0.01 SOL max rent
+    kani::assume(token_vault_balance <= TOTAL_SUPPLY);
 
-    let pool_sol = vault_sol.saturating_sub(sol_fees);
-    let pool_tokens = vault_tokens.saturating_sub(token_fees);
+    // saturating_sub: pool with less than rent shows 0 SOL (no underflow)
+    let pool_sol = pool_lamports.saturating_sub(rent_exempt);
+    assert!(pool_sol <= pool_lamports);
 
-    // If pool_tokens == 0, the on-chain require! blocks the operation
-    if pool_tokens > 0 {
-        // Ratio computation must succeed (no division by zero)
+    // If pool has lamports > rent, SOL reserve is positive
+    if pool_lamports > rent_exempt {
+        assert!(pool_sol > 0);
+        assert!(pool_sol == pool_lamports - rent_exempt);
+    }
+
+    // Ratio calculation succeeds when pool_tokens > 0
+    if token_vault_balance > 0 {
         let ratio = (pool_sol as u128)
             .checked_mul(RATIO_PRECISION)
             .unwrap()
-            .checked_div(pool_tokens as u128);
+            .checked_div(token_vault_balance as u128);
         assert!(ratio.is_some());
     }
-
-    // Fee subtraction never produces values larger than original
-    assert!(pool_sol <= vault_sol);
-    assert!(pool_tokens <= vault_tokens);
 }
 
 // ============================================================================
@@ -2218,4 +2219,74 @@ fn verify_depth_bands_boundaries() {
     assert!(DEPTH_LTV_0 <= DEPTH_LTV_1);
     assert!(DEPTH_LTV_1 <= DEPTH_LTV_2);
     assert!(DEPTH_LTV_2 <= DEPTH_LTV_3);
+}
+
+// ============================================================================
+// 69. MIGRATION: Cost Reimbursement Isolates Rent from Pool SOL
+//     Proves: (payer_pre - payer_post).saturating_sub(sol_amount) correctly
+//     extracts the account rent cost, excluding the bonding curve SOL that
+//     was deposited into the pool. Treasury only reimburses rent.
+// ============================================================================
+
+#[kani::proof]
+fn verify_migration_cost_reimbursement() {
+    let sol_amount: u64 = kani::any();
+    let rent_cost: u64 = kani::any();
+    let payer_original: u64 = kani::any();
+
+    kani::assume(sol_amount > 0);
+    kani::assume(sol_amount <= BONDING_TARGET_LAMPORTS);
+    kani::assume(rent_cost <= 50_000_000);            // Max ~0.05 SOL rent
+    kani::assume(payer_original <= 10_000_000_000_000); // Max 10K SOL
+    kani::assume(payer_original >= sol_amount + rent_cost); // Payer can afford it
+
+    // After fund_migration_sol: payer has original + sol_amount
+    let payer_pre = payer_original.checked_add(sol_amount).unwrap();
+
+    // After create_pool + account creation: payer spent sol_amount + rent_cost
+    let total_spent = sol_amount.checked_add(rent_cost).unwrap();
+    let payer_post = payer_pre.checked_sub(total_spent).unwrap();
+
+    // migration_cost = (pre - post).saturating_sub(sol_amount)
+    let raw_cost = payer_pre.checked_sub(payer_post).unwrap();
+    let migration_cost = raw_cost.saturating_sub(sol_amount);
+
+    // migration_cost == rent_cost (only the rent, not the pool SOL)
+    assert!(migration_cost == rent_cost);
+
+    // Treasury reimburses exactly rent_cost
+    assert!(migration_cost <= 50_000_000); // Bounded — never the full pool amount
+}
+
+// ============================================================================
+// 70. DEEPPOOL: Vault Swap SOL Accounting
+//     Proves: on sell, sol_received = lamports_after - lamports_before,
+//     and vault.sol_balance increases by exactly sol_received. No inflation.
+// ============================================================================
+
+#[kani::proof]
+fn verify_vault_swap_sell_accounting() {
+    let vault_sol_balance: u64 = kani::any();
+    let lamports_before: u64 = kani::any();
+    let sol_received: u64 = kani::any();
+
+    kani::assume(vault_sol_balance <= 10_000_000_000_000);
+    kani::assume(lamports_before <= 10_000_000_000_000);
+    kani::assume(sol_received > 0);
+    kani::assume(sol_received <= 10_000_000_000_000);
+
+    // Lamports increase by sol_received after DeepPool swap CPI
+    let lamports_after = lamports_before.checked_add(sol_received);
+    kani::assume(lamports_after.is_some());
+    let lamports_after = lamports_after.unwrap();
+
+    // Delta measurement
+    let measured = lamports_after.checked_sub(lamports_before).unwrap();
+    assert!(measured == sol_received);
+
+    // Balance update
+    let new_balance = vault_sol_balance.checked_add(measured);
+    kani::assume(new_balance.is_some());
+    let new_balance = new_balance.unwrap();
+    assert!(new_balance == vault_sol_balance + sol_received);
 }

@@ -1,59 +1,14 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::program::{invoke, invoke_signed};
-use anchor_spl::token::spl_token;
 
 use crate::constants::*;
-use crate::contexts::{FundVaultWsol, VaultSwap};
+use crate::contexts::VaultSwap;
 use crate::errors::TorchMarketError;
-use crate::pool_validation::{is_wsol_vault_0, read_token_account_balance, validate_pool_accounts};
 
-// Fund vault WSOL ATA with lamports from vault PDA.
-// Isolated instruction — direct lamport manipulation only, no CPIs.
-// Must be called before vault_swap (buy) in the same transaction.
-// This separation avoids the Solana runtime "sum of account balances"
-// error that occurs when direct lamport modifications precede CPIs.
-// IMPORTANT: Decrements sol_balance here so that repeated calls without
-// a matching vault_swap cannot inflate the vault's accounting.
-pub fn fund_vault_wsol(ctx: Context<FundVaultWsol>, amount: u64) -> Result<()> {
-    require!(amount > 0, TorchMarketError::AmountTooSmall);
-
-    {
-        let vault = &mut ctx.accounts.torch_vault;
-        require!(
-            vault.sol_balance >= amount,
-            TorchMarketError::InsufficientVaultBalance
-        );
-
-        vault.sol_balance = vault
-            .sol_balance
-            .checked_sub(amount)
-            .ok_or(TorchMarketError::MathOverflow)?;
-        vault.total_spent = vault
-            .total_spent
-            .checked_add(amount)
-            .ok_or(TorchMarketError::MathOverflow)?;
-    }
-
-    let vault_info = ctx.accounts.torch_vault.to_account_info();
-    let wsol_info = ctx.accounts.vault_wsol_account.to_account_info();
-    **vault_info.try_borrow_mut_lamports()? = vault_info
-        .lamports()
-        .checked_sub(amount)
-        .ok_or(TorchMarketError::MathOverflow)?;
-    **wsol_info.try_borrow_mut_lamports()? = wsol_info
-        .lamports()
-        .checked_add(amount)
-        .ok_or(TorchMarketError::MathOverflow)?;
-
-    Ok(())
-}
-
-// Vault-routed Raydium CPMM swap for migrated Torch tokens.
+// Vault-routed DeepPool swap for migrated Torch tokens.
 // One instruction handles both directions:
-// - Buy (SOL→Token): vault SOL → WSOL → Raydium → tokens to vault ATA
-// - Sell (Token→SOL): vault ATA → Raydium → WSOL → SOL to vault
-// WSOL ATA is persistent: created once via create_idempotent, reused across swaps.
-// Closed only on sell (to unwrap proceeds back to SOL).
+// - Buy (SOL→Token): vault SOL → DeepPool → tokens to vault ATA
+// - Sell (Token→SOL): vault ATA → DeepPool → SOL to vault
+// No WSOL wrapping — DeepPool uses native SOL.
 pub fn vault_swap(
     ctx: Context<VaultSwap>,
     amount_in: u64,
@@ -63,14 +18,6 @@ pub fn vault_swap(
     require!(amount_in > 0, TorchMarketError::AmountTooSmall);
     require!(minimum_amount_out > 0, TorchMarketError::AmountTooSmall);
 
-    validate_pool_accounts(
-        &ctx.accounts.pool_state,
-        &ctx.accounts.pool_token_vault_0,
-        &ctx.accounts.pool_token_vault_1,
-        &ctx.accounts.mint.key(),
-    )?;
-
-    let wsol_is_vault_0 = is_wsol_vault_0(&ctx.accounts.pool_state)?;
     let vault = &ctx.accounts.torch_vault;
     let creator_key = vault.creator;
     let vault_bump = vault.bump;
@@ -80,51 +27,60 @@ pub fn vault_swap(
         &[vault_bump],
     ];
     let vault_signer = &[vault_seeds][..];
+
     if is_buy {
-        invoke(
-            &spl_token::instruction::sync_native(
-                &ctx.accounts.token_program.key(),
-                &ctx.accounts.vault_wsol_account.key(),
-            )?,
-            &[ctx.accounts.vault_wsol_account.to_account_info()],
-        )?;
+        // Buy: vault sends SOL, receives tokens
+        require!(
+            ctx.accounts.torch_vault.sol_balance >= amount_in,
+            TorchMarketError::InsufficientVaultBalance
+        );
 
-        let (input_vault, output_vault) = if wsol_is_vault_0 {
-            (
-                ctx.accounts.pool_token_vault_0.to_account_info(),
-                ctx.accounts.pool_token_vault_1.to_account_info(),
-            )
-        } else {
-            (
-                ctx.accounts.pool_token_vault_1.to_account_info(),
-                ctx.accounts.pool_token_vault_0.to_account_info(),
-            )
+        // Decrement sol_balance before CPI (reverts if CPI fails)
+        let vault = &mut ctx.accounts.torch_vault;
+        vault.sol_balance = vault
+            .sol_balance
+            .checked_sub(amount_in)
+            .ok_or(TorchMarketError::MathOverflow)?;
+        vault.total_spent = vault
+            .total_spent
+            .checked_add(amount_in)
+            .ok_or(TorchMarketError::MathOverflow)?;
+
+        // Pre-deposit SOL to deep_pool pool PDA (torch_market owns vault,
+        // so we can debit it; deep_pool verifies the delta)
+        let vault_info = ctx.accounts.torch_vault.to_account_info();
+        let pool_info = ctx.accounts.deep_pool.to_account_info();
+        **vault_info.try_borrow_mut_lamports()? = vault_info
+            .lamports()
+            .checked_sub(amount_in)
+            .ok_or(TorchMarketError::MathOverflow)?;
+        **pool_info.try_borrow_mut_lamports()? = pool_info
+            .lamports()
+            .checked_add(amount_in)
+            .ok_or(TorchMarketError::MathOverflow)?;
+
+        let swap_accounts = deep_pool::cpi::accounts::Swap {
+            user: ctx.accounts.torch_vault.to_account_info(),
+            pool: ctx.accounts.deep_pool.to_account_info(),
+            token_mint: ctx.accounts.mint.to_account_info(),
+            token_vault: ctx.accounts.deep_pool_token_vault.to_account_info(),
+            user_token_account: ctx.accounts.vault_token_account.to_account_info(),
+            token_program: ctx.accounts.token_2022_program.to_account_info(),
+            associated_token_program: ctx.accounts.associated_token_program.to_account_info(),
+            system_program: ctx.accounts.system_program.to_account_info(),
         };
 
-        let swap_accounts = raydium_cpmm_cpi::cpi::accounts::Swap {
-            payer: ctx.accounts.torch_vault.to_account_info(),
-            authority: ctx.accounts.raydium_authority.to_account_info(),
-            amm_config: ctx.accounts.amm_config.to_account_info(),
-            pool_state: ctx.accounts.pool_state.to_account_info(),
-            input_token_account: ctx.accounts.vault_wsol_account.to_account_info(),
-            output_token_account: ctx.accounts.vault_token_account.to_account_info(),
-            input_vault,
-            output_vault,
-            input_token_program: ctx.accounts.token_program.to_account_info(),
-            output_token_program: ctx.accounts.token_2022_program.to_account_info(),
-            input_token_mint: ctx.accounts.wsol_mint.to_account_info(),
-            output_token_mint: ctx.accounts.mint.to_account_info(),
-            observation_state: ctx.accounts.observation_state.to_account_info(),
-        };
-
-        raydium_cpmm_cpi::cpi::swap_base_input(
+        deep_pool::cpi::swap(
             CpiContext::new_with_signer(
-                ctx.accounts.raydium_program.to_account_info(),
+                ctx.accounts.deep_pool_program.to_account_info(),
                 swap_accounts,
                 vault_signer,
             ),
-            amount_in,
-            minimum_amount_out,
+            deep_pool::SwapArgs {
+                amount_in,
+                minimum_out: minimum_amount_out,
+                buy: true,
+            },
         )?;
 
         emit!(VaultSwapExecuted {
@@ -136,66 +92,42 @@ pub fn vault_swap(
             minimum_amount_out,
         });
     } else {
+        // Sell: vault sends tokens, receives SOL
         require!(
             ctx.accounts.vault_token_account.amount >= amount_in,
             TorchMarketError::InsufficientTokens
         );
 
-        let (input_vault, output_vault) = if wsol_is_vault_0 {
-            (
-                ctx.accounts.pool_token_vault_1.to_account_info(),
-                ctx.accounts.pool_token_vault_0.to_account_info(),
-            )
-        } else {
-            (
-                ctx.accounts.pool_token_vault_0.to_account_info(),
-                ctx.accounts.pool_token_vault_1.to_account_info(),
-            )
+        let vault_lamports_before = ctx.accounts.torch_vault.to_account_info().lamports();
+
+        let swap_accounts = deep_pool::cpi::accounts::Swap {
+            user: ctx.accounts.torch_vault.to_account_info(),
+            pool: ctx.accounts.deep_pool.to_account_info(),
+            token_mint: ctx.accounts.mint.to_account_info(),
+            token_vault: ctx.accounts.deep_pool_token_vault.to_account_info(),
+            user_token_account: ctx.accounts.vault_token_account.to_account_info(),
+            token_program: ctx.accounts.token_2022_program.to_account_info(),
+            associated_token_program: ctx.accounts.associated_token_program.to_account_info(),
+            system_program: ctx.accounts.system_program.to_account_info(),
         };
 
-        let swap_accounts = raydium_cpmm_cpi::cpi::accounts::Swap {
-            payer: ctx.accounts.torch_vault.to_account_info(),
-            authority: ctx.accounts.raydium_authority.to_account_info(),
-            amm_config: ctx.accounts.amm_config.to_account_info(),
-            pool_state: ctx.accounts.pool_state.to_account_info(),
-            input_token_account: ctx.accounts.vault_token_account.to_account_info(),
-            output_token_account: ctx.accounts.vault_wsol_account.to_account_info(),
-            input_vault,
-            output_vault,
-            input_token_program: ctx.accounts.token_2022_program.to_account_info(),
-            output_token_program: ctx.accounts.token_program.to_account_info(),
-            input_token_mint: ctx.accounts.mint.to_account_info(),
-            output_token_mint: ctx.accounts.wsol_mint.to_account_info(),
-            observation_state: ctx.accounts.observation_state.to_account_info(),
-        };
-
-        raydium_cpmm_cpi::cpi::swap_base_input(
+        deep_pool::cpi::swap(
             CpiContext::new_with_signer(
-                ctx.accounts.raydium_program.to_account_info(),
+                ctx.accounts.deep_pool_program.to_account_info(),
                 swap_accounts,
                 vault_signer,
             ),
-            amount_in,
-            minimum_amount_out,
+            deep_pool::SwapArgs {
+                amount_in,
+                minimum_out: minimum_amount_out,
+                buy: false,
+            },
         )?;
 
-        let sol_received = read_token_account_balance(&ctx.accounts.vault_wsol_account)?;
-
-        invoke_signed(
-            &spl_token::instruction::close_account(
-                &ctx.accounts.token_program.key(),
-                &ctx.accounts.vault_wsol_account.key(),
-                &ctx.accounts.torch_vault.key(),
-                &ctx.accounts.torch_vault.key(),
-                &[],
-            )?,
-            &[
-                ctx.accounts.vault_wsol_account.to_account_info(),
-                ctx.accounts.torch_vault.to_account_info(),
-                ctx.accounts.torch_vault.to_account_info(),
-            ],
-            vault_signer,
-        )?;
+        let vault_lamports_after = ctx.accounts.torch_vault.to_account_info().lamports();
+        let sol_received = vault_lamports_after
+            .checked_sub(vault_lamports_before)
+            .ok_or(TorchMarketError::MathOverflow)?;
 
         let vault = &mut ctx.accounts.torch_vault;
         vault.sol_balance = vault

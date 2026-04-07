@@ -1,6 +1,6 @@
 [package]
 name = "torch_market"
-version = "10.2.5"
+version = "20.0.0"
 description = "torch.market"
 edition = "2021"
 
@@ -25,8 +25,8 @@ custom-panic = []
 anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
 anchor-spl = { version = "0.32.1", features = ["token", "associated_token"] }
 
-# Raydium CPMM CPI for DEX migration
-raydium-cpmm-cpi = { git = "https://github.com/raydium-io/raydium-cpi", package = "raydium-cpmm-cpi" }
+# DeepPool CPI for DEX migration
+deep_pool = { path = "../../../deep_pool/programs/deep_pool", features = ["cpi"] }
 
 
 [lints.rust]

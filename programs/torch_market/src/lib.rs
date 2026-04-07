@@ -48,8 +48,8 @@ pub mod torch_market {
         handlers::revival::contribute_revival(ctx, sol_amount)
     }
 
-    pub fn fund_migration_wsol(ctx: Context<FundMigrationWsol>) -> Result<()> {
-        handlers::migration::fund_migration_wsol(ctx)
+    pub fn fund_migration_sol(ctx: Context<FundMigrationSol>) -> Result<()> {
+        handlers::migration::fund_migration_sol(ctx)
     }
 
     pub fn migrate_to_dex(ctx: Context<MigrateToDex>) -> Result<()> {
@@ -120,10 +120,6 @@ pub mod torch_market {
 
     pub fn withdraw_tokens(ctx: Context<WithdrawTokens>, amount: u64) -> Result<()> {
         handlers::vault::withdraw_tokens(ctx, amount)
-    }
-
-    pub fn fund_vault_wsol(ctx: Context<FundVaultWsol>, amount: u64) -> Result<()> {
-        handlers::swap::fund_vault_wsol(ctx, amount)
     }
 
     pub fn vault_swap(
