@@ -184,6 +184,7 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
         lp_mint: ctx.accounts.deep_pool_lp_mint.to_account_info(),
         creator_token_account: ctx.accounts.payer_token.to_account_info(),
         creator_lp_account: ctx.accounts.payer_lp_account.to_account_info(),
+        pool_lp_account: ctx.accounts.deep_pool_lp_account.to_account_info(),
         token_program: ctx.accounts.token_2022_program.to_account_info(),
         associated_token_program: ctx.accounts.associated_token_program.to_account_info(),
         system_program: ctx.accounts.system_program.to_account_info(),

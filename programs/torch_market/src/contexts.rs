@@ -610,6 +610,9 @@ pub struct MigrateToDex<'info> {
     /// CHECK: Payer's LP ATA — receives LP tokens from create_pool, then burned
     #[account(mut)]
     pub payer_lp_account: AccountInfo<'info>,
+    /// CHECK: DeepPool pool PDA's LP ATA — receives locked LP from create_pool
+    #[account(mut)]
+    pub deep_pool_lp_account: AccountInfo<'info>,
     pub token_program: Interface<'info, TokenInterface>,
     /// CHECK: Token-2022 program for project tokens
     #[account(address = TOKEN_2022_PROGRAM_ID)]
