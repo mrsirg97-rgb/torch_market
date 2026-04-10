@@ -53,6 +53,7 @@ pub const DEEP_POOL_PROGRAM_ID: anchor_lang::prelude::Pubkey = deep_pool::ID;
 pub const DEEP_POOL_POOL_SEED: &[u8] = b"deep_pool";
 pub const DEEP_POOL_VAULT_SEED: &[u8] = b"pool_vault";
 pub const DEEP_POOL_LP_MINT_SEED: &[u8] = b"pool_lp_mint";
+pub const TORCH_CONFIG_SEED: &[u8] = b"torch_config";
 
 pub const STAR_COST_LAMPORTS: u64 = 20_000_000;
 pub const CREATOR_FEE_SHARE_BPS: u16 = 1500;

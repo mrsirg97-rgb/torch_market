@@ -3096,6 +3096,10 @@
           "address": "CcwF61GW14AcxCS4E2zedHXdFXy8x8GQPvfxZrs2x2eT"
         },
         {
+          "name": "torch_config",
+          "address": "Hd6gaP3GPm48s5mD2nGRrYkBoCmKBhyXBFVbBrwYNqzr"
+        },
+        {
           "name": "deep_pool",
           "writable": true
         },
@@ -3109,6 +3113,10 @@
         },
         {
           "name": "payer_lp_account",
+          "writable": true
+        },
+        {
+          "name": "deep_pool_lp_account",
           "writable": true
         },
         {

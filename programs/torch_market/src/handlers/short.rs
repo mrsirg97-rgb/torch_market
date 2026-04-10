@@ -97,6 +97,7 @@ pub fn enable_short_selling(ctx: Context<EnableShortSelling>) -> Result<()> {
 // SOL collateral goes to Treasury. Tokens come from Treasury's token account.
 // Creates ShortPosition on first call. Subsequent calls can add collateral and/or borrow more.
 pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
+
     require!(
         args.sol_collateral > 0 || args.tokens_to_borrow > 0,
         TorchMarketError::EmptyBorrowRequest
@@ -505,6 +506,7 @@ pub fn close_short(ctx: Context<CloseShort>, token_amount: u64) -> Result<()> {
 // When token price rises and LTV exceeds liquidation threshold (65%), anyone can call this.
 // Liquidator sends tokens to cover debt, receives SOL collateral (+ bonus) from treasury.
 pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
+
     if ctx.accounts.torch_vault.is_some() {
         require!(
             ctx.accounts.vault_wallet_link.is_some(),

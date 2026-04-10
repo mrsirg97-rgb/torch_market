@@ -7,7 +7,7 @@ use anchor_spl::{
 
 use crate::constants::*;
 use crate::errors::TorchMarketError;
-use crate::pool_validation::{derive_deep_pool, derive_deep_pool_vault, derive_deep_pool_lp_mint};
+use crate::pool_validation::{derive_deep_pool, derive_deep_pool_vault, derive_deep_pool_lp_mint, derive_torch_config};
 use crate::state::*;
 use crate::token_2022_utils::TOKEN_2022_PROGRAM_ID;
 
@@ -368,7 +368,7 @@ pub struct SwapFeesToSol<'info> {
     #[account(address = DEEP_POOL_PROGRAM_ID)]
     pub deep_pool_program: AccountInfo<'info>,
     /// CHECK: DeepPool pool PDA - validated by address constraint
-    #[account(mut, address = derive_deep_pool(&mint.key()) @ TorchMarketError::InvalidPoolAccount)]
+    #[account(mut, address = derive_deep_pool(&derive_torch_config(), &mint.key()) @ TorchMarketError::InvalidPoolAccount)]
     pub deep_pool: AccountInfo<'info>,
     /// CHECK: DeepPool token vault - validated by address constraint
     #[account(mut, address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
@@ -598,8 +598,11 @@ pub struct MigrateToDex<'info> {
     /// CHECK: DeepPool program - validated by address constraint
     #[account(address = DEEP_POOL_PROGRAM_ID)]
     pub deep_pool_program: AccountInfo<'info>,
-    /// CHECK: DeepPool pool PDA — will be initialized by create_pool CPI
-    #[account(mut, address = derive_deep_pool(&mint.key()) @ TorchMarketError::InvalidPoolAccount)]
+    /// CHECK: Torch config PDA — signer namespace for DeepPool pool creation
+    #[account(address = derive_torch_config() @ TorchMarketError::InvalidPoolAccount)]
+    pub torch_config: AccountInfo<'info>,
+    /// CHECK: DeepPool pool PDA — PDA = ["deep_pool", torch_config, mint]
+    #[account(mut, address = derive_deep_pool(&torch_config.key(), &mint.key()) @ TorchMarketError::InvalidPoolAccount)]
     pub deep_pool: AccountInfo<'info>,
     /// CHECK: DeepPool token vault PDA — will be initialized by create_pool CPI
     #[account(mut, address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
@@ -666,7 +669,7 @@ pub struct Borrow<'info> {
     )]
     pub loan_position: Box<Account<'info, LoanPosition>>,
     /// CHECK: DeepPool pool PDA - validated by address constraint
-    #[account(address = derive_deep_pool(&mint.key()) @ TorchMarketError::InvalidPoolAccount)]
+    #[account(address = derive_deep_pool(&derive_torch_config(), &mint.key()) @ TorchMarketError::InvalidPoolAccount)]
     pub deep_pool: AccountInfo<'info>,
     /// CHECK: DeepPool token vault - validated by address constraint
     #[account(address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
@@ -789,7 +792,7 @@ pub struct Liquidate<'info> {
     )]
     pub loan_position: Box<Account<'info, LoanPosition>>,
     /// CHECK: DeepPool pool PDA - validated by address constraint
-    #[account(address = derive_deep_pool(&mint.key()) @ TorchMarketError::InvalidPoolAccount)]
+    #[account(address = derive_deep_pool(&derive_torch_config(), &mint.key()) @ TorchMarketError::InvalidPoolAccount)]
     pub deep_pool: AccountInfo<'info>,
     /// CHECK: DeepPool token vault - validated by address constraint
     #[account(address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
@@ -987,7 +990,7 @@ pub struct VaultSwap<'info> {
     #[account(address = DEEP_POOL_PROGRAM_ID)]
     pub deep_pool_program: AccountInfo<'info>,
     /// CHECK: DeepPool pool PDA - validated by address constraint
-    #[account(mut, address = derive_deep_pool(&mint.key()) @ TorchMarketError::InvalidPoolAccount)]
+    #[account(mut, address = derive_deep_pool(&derive_torch_config(), &mint.key()) @ TorchMarketError::InvalidPoolAccount)]
     pub deep_pool: AccountInfo<'info>,
     /// CHECK: DeepPool token vault - validated by address constraint
     #[account(mut, address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
@@ -1091,7 +1094,7 @@ pub struct OpenShort<'info> {
     )]
     pub shorter_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
     /// CHECK: DeepPool pool PDA - validated by address constraint
-    #[account(address = derive_deep_pool(&mint.key()) @ TorchMarketError::InvalidPoolAccount)]
+    #[account(address = derive_deep_pool(&derive_torch_config(), &mint.key()) @ TorchMarketError::InvalidPoolAccount)]
     pub deep_pool: AccountInfo<'info>,
     /// CHECK: DeepPool token vault - validated by address constraint
     #[account(address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
@@ -1214,7 +1217,7 @@ pub struct LiquidateShort<'info> {
     )]
     pub liquidator_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
     /// CHECK: DeepPool pool PDA - validated by address constraint
-    #[account(address = derive_deep_pool(&mint.key()) @ TorchMarketError::InvalidPoolAccount)]
+    #[account(address = derive_deep_pool(&derive_torch_config(), &mint.key()) @ TorchMarketError::InvalidPoolAccount)]
     pub deep_pool: AccountInfo<'info>,
     /// CHECK: DeepPool token vault - validated by address constraint
     #[account(address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]

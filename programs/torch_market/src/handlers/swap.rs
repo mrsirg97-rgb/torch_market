@@ -3,7 +3,6 @@ use anchor_lang::prelude::*;
 use crate::constants::*;
 use crate::contexts::VaultSwap;
 use crate::errors::TorchMarketError;
-
 // Vault-routed DeepPool swap for migrated Torch tokens.
 // One instruction handles both directions:
 // - Buy (SOL→Token): vault SOL → DeepPool → tokens to vault ATA

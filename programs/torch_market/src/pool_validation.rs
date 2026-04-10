@@ -7,11 +7,21 @@ use crate::constants::{
 };
 use crate::errors::TorchMarketError;
 
-// Derive the DeepPool pool PDA for a given token mint.
-pub fn derive_deep_pool(mint: &Pubkey) -> Pubkey {
+// Derive the DeepPool pool PDA for a given token mint + creator.
+pub fn derive_deep_pool(config: &Pubkey, mint: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(
-        &[DEEP_POOL_POOL_SEED, mint.as_ref()],
+        &[DEEP_POOL_POOL_SEED, config.as_ref(), mint.as_ref()],
         &DEEP_POOL_PROGRAM_ID,
+    )
+    .0
+}
+
+// Derive Torch config PDA (used as namespace for DeepPool pools)
+pub fn derive_torch_config() -> Pubkey {
+    use crate::constants::TORCH_CONFIG_SEED;
+    Pubkey::find_program_address(
+        &[TORCH_CONFIG_SEED],
+        &crate::ID,
     )
     .0
 }
@@ -32,6 +42,25 @@ pub fn derive_deep_pool_lp_mint(pool: &Pubkey) -> Pubkey {
         &DEEP_POOL_PROGRAM_ID,
     )
     .0
+}
+
+// Validate a DeepPool pool account: owned by DeepPool program, token_mint matches.
+// Pool layout: discriminator(8) + creator(32) + token_mint(32) + ...
+// token_mint is at byte offset 40.
+pub fn validate_deep_pool(pool_info: &AccountInfo, expected_mint: &Pubkey) -> Result<()> {
+    require!(
+        pool_info.owner == &DEEP_POOL_PROGRAM_ID,
+        TorchMarketError::InvalidPoolAccount
+    );
+    let data = pool_info.try_borrow_data()?;
+    require!(data.len() >= 72, TorchMarketError::InvalidPoolAccount);
+    let pool_mint = Pubkey::try_from(&data[40..72])
+        .map_err(|_| TorchMarketError::InvalidPoolAccount)?;
+    require!(
+        pool_mint == *expected_mint,
+        TorchMarketError::InvalidPoolAccount
+    );
+    Ok(())
 }
 
 // Read DeepPool reserves: SOL from pool PDA lamports, tokens from vault.
@@ -56,7 +85,6 @@ pub fn read_token_account_balance(account: &AccountInfo) -> Result<u64> {
 }
 
 // Require minimum pool SOL liquidity.
-// Used by both new positions (borrow/short) and liquidations.
 pub fn require_min_pool_liquidity(pool_sol: u64) -> Result<()> {
     require!(
         pool_sol >= MIN_POOL_SOL_LENDING,
@@ -66,17 +94,12 @@ pub fn require_min_pool_liquidity(pool_sol: u64) -> Result<()> {
 }
 
 // Require pool price is within deviation band of migration baseline.
-// Used only for new positions (borrow/short). Liquidations are exempt.
-// Compares current_ratio vs baseline_ratio using RATIO_PRECISION (1e9).
-// Blocks if price has moved more than MAX_PRICE_DEVIATION_BPS (50%) in either direction.
 pub fn require_price_in_band(
     pool_sol: u64,
     pool_tokens: u64,
     baseline_sol: u64,
     baseline_tokens: u64,
 ) -> Result<()> {
-    // Callers enforce treasury.baseline_initialized before calling this function.
-    // Zero baseline is a hard error — no silent bypass.
     require!(baseline_sol > 0 && baseline_tokens > 0, TorchMarketError::BaselineNotInitialized);
 
     let current_ratio = (pool_sol as u128)
@@ -89,13 +112,11 @@ pub fn require_price_in_band(
         .ok_or(TorchMarketError::MathOverflow)?
         .checked_div(baseline_tokens as u128)
         .ok_or(TorchMarketError::MathOverflow)?;
-    // Upper bound: baseline * (10000 + deviation) / 10000
     let upper = baseline_ratio
         .checked_mul(10000 + MAX_PRICE_DEVIATION_BPS as u128)
         .ok_or(TorchMarketError::MathOverflow)?
         .checked_div(10000)
         .ok_or(TorchMarketError::MathOverflow)?;
-    // Lower bound: baseline * (10000 - deviation) / 10000
     let lower = baseline_ratio
         .checked_mul(10000_u128.saturating_sub(MAX_PRICE_DEVIATION_BPS as u128))
         .ok_or(TorchMarketError::MathOverflow)?
@@ -111,8 +132,6 @@ pub fn require_price_in_band(
 }
 
 // Depth-based risk band: returns max LTV in bps based on pool SOL depth.
-// More SOL = harder to manipulate = higher LTV allowed.
-// Returns 0 if pool is too thin for new margin positions.
 pub fn get_depth_max_ltv_bps(pool_sol: u64) -> u16 {
     if pool_sol < MIN_POOL_SOL_LENDING {
         0

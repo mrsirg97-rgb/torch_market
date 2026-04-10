@@ -174,10 +174,22 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
     // 4. SOL already in payer via fund_migration_sol (separate instruction)
 
     // 5. CPI to DeepPool create_pool
+    // PDA = ["deep_pool", mint, payer] — unique per creator, no frontrun possible
     let payer_lamports_pre = ctx.accounts.payer.to_account_info().lamports();
+
+    let second_transfer_fee = calculate_transfer_fee(tokens_payer_will_receive)?;
+    let tokens_in_pool = tokens_payer_will_receive
+        .checked_sub(second_transfer_fee)
+        .ok_or(TorchMarketError::MathOverflow)?;
+
+    // Torch config PDA — signer-verified namespace for DeepPool pools
+    let (_, config_bump) = Pubkey::find_program_address(&[TORCH_CONFIG_SEED], &crate::ID);
+    let config_seeds = &[TORCH_CONFIG_SEED, &[config_bump]];
+    let config_signer = &[&config_seeds[..]];
 
     let cpi_accounts = deep_pool::cpi::accounts::CreatePool {
         creator: ctx.accounts.payer.to_account_info(),
+        config: ctx.accounts.torch_config.to_account_info(),
         token_mint: ctx.accounts.mint.to_account_info(),
         pool: ctx.accounts.deep_pool.to_account_info(),
         token_vault: ctx.accounts.deep_pool_token_vault.to_account_info(),
@@ -190,15 +202,11 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
         system_program: ctx.accounts.system_program.to_account_info(),
     };
 
-    let second_transfer_fee = calculate_transfer_fee(tokens_payer_will_receive)?;
-    let tokens_in_pool = tokens_payer_will_receive
-        .checked_sub(second_transfer_fee)
-        .ok_or(TorchMarketError::MathOverflow)?;
-
     deep_pool::cpi::create_pool(
-        CpiContext::new(
+        CpiContext::new_with_signer(
             ctx.accounts.deep_pool_program.to_account_info(),
             cpi_accounts,
+            config_signer,
         ),
         deep_pool::CreatePoolArgs {
             initial_token_amount: tokens_payer_will_receive,
