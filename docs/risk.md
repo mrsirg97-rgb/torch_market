@@ -325,7 +325,7 @@ where $f_p = 50$ bps (protocol fee) and $\text{rate}(r)$ decays from 1750 to 250
 
 ### 7.2 Post-Migration: Transfer Fee Harvesting
 
-Every token transfer incurs a 0.04% fee ($f = 4$ bps) via the Token-2022 extension. This fee is:
+Every token transfer incurs a 0.07% fee ($f = 7$ bps) via the Token-2022 extension. This fee is:
 1. Withheld from the transfer amount (in tokens)
 2. Accumulated in the token mint
 3. Harvested to the treasury token account (permissionless)

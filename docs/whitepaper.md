@@ -79,7 +79,7 @@ SOL from each buy is split:
 |-------------|------|
 | Bonding curve | 82% → 97% (grows as bonding progresses) |
 | Token treasury | 17.5% → 2.5% (decays as bonding progresses) |
-| Protocol treasury | 0.5% (90% rewards, 10% dev) |
+| Protocol treasury | 0.5% (50% rewards, 50% dev) |
 | Creator wallet | 0% → 1% (creator tokens only; community tokens: 0%) |
 
 Bonding completes at 100 SOL (Flame) or 200 SOL (Torch). Every wallet is capped at 2% of supply during bonding.
@@ -88,16 +88,16 @@ Bonding completes at 100 SOL (Flame) or 200 SOL (Torch). Every wallet is capped 
 
 When bonding completes, anyone can trigger migration. No creator, no admin, no single party can block it.
 
-The protocol creates a Raydium CPMM pool with the curve's SOL and remaining tokens, **burns all LP tokens** (liquidity locked forever), activates the 0.04% transfer fee, and **revokes mint and freeze authority permanently**.
+The protocol creates a Raydium CPMM pool with the curve's SOL and remaining tokens, **burns all LP tokens** (liquidity locked forever), activates the 0.07% transfer fee, and **revokes mint and freeze authority permanently**.
 
 ### Phase 3: Trading
 
-Post-migration, the token trades on Raydium. The 0.04% transfer fee collects on every transfer — wallet to wallet, DEX swaps, everything. Anyone can harvest these fees and swap them to SOL, growing the treasury.
+Post-migration, the token trades on Raydium. The 0.07% transfer fee collects on every transfer — wallet to wallet, DEX swaps, everything. Anyone can harvest these fees and swap them to SOL, growing the treasury.
 
 The harvest cycle:
 
 ```
-Every transfer → 0.04% withheld → harvest to treasury → swap to SOL
+Every transfer → 0.07% withheld → harvest to treasury → swap to SOL
     │
     └── Community tokens: 100% to treasury
         Creator tokens:   85% to treasury, 15% to creator
@@ -152,7 +152,7 @@ On torch:
 | Short pool | Treasury lock — 300M tokens locked at creation |
 | Price feed | Raydium pool reserves — created at migration |
 | Liquidation | Permissionless — anyone can call |
-| Recapitalization | 0.04% transfer fee — perpetual |
+| Recapitalization | 0.07% transfer fee — perpetual |
 
 Nothing external. Nothing to bootstrap. Nothing to incentivize. The token IS the margin market.
 
@@ -214,7 +214,7 @@ See [verification.md](https://torch.market/verification.md).
 | Protocol fee | 0.5% (bonding only) |
 | Treasury SOL share | 17.5% → 2.5% (dynamic decay) |
 | Creator SOL share | 0% → 1% (creator tokens only) |
-| Transfer fee | 0.04% (post-migration, immutable) |
+| Transfer fee | 0.07% (post-migration, immutable) |
 | Fee swap split | 100% treasury (community) / 85-15 treasury-creator |
 | Max LTV | 25-50% (depth-adaptive: 25% <50 SOL, 35% 50-200, 45% 200-500, 50% 500+) |
 | Liquidation threshold | 65% |

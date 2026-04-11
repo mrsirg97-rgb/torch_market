@@ -15,7 +15,7 @@ This is **not** a security audit. It proves the arithmetic is correct, but does 
 torch_market's core arithmetic has been formally verified using [Kani](https://model-checking.github.io/kani/), a Rust model checker backed by the CBMC bounded model checker. Kani exhaustively proves properties hold for **all** valid inputs within constrained ranges -- not just sampled test cases.
 
 **Tool:** Kani Rust Verifier 0.67.0 / CBMC 6.8.0
-**Target:** `torch_market` v10.2.5
+**Target:** `torch_market` v10.2.6
 **Harnesses:** 71 proof harnesses, all passing
 **Source:** `programs/torch_market/src/kani_proofs.rs`
 
@@ -314,9 +314,9 @@ All 70 harnesses pass. Most complete in under 1 second; the slowest (`verify_tra
 | `TREASURY_FEE_BPS` | 0 | [V10] Removed — treasury funded by dynamic SOL rate + transfer fees |
 | `TREASURY_SOL_MIN_BPS` | 250 | [V10] 2.5% min treasury SOL rate (was 4%) |
 | `TREASURY_SOL_MAX_BPS` | 1750 | [V36] 17.5% max treasury SOL rate (was 15%) |
-| `DEV_WALLET_SHARE_BPS` | 1000 | [V32] 10% of protocol fee to dev (was 25%) |
+| `DEV_WALLET_SHARE_BPS` | 5000 | [V10.2.6] 50% of protocol fee to dev (was 10%) |
 | `BURN_RATE_BPS` | **REMOVED** | [V36] Vote vault removed — 100% of tokens to buyer |
-| `TRANSFER_FEE_BPS` | 4 | [V34] 0.04% Token-2022 transfer fee (was 3 bps, old tokens retain 3) |
+| `TRANSFER_FEE_BPS` | 7 | [V35] 0.07% Token-2022 transfer fee (was 4 bps, old tokens retain 4) |
 | `DEFAULT_INTEREST_RATE_BPS` | 200 | 2% lending interest per epoch |
 | `DEFAULT_LIQUIDATION_BONUS_BPS` | 1000 | 10% liquidation bonus |
 | `DEFAULT_LENDING_UTILIZATION_CAP_BPS` | 8000 | [V4.0] 80% max treasury SOL lendable (was 70%) |

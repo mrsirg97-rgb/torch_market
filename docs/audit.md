@@ -1,6 +1,6 @@
 # Torch Market Security Audit Summary
 
-**Date:** April 4, 2026 | **Auditor:** Claude Opus 4.6 (Anthropic) + OpenAI o3 (independent review) | **Version:** V10.2.5 Production
+**Date:** April 4, 2026 | **Auditor:** Claude Opus 4.6 (Anthropic) + OpenAI o3 (independent review) | **Version:** V10.2.6 Production
 
 ---
 
@@ -27,7 +27,7 @@ Program ID: `8hbUkonssSEEtkqzwM7ZcZrD9evacM92TcWSooVF4BeT`
 |----------|-------|---------|
 | Critical | 0 | -- |
 | High | 0 | -- |
-| Medium | 4 | Lending enabled by default (accepted); Token-2022 transfer fee on collateral (inherent, 0.04% new / 0.03% legacy); Epoch rewards race condition (accepted); [V5] AMM spot price for margin valuations (mitigated V6 — circuit breakers block new positions on unhealthy pools, liquidity floor on liquidations; TWAP deferred as higher-risk than spot+breakers for thin pools) |
+| Medium | 4 | Lending enabled by default (accepted); Token-2022 transfer fee on collateral (inherent, 0.07% new / 0.04% V34 / 0.03% legacy); Epoch rewards race condition (accepted); [V5] AMM spot price for margin valuations (mitigated V6 — circuit breakers block new positions on unhealthy pools, liquidity floor on liquidations; TWAP deferred as higher-risk than spot+breakers for thin pools) |
 | Low | 5 | fund_vault_wsol decoupled accounting; Stranded WSOL lamports; Vault sol_balance drift; Sell no position check; Slot-based interest ~~Revival no virtual reserve update; Treasury lock ATA not Anchor-constrained~~ (2 closed in V10.2.2) |
 | Informational | 32 | Various carried findings + 3 new V3.7.1 + 2 new V3.7.2 + 2 new V3.7.3 + 2 new V3.7.5 + 1 new V3.7.6 + 1 new V3.7.7 + 1 new V3.7.9 + 1 new V3.7.10 + 1 new V4.0.1 + 2 new V10.0.0 (I-28: oracle-free margin trading; I-29: deprecated field repurposing) + 3 new V10.2.2 (I-30: pool circuit breakers; I-31: bad debt aggregate reconciliation; I-32: independent audit cross-validation) |
 
@@ -48,7 +48,8 @@ Key strengths:
 - **Per-user borrow cap**: `BORROW_SHARE_MULTIPLIER = 23` (V10.2.3, was 5, was 3) limits each borrower to 23x their collateral's proportional share of the lendable pool. Combined with depth bands, produces effective LTV of ~3% at fresh treasury (95% drop to liquidate) scaling to ~20% at 150 SOL treasury (68% drop to liquidate). Prevents single-whale pool monopolization. `UserBorrowCapExceeded` error. Kani proof `verify_per_user_borrow_cap_bounded` verifies no overflow, upper bound, and boundary correctness
 - **V33 buyback removal**: `execute_auto_buyback` instruction removed (~330 lines of handler + context). Eliminates a complex Raydium CPI instruction that spent treasury SOL providing exit liquidity during dumps, had a fee-inflation bug in vault balance reads, and competed with lending for treasury SOL. One fewer attack surface. Binary size reduced ~6% (850 KB → 804 KB). Treasury simplified to: fee harvest → sell high → SOL → lending yield + epoch rewards
 - **V33 lending cap increase**: Utilization cap raised from 50% to 70%. More SOL available for community lending while maintaining 30% visible reserve. Conservative LTV/liquidation thresholds unchanged
-- **V32 protocol treasury rebalance**: Reserve floor removed (1,500 SOL → 0) -- all fees distributed each epoch. Volume eligibility lowered (10 SOL → 2 SOL). New MIN_CLAIM_AMOUNT (0.1 SOL) prevents dust claims. Protocol fee split rebalanced from 75/25 to 90% treasury / 10% dev wallet. New `verify_min_claim_enforcement` Kani proof
+- **V10.2.6 fee split rebalance**: Dev wallet share increased from 10% to 50% of protocol fee. Sustainable funding for solo development while remaining 4x cheaper than Pump.fun (0.25% effective vs 1%). Protocol fee unchanged at 0.5% total
+- **V32 protocol treasury rebalance**: Reserve floor removed (1,500 SOL → 0) -- all fees distributed each epoch. Volume eligibility lowered (10 SOL → 2 SOL). New MIN_CLAIM_AMOUNT (0.1 SOL) prevents dust claims. Protocol fee split rebalanced from 75/25 to 90% treasury / 10% dev wallet (superseded by V10.2.6). New `verify_min_claim_enforcement` Kani proof
 - **V31 zero-burn migration**: Curve supply reduced from 750M to 700M. At graduation, `vault_remaining == tokens_for_pool` exactly -- zero excess tokens to burn. Cleaner migration with no deflationary side effect
 - **V31 vote return → treasury lock**: Vote-return tokens now transfer to TreasuryLock PDA instead of Raydium LP injection. Preserves tokens for future governance release instead of diluting the pool. [V36] Vote vault removed for new tokens — migration handler still processes old tokens with vote_vault_balance > 0
 - **V31 supply split**: 700M curve (70%) + 300M locked (30%) = 1B total. Treasury lock increased from 250M to 300M for stronger community reserve
@@ -388,7 +389,7 @@ V32 changes four protocol constants and adds a min claim guard. No new instructi
 |----------|--------|-------|-----------------|
 | `PROTOCOL_TREASURY_RESERVE_FLOOR` | 1,500 SOL | 0 SOL | Rent-exempt minimum still subtracted (line 61). Account stays alive. No drain risk. |
 | `MIN_EPOCH_VOLUME_ELIGIBILITY` | 10 SOL | 2 SOL | More claimants, smaller individual shares. Intentional -- broader distribution. |
-| `DEV_WALLET_SHARE_BPS` | 2500 (25%) | 1000 (10%) | Same arithmetic path in buy handler. `dev_share = total * 1000 / 10000`. No overflow risk. |
+| `DEV_WALLET_SHARE_BPS` | 1000 (10%) | 5000 (50%) | [V10.2.6] Same arithmetic path in buy handler. `dev_share = total * 5000 / 10000`. No overflow risk. |
 | `MIN_CLAIM_AMOUNT` | (new) | 0.1 SOL | New `require!` guard. Prevents dust drain via many micro-claims. |
 
 ### Min Claim Guard Verification
@@ -418,7 +419,7 @@ require!(
 | 1 | **Dust drain** -- many accounts claim tiny amounts | MIN_CLAIM_AMOUNT (0.1 SOL) floor. Claims below threshold revert. | MITIGATED |
 | 2 | **Reserve floor = 0 drain** -- treasury emptied each epoch | Distributable = available - rent_exempt. Account survives. Each claim decrements distributable_amount. | SAFE |
 | 3 | **Volume manipulation** -- fake 2 SOL volume to claim | Volume tracked via buy/sell handlers with real SOL flow. Cannot inflate without actual trades. | NOT POSSIBLE |
-| 4 | **Fee split arbitrage** -- exploit 90/10 change | Constant-only change. Same `checked_mul/checked_div` path. No timing exploit. | NOT POSSIBLE |
+| 4 | **Fee split arbitrage** -- exploit 50/50 change | Constant-only change. Same `checked_mul/checked_div` path. No timing exploit. | NOT POSSIBLE |
 
 ### V32 New Findings
 
@@ -998,7 +999,7 @@ Line 458: `let _ = token_authority;` suppresses an unused variable warning. The 
 - **Treasury fee swap is a closed loop.** `swap_fees_to_sol` sells treasury tokens on Raydium and splits SOL 85% to treasury, 15% to creator. All accounts (input, output, destination) are constrained to treasury-owned PDAs and ATAs plus the validated creator wallet. Creator is constrained to `bonding_curve.creator` — no external wallet substitution possible.
 - **[V33] Buyback removed -- reduced attack surface.** The `execute_auto_buyback` instruction (~330 lines of handler + context) was removed. One fewer CPI-heavy instruction to audit, one fewer Raydium interaction path, one fewer way treasury SOL can be spent. Treasury now accumulates SOL unidirectionally via sell cycle.
 - **Treasury lock is permanent.** 300M tokens (30% of supply) locked at creation with no withdrawal instruction. Release deferred to future governance.
-- **Authority revocation is irreversible.** Mint, freeze, and transfer fee config authorities all set to `None` at migration. Supply is capped, trading is unrestricted, and the fee rate is locked forever (0.04% for V34+ tokens, 0.03% for earlier tokens).
+- **Authority revocation is irreversible.** Mint, freeze, and transfer fee config authorities all set to `None` at migration. Supply is capped, trading is unrestricted, and the fee rate is locked forever (0.07% for V35+ tokens, 0.04% for V34 tokens, 0.03% for earlier tokens).
 - **Zero-burn migration.** V31 tokens have `vault_remaining == tokens_for_pool` at graduation -- no excess tokens to burn. Supply is fully predictable from creation through migration.
 - **On-chain metadata is immutable.** Token-2022 MetadataPointer authority is `None` -- metadata stored on the mint itself can never be redirected. No Metaplex dependency. All Metaplex code has been removed.
 - **No dangerouslySetInnerHTML.** Zero instances in the entire frontend. All user content is React-escaped.
@@ -1050,7 +1051,8 @@ If you're an AI agent interacting with Torch Market:
 
 The complete audit reports (with line-by-line findings, attack vector analysis, and instruction-by-instruction verification) are maintained in the project repository under `/audits/`:
 
-- `SECURITY_AUDIT_SP_V10.2.5_PROD.md` -- On-chain program V10.2.5 (latest: depth-based risk bands, borrow multiplier 23x, pool circuit breakers, bad debt accounting fix, independent cross-audit -- 31 instructions, ~7,800 lines, 71 Kani proofs)
+- `SECURITY_AUDIT_SP_V10.2.6_PROD.md` -- On-chain program V10.2.6 (latest: 50/50 protocol fee split -- sustainable dev funding while remaining 4x cheaper than Pump.fun)
+- `SECURITY_AUDIT_SP_V10.2.5_PROD.md` -- On-chain program V10.2.5 (depth-based risk bands, borrow multiplier 23x, pool circuit breakers, bad debt accounting fix, independent cross-audit -- 31 instructions, ~7,800 lines, 71 Kani proofs)
 - `SECURITY_AUDIT_SP_V10.0.0_PROD.md` -- On-chain program V10.0.0 (oracle-free margin trading / short selling -- 31 instructions, ~7,600 lines, 58 Kani proofs)
 - `SECURITY_AUDIT_SP_V3.7.9_PROD.md` -- On-chain program V3.7.9 (per-user borrow cap + V34 creator revenue + transfer fee bump -- 27 instructions, ~6,800 lines, 44 Kani proofs)
 - `SECURITY_AUDIT_SP_V3.7.7_PROD.md` -- On-chain program V3.7.7 (V33 buyback removal + lending cap increase -- 27 instructions, ~6,700 lines, binary 804 KB, 39 Kani proofs)
