@@ -45,7 +45,7 @@ TREASURY_SOL_MIN_BPS   = 250   # 2.5%
 CREATOR_SOL_MIN_BPS    = 20    # 0.2%
 CREATOR_SOL_MAX_BPS    = 100   # 1.0%
 DEV_WALLET_SHARE_BPS   = 1000  # 10% of protocol fee
-TRANSFER_FEE_BPS       = 4     # 0.04%
+TRANSFER_FEE_BPS       = 7     # 0.07%
 CREATOR_FEE_SHARE_BPS  = 1500  # 15% of swap_fees_to_sol proceeds
 
 # Lending

@@ -3,7 +3,7 @@ pub const MAX_WALLET_TOKENS: u64 = 20_000_000_000_000;
 pub const TREASURY_SOL_MAX_BPS: u16 = 1750;  // 17.5% at start
 pub const TREASURY_SOL_MIN_BPS: u16 = 250;   // 2.5% at completion
 pub const TREASURY_FEE_BPS: u16 = 0;
-pub const DEV_WALLET_SHARE_BPS: u16 = 1000;
+pub const DEV_WALLET_SHARE_BPS: u16 = 5000;  // 50% of protocol fee to dev, 50% to user rewards
 pub const SELL_FEE_BPS: u16 = 0;
 pub const BONDING_TARGET_LAMPORTS: u64 = 200_000_000_000;
 pub const BONDING_TARGET_SPARK: u64 = 50_000_000_000;   // 50 SOL
@@ -33,7 +33,7 @@ pub fn initial_virtual_reserves(bonding_target: u64) -> (u64, u64) {
 
 pub const PROTOCOL_FEE_BPS: u16 = 50;
 pub const MIN_SOL_AMOUNT: u64 = 1_000_000;
-pub const TRANSFER_FEE_BPS: u16 = 4;
+pub const TRANSFER_FEE_BPS: u16 = 7;
 pub const MAX_TRANSFER_FEE: u64 = u64::MAX; // Uncapped per Token-2022 spec; actual fee governed by TRANSFER_FEE_BPS
 pub const GLOBAL_CONFIG_SEED: &[u8] = b"global_config";
 pub const BONDING_CURVE_SEED: &[u8] = b"bonding_curve";
