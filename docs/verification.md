@@ -213,6 +213,16 @@ These harnesses verify the post-migration treasury sell mechanism: fee subtracti
 | `verify_ratio_gate_fee_subtraction_safe` | After subtracting swap fees from vault balances: ratio computation succeeds when `pool_tokens > 0`; fees never inflate balances | Up to 10K SOL vault, fees bounded by vault balance |
 | `verify_treasury_sell_amount_bounded` | Sell amount never exceeds balance; 100% below 1M token threshold; exactly 15% above; non-zero for positive amounts | 0 to TOTAL_SUPPLY tokens |
 
+### DeepPool Integration (Harnesses 69, 72, 73) — V20
+
+V20 replaced Raydium CPMM with the in-house DeepPool program as the post-migration DEX. These harnesses verify the arithmetic on torch_market's side of the CPI boundary — pool reserve reads, migration cost reimbursement, and vault swap accounting. DeepPool's own swap math is verified separately by its 16 Kani proofs; these harnesses cover what torch_market *does* with DeepPool's values, not DeepPool itself.
+
+| Harness | Property | Input Range |
+|---------|----------|-------------|
+| `verify_deep_pool_reserve_reading_safe` | Reading pool SOL as `lamports.saturating_sub(rent_exempt)` never underflows; thin pools (below rent-exempt) show 0 SOL, not a panic; `pool_sol <= pool_lamports` always | 0-10K SOL lamports, 0-0.01 SOL rent, 0-TOTAL_SUPPLY token vault |
+| `verify_migration_cost_reimbursement` | After `fund_migration_sol` transfers bonding-curve SOL to payer and migration reimburses rent, payer balance reflects the round-trip correctly; no lamports created or destroyed | 0 to BONDING_TARGET SOL, 0-0.05 SOL rent, 0-10K SOL payer |
+| `verify_vault_swap_sell_accounting` | After DeepPool swap CPI for a sell, vault lamports increase by exactly `sol_received`; no overflow, no drift | 0-10K SOL vault, 0-10K SOL received |
+
 ## Verification Methodology
 
 ### How Kani Works
@@ -278,6 +288,10 @@ The arithmetic layer is formally verified. Audit effort should focus on:
 3. **CPI safety** -- can DeepPool CPIs be exploited for reentrancy or privilege escalation?
 4. **Economic attack surface** -- sandwich attacks on bonding curve buys, oracle-free lending price manipulation
 5. **Token-2022 edge cases** -- transfer fee interaction with Token-2022 extensions across CPIs
+
+### Composition with DeepPool
+
+torch_market v20 CPIs into the [DeepPool](https://github.com/mrsirg97-rgb/deep_pool) CPMM for all post-migration swaps. DeepPool's own arithmetic (constant-product swap math, LP mint/burn proportionality, fee conservation, K non-decreasing, LP lock rates) is verified separately by its own **16 Kani proof harnesses**. The three V20 harnesses in this file (69, 72, 73) cover *torch_market's side* of the CPI — pool reserve reads, migration cost reimbursement, and vault swap accounting — not DeepPool's internals. Auditors evaluating v20 should review both proof suites together.
 
 ## Running the Proofs
 

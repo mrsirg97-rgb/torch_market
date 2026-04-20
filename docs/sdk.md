@@ -2,7 +2,7 @@
 
 TypeScript SDK for [torch.market](https://torch.market) — a protocol where every token launches with its own margin market.
 
-Every token on Torch gets a bonding curve for price discovery, a treasury funded by a dynamic 17.5%→2.5% SOL rate, a 300M token lending reserve locked at creation, and a full margin system (lending + short selling) that activates after migration to DeepPool. 100% of tokens go to buyers — no vote vault, no splits. The SDK builds transactions locally from the on-chain Anchor IDL, reads all state directly from Solana RPC, and handles routing between bonding curves and DEX pools automatically. No API server. No middleman.
+Every token on Torch gets a bonding curve for price discovery, a treasury funded by a dynamic 17.5%→2.5% SOL rate, a 300M token lending reserve locked at creation, and a full margin system (lending + short selling) that activates after migration to Raydium. 100% of tokens go to buyers — no vote vault, no splits. The SDK builds transactions locally from the on-chain Anchor IDL, reads all state directly from Solana RPC, and handles routing between bonding curves and DEX pools automatically. No API server. No middleman.
 
 ## Install
 
@@ -20,12 +20,7 @@ Peer dependency: `@solana/web3.js ^1.98.0`
 3. Sign and send   →  your wallet / keypair
 ```
 
-The SDK is VersionedTransaction-native. All transaction builders return v0 transactions compressed with Address Lookup Tables for smaller tx sizes and more headroom.
-
-| Network | ALT Address |
-|---------|-------------|
-| Mainnet | `GQzbU32oN3znZa3uWFKGc9cBukpQbYYJSirKstMuFF3i` |
-| Devnet | `3umSStZSLJNk5QstxeQB12a2MSDh4o8RgSzT76gigJ8P` |
+All transaction builders return VersionedTransactions (v0 message format).
 
 Quotes work across both bonding curve and DEX — the `source` field tells you which. Pass the quote into the transaction builder and the SDK handles routing and slippage protection automatically.
 
@@ -47,7 +42,7 @@ const { transaction } = await buildBuyTransaction(connection, {
   vault: vaultCreator,
   quote, // drives routing + slippage protection
 });
-// sign and send — VersionedTransaction, ALT-compressed
+// sign and send
 ```
 
 ## Torch Vault
@@ -84,6 +79,9 @@ Seven guarantees: full custody, closed economic loop, authority separation, one 
 | `getVault(connection, creator)` | Vault state |
 | `getVaultForWallet(connection, wallet)` | Reverse lookup — find vault by linked wallet |
 | `getVaultWalletLink(connection, wallet)` | Link state for a wallet |
+| `getUserStats(connection, wallet)` | Per-user trading volume + rewards-claimed history |
+| `getProtocolTreasuryState(connection)` | Protocol treasury epoch state + aggregate volumes + distributable amount |
+| `getTreasuryState(connection, mint)` | Per-token treasury state — SOL balance, tokens held, baseline pool reserves at migration, stars |
 
 ### Quotes
 
@@ -107,7 +105,7 @@ All builders return `{ transaction: VersionedTransaction, message: string }`.
 | `buildCreateTokenTransaction(connection, params)` | Launch a new token with bonding curve + treasury + 300M token lock |
 | `sendCreateToken(connection, wallet, params)` | Build + simulate + submit token creation via `signAndSendTransaction` |
 | `buildStarTransaction(connection, params)` | Star a token (0.02 SOL, sybil-resistant) |
-| `buildMigrateTransaction(connection, params)` | Migrate bonding-complete token to DeepPool (permissionless) |
+| `buildMigrateTransaction(connection, params)` | Migrate bonding-complete token to Raydium (permissionless) |
 
 ### Vault Management
 
@@ -123,7 +121,9 @@ All builders return `{ transaction: VersionedTransaction, message: string }`.
 
 ### Lending (post-migration)
 
-Treasury-backed margin lending. Borrow SOL against token collateral. Depth-adaptive max LTV (25-50% based on pool SOL depth), 65% liquidation threshold, 2% interest per epoch. Deeper pools permit higher leverage — the pool itself is the risk engine. No oracles, no stored baseline.
+Treasury-backed margin lending. Borrow SOL against token collateral. Depth-adaptive max LTV (25-50% based on pool SOL depth), 65% liquidation threshold, 2% interest per epoch (simple-linear accrual). Deeper pools permit higher leverage — the pool itself is the risk engine. No oracles, no stored baseline.
+
+Interest is only written on-chain when an instruction touches the position, but off-chain readers (`getLoanPosition`, `getShortPosition`, `getAllLoanPositions`) project it forward to the current slot using the exact on-chain formula. That means liquidation scanners see accurate `health` / `current_ltv_bps` immediately — no need to poke the loan first. Raw stored values are preserved in `accrued_interest_stored` and `last_update_slot` for callers who need the instant-of-signing amount.
 
 | Function | Description |
 |----------|-------------|
@@ -147,8 +147,9 @@ Borrow real tokens from the 300M treasury lock, sell on the market, buy back to 
 
 | Function | Description |
 |----------|-------------|
-| `buildHarvestFeesTransaction(connection, params)` | Harvest Token-2022 transfer fees (0.04%) into treasury |
-| `buildSwapFeesToSolTransaction(connection, params)` | Swap harvested tokens to SOL via DeepPool |
+| `buildHarvestFeesTransaction(connection, params)` | Harvest Token-2022 transfer fees (0.07%) into treasury |
+| `buildSwapFeesToSolTransaction(connection, params)` | Swap harvested tokens to SOL via Raydium |
+| `buildAdvanceProtocolEpochTransaction(connection, params)` | Advance protocol epoch so previous-epoch trading rewards become claimable |
 | `buildReclaimFailedTokenTransaction(connection, params)` | Reclaim tokens inactive 7+ days |
 
 ### SAID Protocol
