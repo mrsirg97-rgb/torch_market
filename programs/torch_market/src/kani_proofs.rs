@@ -1730,7 +1730,13 @@ fn verify_pool_reserve_guards_prevent_div_zero() {
     // Guard: both reserves must be positive (as now enforced in code)
     kani::assume(pool_sol > 0 && pool_tokens > 0);
 
-    // Collateral value computation must succeed (no division by zero)
+    // Realistic bounds so `collateral * pool_sol / pool_tokens` fits u64.
+    // Real pools: pool_sol ≤ 1000 SOL (pre-migration cap), pool_tokens ≥ 1 whole
+    // token (1e9 lamports at 6 decimals).
+    kani::assume(pool_sol <= 1_000_000_000_000);
+    kani::assume(pool_tokens >= 1_000_000_000);
+
+    // Collateral value computation must succeed (no division by zero, no overflow).
     let cv = calc_collateral_value(collateral, pool_sol, pool_tokens);
     assert!(cv.is_some());
 
@@ -1755,7 +1761,11 @@ fn verify_short_pool_reserve_guards() {
     kani::assume(token_debt <= TOTAL_SUPPLY);
     kani::assume(pool_sol > 0 && pool_tokens > 0);
 
-    // Debt value computation must succeed
+    // Realistic bounds so `token_debt * pool_sol / pool_tokens` fits u64.
+    kani::assume(pool_sol <= 1_000_000_000_000);
+    kani::assume(pool_tokens >= 1_000_000_000);
+
+    // Debt value computation must succeed (no division by zero, no overflow).
     let dv = calc_short_debt_value(token_debt, pool_sol, pool_tokens);
     assert!(dv.is_some());
 }
