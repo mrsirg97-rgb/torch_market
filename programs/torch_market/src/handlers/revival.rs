@@ -38,7 +38,10 @@ pub fn contribute_revival(ctx: Context<ContributeRevival>, sol_amount: u64) -> R
         sol_amount,
     )?;
 
-    let new_real_sol = ctx.accounts.bonding_curve.real_sol_reserves
+    let new_real_sol = ctx
+        .accounts
+        .bonding_curve
+        .real_sol_reserves
         .checked_add(sol_amount)
         .ok_or(TorchMarketError::MathOverflow)?;
     ctx.accounts.bonding_curve.real_sol_reserves = new_real_sol;

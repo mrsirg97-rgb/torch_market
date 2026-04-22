@@ -10,27 +10,16 @@ use crate::token_2022_utils::*;
 // This collects transfer fees that have been withheld from transfers
 // into the token treasury. Anyone can call this (permissionless).
 // The harvested tokens can be used in future buybacks to reduce supply.
-pub fn harvest_fees<'info>(
-    ctx: Context<'_, '_, 'info, 'info, HarvestFees<'info>>,
-) -> Result<()> {
+pub fn harvest_fees<'info>(ctx: Context<'_, '_, 'info, 'info, HarvestFees<'info>>) -> Result<()> {
     let bonding_curve = &ctx.accounts.bonding_curve;
     let token_treasury = &mut ctx.accounts.token_treasury;
     let mint_key = ctx.accounts.mint.key();
-    require!(
-        bonding_curve.is_token_2022,
-        TorchMarketError::NotToken2022
-    );
+    require!(bonding_curve.is_token_2022, TorchMarketError::NotToken2022);
 
     if !ctx.remaining_accounts.is_empty() {
-        let source_pubkeys: Vec<Pubkey> = ctx
-            .remaining_accounts
-            .iter()
-            .map(|a| a.key())
-            .collect();
-        let harvest_ix = build_harvest_withheld_tokens_to_mint_instruction(
-            &mint_key,
-            &source_pubkeys,
-        );
+        let source_pubkeys: Vec<Pubkey> = ctx.remaining_accounts.iter().map(|a| a.key()).collect();
+        let harvest_ix =
+            build_harvest_withheld_tokens_to_mint_instruction(&mint_key, &source_pubkeys);
         let mut harvest_accounts = vec![ctx.accounts.mint.to_account_info()];
         for acc in ctx.remaining_accounts.iter() {
             harvest_accounts.push(acc.to_account_info());
@@ -39,11 +28,7 @@ pub fn harvest_fees<'info>(
         anchor_lang::solana_program::program::invoke(&harvest_ix, &harvest_accounts)?;
     }
 
-    let treasury_seeds = &[
-        TREASURY_SEED,
-        mint_key.as_ref(),
-        &[token_treasury.bump],
-    ];
+    let treasury_seeds = &[TREASURY_SEED, mint_key.as_ref(), &[token_treasury.bump]];
     let signer_seeds = &[&treasury_seeds[..]];
     let withdraw_ix = build_withdraw_withheld_tokens_from_mint_instruction(
         &mint_key,
@@ -87,7 +72,10 @@ pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) ->
     require!(minimum_amount_out > 0, TorchMarketError::AmountTooSmall);
 
     let sell_amount = if ctx.accounts.treasury.baseline_initialized {
-        let next_slot = ctx.accounts.treasury.last_buyback_slot
+        let next_slot = ctx
+            .accounts
+            .treasury
+            .last_buyback_slot
             .checked_add(ctx.accounts.treasury.min_buyback_interval_slots)
             .ok_or(TorchMarketError::MathOverflow)?;
         if ctx.accounts.treasury.last_buyback_slot > 0 && current_slot < next_slot {
@@ -182,15 +170,12 @@ pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) ->
     );
 
     // Creator fee split (direct lamport manipulation — after all CPIs)
-    let is_community_token = ctx.accounts.treasury.total_bought_back == COMMUNITY_TOKEN_SENTINEL;
+    let is_community_token = ctx.accounts.treasury.is_community_token;
     let (creator_amount, treasury_amount) = if is_community_token {
         (0u64, sol_received)
     } else {
-        let ca = (sol_received as u128)
-            .checked_mul(CREATOR_FEE_SHARE_BPS as u128)
-            .ok_or(TorchMarketError::MathOverflow)?
-            .checked_div(10000)
-            .ok_or(TorchMarketError::MathOverflow)? as u64;
+        let ca = crate::math::calc_creator_fee_share(sol_received)
+            .ok_or(TorchMarketError::MathOverflow)?;
         let ta = sol_received
             .checked_sub(ca)
             .ok_or(TorchMarketError::MathOverflow)?;
@@ -219,7 +204,6 @@ pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) ->
         .harvested_fees
         .checked_add(treasury_amount)
         .ok_or(TorchMarketError::MathOverflow)?;
-    treasury.tokens_held = treasury.tokens_held.saturating_sub(sell_amount);
     treasury.last_buyback_slot = current_slot;
 
     Ok(())

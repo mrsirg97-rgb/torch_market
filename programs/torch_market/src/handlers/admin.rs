@@ -9,7 +9,6 @@ pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
     global_config.authority = ctx.accounts.authority.key();
     global_config.treasury = ctx.accounts.treasury.key();
     global_config.dev_wallet = ctx.accounts.dev_wallet.key();
-    global_config._deprecated_platform_treasury = Pubkey::default();
     global_config.protocol_fee_bps = PROTOCOL_FEE_BPS;
     global_config.paused = false;
     global_config.total_tokens_launched = 0;

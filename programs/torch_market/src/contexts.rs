@@ -1,8 +1,9 @@
-
 use anchor_lang::prelude::*;
 use anchor_spl::{
     associated_token::AssociatedToken,
-    token_interface::{Mint as MintInterface, TokenAccount as TokenAccountInterface, TokenInterface},
+    token_interface::{
+        Mint as MintInterface, TokenAccount as TokenAccountInterface, TokenInterface,
+    },
 };
 
 use crate::constants::*;
@@ -537,7 +538,6 @@ pub struct FundMigrationSol<'info> {
         seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
         bump = bonding_curve.bump,
         constraint = bonding_curve.bonding_complete @ TorchMarketError::BondingNotComplete,
-        constraint = bonding_curve.vote_finalized @ TorchMarketError::VoteNotFinalized,
         constraint = !bonding_curve.migrated @ TorchMarketError::AlreadyMigrated,
     )]
     pub bonding_curve: Box<Account<'info, BondingCurve>>,
@@ -559,7 +559,6 @@ pub struct MigrateToDex<'info> {
         seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
         bump = bonding_curve.bump,
         constraint = bonding_curve.bonding_complete @ TorchMarketError::BondingNotComplete,
-        constraint = bonding_curve.vote_finalized @ TorchMarketError::VoteNotFinalized,
         constraint = !bonding_curve.migrated @ TorchMarketError::AlreadyMigrated,
     )]
     pub bonding_curve: Box<Account<'info, BondingCurve>>,
@@ -1025,7 +1024,7 @@ pub struct EnableShortSelling<'info> {
         seeds = [TREASURY_SEED, mint.key().as_ref()],
         bump = treasury.bump,
         constraint = treasury.lending_enabled @ TorchMarketError::LendingNotEnabled,
-        constraint = treasury.buyback_percent_bps != SHORT_ENABLED_SENTINEL @ TorchMarketError::ShortAlreadyEnabled,
+        constraint = !treasury.short_selling_enabled @ TorchMarketError::ShortAlreadyEnabled,
     )]
     pub treasury: Box<Account<'info, Treasury>>,
     #[account(
@@ -1055,7 +1054,7 @@ pub struct OpenShort<'info> {
         mut,
         seeds = [TREASURY_SEED, mint.key().as_ref()],
         bump = treasury.bump,
-        constraint = treasury.buyback_percent_bps == SHORT_ENABLED_SENTINEL @ TorchMarketError::ShortNotEnabled,
+        constraint = treasury.short_selling_enabled @ TorchMarketError::ShortNotEnabled,
     )]
     pub treasury: Box<Account<'info, Treasury>>,
     #[account(

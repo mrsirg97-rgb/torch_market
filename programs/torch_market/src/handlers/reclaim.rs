@@ -40,19 +40,37 @@ pub fn reclaim_failed_token(ctx: Context<ReclaimFailedToken>) -> Result<()> {
     );
 
     if curve_sol > 0 {
-        **ctx.accounts.bonding_curve.to_account_info().try_borrow_mut_lamports()? -= curve_sol;
-        **ctx.accounts.protocol_treasury.to_account_info().try_borrow_mut_lamports()? += curve_sol;
+        **ctx
+            .accounts
+            .bonding_curve
+            .to_account_info()
+            .try_borrow_mut_lamports()? -= curve_sol;
+        **ctx
+            .accounts
+            .protocol_treasury
+            .to_account_info()
+            .try_borrow_mut_lamports()? += curve_sol;
     }
 
     if treasury_sol > 0 {
-        **ctx.accounts.token_treasury.to_account_info().try_borrow_mut_lamports()? -= treasury_sol;
-        **ctx.accounts.protocol_treasury.to_account_info().try_borrow_mut_lamports()? += treasury_sol;
+        **ctx
+            .accounts
+            .token_treasury
+            .to_account_info()
+            .try_borrow_mut_lamports()? -= treasury_sol;
+        **ctx
+            .accounts
+            .protocol_treasury
+            .to_account_info()
+            .try_borrow_mut_lamports()? += treasury_sol;
     }
 
     ctx.accounts.bonding_curve.real_sol_reserves = 0;
     ctx.accounts.bonding_curve.reclaimed = true;
     ctx.accounts.token_treasury.sol_balance = 0;
-    ctx.accounts.protocol_treasury.total_fees_received = ctx.accounts.protocol_treasury
+    ctx.accounts.protocol_treasury.total_fees_received = ctx
+        .accounts
+        .protocol_treasury
         .total_fees_received
         .checked_add(total_sol)
         .ok_or(TorchMarketError::MathOverflow)?;

@@ -8,7 +8,6 @@ use anchor_spl::token_interface::{
 use crate::constants::*;
 use crate::contexts::{FundMigrationSol, MigrateToDex};
 use crate::errors::TorchMarketError;
-use crate::token_2022_utils::get_associated_token_address_2022;
 use crate::pool_validation::read_token_account_balance;
 
 // Calculate transfer fee for our Token-2022 token
@@ -63,74 +62,21 @@ pub fn fund_migration_sol_handler(ctx: Context<FundMigrationSol>) -> Result<()> 
 // 9. Record baseline from pool state
 pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
     let bonding_curve = &ctx.accounts.bonding_curve;
-    let treasury = &ctx.accounts.treasury;
     let mint_key = ctx.accounts.mint.key();
-    let bc_seeds = &[
-        BONDING_CURVE_SEED,
-        mint_key.as_ref(),
-        &[bonding_curve.bump],
-    ];
+    let bc_seeds = &[BONDING_CURVE_SEED, mint_key.as_ref(), &[bonding_curve.bump]];
     let bc_signer = &[&bc_seeds[..]][..];
 
-    // 1. Handle vote vault tokens
-    let vote_vault_amount = ctx.accounts.treasury_token_account.amount;
-    let treasury_seeds = &[
-        TREASURY_SEED,
-        mint_key.as_ref(),
-        &[treasury.bump],
-    ];
-    let treasury_signer = &[&treasury_seeds[..]][..];
-    if vote_vault_amount > 0 {
-        if bonding_curve.vote_result_return {
-            let expected_lock_ata = get_associated_token_address_2022(
-                &ctx.accounts.treasury_lock.key(),
-                &mint_key,
-            );
-            require!(
-                ctx.accounts.treasury_lock_token_account.key() == expected_lock_ata,
-                TorchMarketError::InvalidTokenAccount
-            );
-
-            transfer_checked(
-                CpiContext::new_with_signer(
-                    ctx.accounts.token_2022_program.to_account_info(),
-                    TransferChecked {
-                        from: ctx.accounts.treasury_token_account.to_account_info(),
-                        mint: ctx.accounts.mint.to_account_info(),
-                        to: ctx.accounts.treasury_lock_token_account.to_account_info(),
-                        authority: ctx.accounts.treasury.to_account_info(),
-                    },
-                    treasury_signer,
-                ),
-                vote_vault_amount,
-                TOKEN_DECIMALS,
-            )?;
-        } else {
-            burn(
-                CpiContext::new_with_signer(
-                    ctx.accounts.token_2022_program.to_account_info(),
-                    Burn {
-                        mint: ctx.accounts.mint.to_account_info(),
-                        from: ctx.accounts.treasury_token_account.to_account_info(),
-                        authority: ctx.accounts.treasury.to_account_info(),
-                    },
-                    treasury_signer,
-                ),
-                vote_vault_amount,
-            )?;
-        }
-    }
-
-    // 2. Calculate pool amounts and burn excess tokens
+    // Calculate pool amounts and burn excess tokens
     ctx.accounts.token_vault.reload()?;
 
     let sol_amount = bonding_curve.real_sol_reserves;
     let vault_token_amount = ctx.accounts.token_vault.amount;
-    let tokens_for_pool = (sol_amount as u128)
-        .checked_mul(bonding_curve.virtual_token_reserves as u128)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(bonding_curve.virtual_sol_reserves as u128)
-        .ok_or(TorchMarketError::MathOverflow)? as u64;
+    let tokens_for_pool = crate::math::calc_tokens_for_pool(
+        sol_amount,
+        bonding_curve.virtual_token_reserves,
+        bonding_curve.virtual_sol_reserves,
+    )
+    .ok_or(TorchMarketError::MathOverflow)?;
     let token_amount = tokens_for_pool.min(vault_token_amount);
     let excess_tokens = vault_token_amount
         .checked_sub(token_amount)
@@ -176,7 +122,6 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
     // 5. CPI to DeepPool create_pool
     // PDA = ["deep_pool", mint, payer] — unique per creator, no frontrun possible
     let payer_lamports_pre = ctx.accounts.payer.to_account_info().lamports();
-
     let second_transfer_fee = calculate_transfer_fee(tokens_payer_will_receive)?;
     let tokens_in_pool = tokens_payer_will_receive
         .checked_sub(second_transfer_fee)
@@ -186,7 +131,6 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
     let (_, config_bump) = Pubkey::find_program_address(&[TORCH_CONFIG_SEED], &crate::ID);
     let config_seeds = &[TORCH_CONFIG_SEED, &[config_bump]];
     let config_signer = &[&config_seeds[..]];
-
     let cpi_accounts = deep_pool::cpi::accounts::CreatePool {
         creator: ctx.accounts.payer.to_account_info(),
         config: ctx.accounts.torch_config.to_account_info(),
@@ -305,8 +249,8 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
     bonding_curve.migrated = true;
     bonding_curve.real_sol_reserves = 0;
     bonding_curve.real_token_reserves = 0;
-    bonding_curve.vote_vault_balance = 0;
-    treasury.sol_balance = treasury.sol_balance
+    treasury.sol_balance = treasury
+        .sol_balance
         .checked_sub(migration_cost)
         .ok_or(TorchMarketError::InsufficientMigrationFee)?;
 

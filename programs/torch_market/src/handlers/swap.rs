@@ -20,11 +20,7 @@ pub fn vault_swap(
     let vault = &ctx.accounts.torch_vault;
     let creator_key = vault.creator;
     let vault_bump = vault.bump;
-    let vault_seeds: &[&[u8]] = &[
-        TORCH_VAULT_SEED,
-        creator_key.as_ref(),
-        &[vault_bump],
-    ];
+    let vault_seeds: &[&[u8]] = &[TORCH_VAULT_SEED, creator_key.as_ref(), &[vault_bump]];
     let vault_signer = &[vault_seeds][..];
 
     if is_buy {

@@ -4,6 +4,7 @@ use anchor_spl::token_interface::{transfer_checked, TransferChecked};
 use crate::constants::*;
 use crate::contexts::*;
 use crate::errors::TorchMarketError;
+use crate::math;
 
 // Buy tokens from the bonding curve.
 // This is the core trading function. When a user buys:
@@ -45,73 +46,39 @@ pub fn buy(ctx: Context<Buy>, args: BuyArgs) -> Result<()> {
     let user_position = &mut ctx.accounts.user_position;
     let global_config = &ctx.accounts.global_config;
 
-    let protocol_fee_total = args
-        .sol_amount
-        .checked_mul(global_config.protocol_fee_bps as u64)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(10000)
-        .ok_or(TorchMarketError::MathOverflow)?;
-    let dev_wallet_share = protocol_fee_total
-        .checked_mul(DEV_WALLET_SHARE_BPS as u64)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(10000)
-        .ok_or(TorchMarketError::MathOverflow)?;
+    let protocol_fee_total =
+        math::calc_protocol_fee(args.sol_amount, global_config.protocol_fee_bps)
+            .ok_or(TorchMarketError::MathOverflow)?;
+    let dev_wallet_share =
+        math::calc_dev_wallet_share(protocol_fee_total).ok_or(TorchMarketError::MathOverflow)?;
     let protocol_fee = protocol_fee_total
         .checked_sub(dev_wallet_share)
         .ok_or(TorchMarketError::MathOverflow)?;
-    let token_treasury_fee = args
-        .sol_amount
-        .checked_mul(TREASURY_FEE_BPS as u64)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(10000)
-        .ok_or(TorchMarketError::MathOverflow)?;
+    let token_treasury_fee =
+        math::calc_token_treasury_fee(args.sol_amount).ok_or(TorchMarketError::MathOverflow)?;
     let sol_after_fees = args
         .sol_amount
         .checked_sub(protocol_fee_total)
         .ok_or(TorchMarketError::MathOverflow)?
         .checked_sub(token_treasury_fee)
         .ok_or(TorchMarketError::MathOverflow)?;
-    let reserves = bonding_curve.real_sol_reserves as u128;
     let target = if bonding_curve.bonding_target == 0 {
-        BONDING_TARGET_LAMPORTS as u128
+        BONDING_TARGET_LAMPORTS
     } else {
-        bonding_curve.bonding_target as u128
+        bonding_curve.bonding_target
     };
 
-    let treasury_rate_bps = {
-        let rate_range = (TREASURY_SOL_MAX_BPS - TREASURY_SOL_MIN_BPS) as u128;
-
-        let decay = reserves
-            .checked_mul(rate_range)
-            .ok_or(TorchMarketError::MathOverflow)?
-            .checked_div(target)
-            .ok_or(TorchMarketError::MathOverflow)?;
-
-        let rate = (TREASURY_SOL_MAX_BPS as u128).saturating_sub(decay);
-        rate.max(TREASURY_SOL_MIN_BPS as u128) as u16
-    };
-
-    let creator_rate_bps = {
-        let rate_range = (CREATOR_SOL_MAX_BPS - CREATOR_SOL_MIN_BPS) as u128;
-
-        let growth = reserves
-            .checked_mul(rate_range)
-            .ok_or(TorchMarketError::MathOverflow)?
-            .checked_div(target)
-            .ok_or(TorchMarketError::MathOverflow)?;
-
-        let rate = (CREATOR_SOL_MIN_BPS as u128)
-            .checked_add(growth)
-            .ok_or(TorchMarketError::MathOverflow)?;
-        rate.min(CREATOR_SOL_MAX_BPS as u128) as u16
-    };
+    let treasury_rate_bps = math::calc_treasury_rate_bps(bonding_curve.real_sol_reserves, target)
+        .ok_or(TorchMarketError::MathOverflow)?;
+    let creator_rate_bps = math::calc_creator_rate_bps(bonding_curve.real_sol_reserves, target)
+        .ok_or(TorchMarketError::MathOverflow)?;
 
     let total_split = sol_after_fees
         .checked_mul(treasury_rate_bps as u64)
         .ok_or(TorchMarketError::MathOverflow)?
         .checked_div(10000)
         .ok_or(TorchMarketError::MathOverflow)?;
-    let is_community_token = ctx.accounts.token_treasury.total_bought_back == COMMUNITY_TOKEN_SENTINEL;
+    let is_community_token = ctx.accounts.token_treasury.is_community_token;
     let creator_sol = if is_community_token {
         0u64
     } else {
@@ -132,15 +99,12 @@ pub fn buy(ctx: Context<Buy>, args: BuyArgs) -> Result<()> {
     let total_to_treasury = token_treasury_fee
         .checked_add(sol_to_treasury_split)
         .ok_or(TorchMarketError::MathOverflow)?;
-    let tokens_out = (bonding_curve.virtual_token_reserves as u128)
-        .checked_mul(sol_to_curve as u128)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(
-            (bonding_curve.virtual_sol_reserves as u128)
-                .checked_add(sol_to_curve as u128)
-                .ok_or(TorchMarketError::MathOverflow)?,
-        )
-        .ok_or(TorchMarketError::MathOverflow)? as u64;
+    let tokens_out = math::calc_tokens_out(
+        bonding_curve.virtual_token_reserves,
+        bonding_curve.virtual_sol_reserves,
+        sol_to_curve,
+    )
+    .ok_or(TorchMarketError::MathOverflow)?;
     require!(
         tokens_out <= bonding_curve.real_token_reserves,
         TorchMarketError::InsufficientTokens
@@ -167,11 +131,7 @@ pub fn buy(ctx: Context<Buy>, args: BuyArgs) -> Result<()> {
     );
 
     let mint_key = ctx.accounts.mint.key();
-    let seeds = &[
-        BONDING_CURVE_SEED,
-        mint_key.as_ref(),
-        &[bonding_curve.bump],
-    ];
+    let seeds = &[BONDING_CURVE_SEED, mint_key.as_ref(), &[bonding_curve.bump]];
     let signer_seeds = &[&seeds[..]][..];
     let token_destination = if let Some(ref vault_ata) = ctx.accounts.vault_token_account {
         vault_ata.to_account_info()
@@ -382,7 +342,7 @@ pub fn buy(ctx: Context<Buy>, args: BuyArgs) -> Result<()> {
             .checked_add(args.sol_amount)
             .ok_or(TorchMarketError::MathOverflow)?;
     }
-    
+
     Ok(())
 }
 
@@ -418,15 +378,12 @@ pub fn sell(ctx: Context<Sell>, args: SellArgs) -> Result<()> {
         TorchMarketError::InsufficientTokens
     );
 
-    let sol_out = (bonding_curve.virtual_sol_reserves as u128)
-        .checked_mul(args.token_amount as u128)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(
-            (bonding_curve.virtual_token_reserves as u128)
-                .checked_add(args.token_amount as u128)
-                .ok_or(TorchMarketError::MathOverflow)?,
-        )
-        .ok_or(TorchMarketError::MathOverflow)? as u64;
+    let sol_out = math::calc_sol_out(
+        bonding_curve.virtual_sol_reserves,
+        bonding_curve.virtual_token_reserves,
+        args.token_amount,
+    )
+    .ok_or(TorchMarketError::MathOverflow)?;
     let sell_fee = sol_out
         .checked_mul(SELL_FEE_BPS as u64)
         .ok_or(TorchMarketError::MathOverflow)?
@@ -448,17 +405,18 @@ pub fn sell(ctx: Context<Sell>, args: SellArgs) -> Result<()> {
     if ctx.accounts.torch_vault.is_some() {
         let vault = ctx.accounts.torch_vault.as_ref().unwrap();
         let creator_key = vault.creator;
-        let vault_seeds = &[
-            TORCH_VAULT_SEED,
-            creator_key.as_ref(),
-            &[vault.bump],
-        ];
+        let vault_seeds = &[TORCH_VAULT_SEED, creator_key.as_ref(), &[vault.bump]];
         let vault_signer_seeds = &[&vault_seeds[..]][..];
         transfer_checked(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
                 TransferChecked {
-                    from: ctx.accounts.vault_token_account.as_ref().unwrap().to_account_info(),
+                    from: ctx
+                        .accounts
+                        .vault_token_account
+                        .as_ref()
+                        .unwrap()
+                        .to_account_info(),
                     mint: ctx.accounts.mint.to_account_info(),
                     to: ctx.accounts.token_vault.to_account_info(),
                     authority: vault.to_account_info(),

@@ -48,10 +48,12 @@ pub fn advance_protocol_epoch(ctx: Context<AdvanceProtocolEpoch>) -> Result<()> 
     let reserve_floor = ctx.accounts.protocol_treasury.reserve_floor;
 
     ctx.accounts.protocol_treasury.current_balance = available_balance;
-    ctx.accounts.protocol_treasury.distributable_amount = available_balance
-        .saturating_sub(reserve_floor);
+    ctx.accounts.protocol_treasury.distributable_amount =
+        available_balance.saturating_sub(reserve_floor);
     ctx.accounts.protocol_treasury.total_volume_current_epoch = 0;
-    ctx.accounts.protocol_treasury.current_epoch = ctx.accounts.protocol_treasury
+    ctx.accounts.protocol_treasury.current_epoch = ctx
+        .accounts
+        .protocol_treasury
         .current_epoch
         .checked_add(1)
         .ok_or(TorchMarketError::MathOverflow)?;
@@ -71,15 +73,13 @@ pub fn claim_protocol_rewards(ctx: Context<ClaimProtocolRewards>) -> Result<()> 
     }
 
     let current_epoch = ctx.accounts.protocol_treasury.current_epoch;
-    require!(
-        current_epoch > 0,
-        TorchMarketError::NoRewardsAvailable
-    );
+    require!(current_epoch > 0, TorchMarketError::NoRewardsAvailable);
 
     if ctx.accounts.user_stats.last_volume_epoch < current_epoch
         && ctx.accounts.user_stats.volume_current_epoch > 0
     {
-        ctx.accounts.user_stats.volume_previous_epoch = ctx.accounts.user_stats.volume_current_epoch;
+        ctx.accounts.user_stats.volume_previous_epoch =
+            ctx.accounts.user_stats.volume_current_epoch;
         ctx.accounts.user_stats.volume_current_epoch = 0;
         ctx.accounts.user_stats.last_volume_epoch = current_epoch;
     }
@@ -110,17 +110,12 @@ pub fn claim_protocol_rewards(ctx: Context<ClaimProtocolRewards>) -> Result<()> 
         TorchMarketError::NoVolumeInEpoch
     );
 
-    let user_share = (ctx.accounts.user_stats.volume_previous_epoch as u128)
-        .checked_mul(ctx.accounts.protocol_treasury.distributable_amount as u128)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(ctx.accounts.protocol_treasury.total_volume_previous_epoch as u128)
-        .ok_or(TorchMarketError::MathOverflow)? as u64;
-    let claim_amount = user_share.min(ctx.accounts.protocol_treasury.distributable_amount);
-    let max_claim = ctx.accounts.protocol_treasury.distributable_amount
-        .checked_mul(MAX_CLAIM_SHARE_BPS)
-        .ok_or(TorchMarketError::MathOverflow)?
-        / 10_000;
-    let claim_amount = claim_amount.min(max_claim);
+    let claim_amount = crate::math::calc_claim_with_cap(
+        ctx.accounts.user_stats.volume_previous_epoch,
+        ctx.accounts.protocol_treasury.distributable_amount,
+        ctx.accounts.protocol_treasury.total_volume_previous_epoch,
+    )
+    .ok_or(TorchMarketError::MathOverflow)?;
     require!(
         claim_amount >= MIN_CLAIM_AMOUNT,
         TorchMarketError::ClaimBelowMinimum
@@ -149,23 +144,39 @@ pub fn claim_protocol_rewards(ctx: Context<ClaimProtocolRewards>) -> Result<()> 
                 .checked_add(claim_amount)
                 .ok_or(TorchMarketError::MathOverflow)?;
         } else {
-            **ctx.accounts.protocol_treasury.to_account_info().try_borrow_mut_lamports()? -= claim_amount;
-            **ctx.accounts.user.to_account_info().try_borrow_mut_lamports()? += claim_amount;
+            **ctx
+                .accounts
+                .protocol_treasury
+                .to_account_info()
+                .try_borrow_mut_lamports()? -= claim_amount;
+            **ctx
+                .accounts
+                .user
+                .to_account_info()
+                .try_borrow_mut_lamports()? += claim_amount;
         }
     }
 
-    ctx.accounts.protocol_treasury.current_balance = ctx.accounts.protocol_treasury
+    ctx.accounts.protocol_treasury.current_balance = ctx
+        .accounts
+        .protocol_treasury
         .current_balance
         .saturating_sub(claim_amount);
-    ctx.accounts.protocol_treasury.distributable_amount = ctx.accounts.protocol_treasury
+    ctx.accounts.protocol_treasury.distributable_amount = ctx
+        .accounts
+        .protocol_treasury
         .distributable_amount
         .saturating_sub(claim_amount);
-    ctx.accounts.protocol_treasury.total_distributed = ctx.accounts.protocol_treasury
+    ctx.accounts.protocol_treasury.total_distributed = ctx
+        .accounts
+        .protocol_treasury
         .total_distributed
         .checked_add(claim_amount)
         .ok_or(TorchMarketError::MathOverflow)?;
     ctx.accounts.user_stats.last_epoch_claimed = claimable_epoch;
-    ctx.accounts.user_stats.total_rewards_claimed = ctx.accounts.user_stats
+    ctx.accounts.user_stats.total_rewards_claimed = ctx
+        .accounts
+        .user_stats
         .total_rewards_claimed
         .checked_add(claim_amount)
         .ok_or(TorchMarketError::MathOverflow)?;

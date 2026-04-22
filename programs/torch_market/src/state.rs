@@ -5,7 +5,6 @@ pub struct GlobalConfig {
     pub authority: Pubkey,
     pub treasury: Pubkey,
     pub dev_wallet: Pubkey,
-    pub _deprecated_platform_treasury: Pubkey, // Layout compat — replaced by ProtocolTreasury PDA
     pub protocol_fee_bps: u16,
     pub paused: bool,
     pub total_tokens_launched: u64,
@@ -17,13 +16,12 @@ impl GlobalConfig {
     pub const LEN: usize = 8  // discriminator
         + 32  // authority
         + 32  // treasury
-        + 32  // dev_wallet [V8]
-        + 32  // _deprecated_platform_treasury [V4, deprecated V3.2]
+        + 32  // dev_wallet
         + 2   // protocol_fee_bps
         + 1   // paused
         + 8   // total_tokens_launched
         + 8   // total_volume_sol
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -34,17 +32,8 @@ pub struct BondingCurve {
     pub virtual_token_reserves: u64,
     pub real_sol_reserves: u64,
     pub real_token_reserves: u64,
-    // V36: vote fields below are deprecated — kept for Borsh layout compatibility.
-    // New tokens initialize vote_finalized=true so migration gate passes without votes.
-    pub vote_vault_balance: u64,
-    pub permanently_burned_tokens: u64,
     pub bonding_complete: bool,
     pub bonding_complete_slot: u64,
-    pub votes_return: u64,
-    pub votes_burn: u64,
-    pub total_voters: u64,
-    pub vote_finalized: bool,
-    pub vote_result_return: bool,
     pub migrated: bool,
     pub is_token_2022: bool,
     pub last_activity_slot: u64,
@@ -65,25 +54,18 @@ impl BondingCurve {
         + 8   // virtual_token_reserves
         + 8   // real_sol_reserves
         + 8   // real_token_reserves
-        + 8   // vote_vault_balance [V13: renamed from burned_token_reserves]
-        + 8   // permanently_burned_tokens [V2]
         + 1   // bonding_complete
         + 8   // bonding_complete_slot
-        + 8   // votes_return
-        + 8   // votes_burn
-        + 8   // total_voters
-        + 1   // vote_finalized
-        + 1   // vote_result_return
         + 1   // migrated
-        + 1   // is_token_2022 (V3)
-        + 8   // last_activity_slot [V4]
-        + 1   // reclaimed [V4]
+        + 1   // is_token_2022
+        + 8   // last_activity_slot
+        + 1   // reclaimed
         + 32  // name
         + 10  // symbol
         + 200 // uri
         + 1   // bump
-        + 1   // treasury_bump [V2]
-        + 8;  // bonding_target [V23]
+        + 1   // treasury_bump
+        + 8; // bonding_target
 }
 
 #[account]
@@ -94,8 +76,6 @@ pub struct UserPosition {
     pub tokens_received: u64,
     pub tokens_burned: u64,
     pub total_sol_spent: u64,
-    pub has_voted: bool,
-    pub vote_return: bool,
     pub bump: u8,
 }
 
@@ -107,9 +87,7 @@ impl UserPosition {
         + 8   // tokens_received
         + 8   // tokens_burned
         + 8   // total_sol_spent
-        + 1   // has_voted
-        + 1   // vote_return
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -117,22 +95,24 @@ pub struct Treasury {
     pub bonding_curve: Pubkey,
     pub mint: Pubkey,
     pub sol_balance: u64,
-    // Sentinel u64::MAX = community token (no creator fees). Otherwise legacy counter.
-    pub total_bought_back: u64,
-    // Repurposed: tracks total SOL collateral locked by short sellers when shorts enabled.
-    pub total_burned_from_buyback: u64,
-    pub tokens_held: u64,
+    // Flag: this token was created as a community token (0% creator fees,
+    // 100% of post-fee SOL to treasury). Replaces the `total_bought_back`
+    // u64::MAX sentinel from pre-v20.
+    pub is_community_token: bool,
+    // SOL reserved as collateral by active short positions. Subtracted from
+    // sol_balance when computing available-to-lend. Replaces the repurposed
+    // `total_burned_from_buyback` counter from pre-v20.
+    pub short_collateral_reserved: u64,
     pub last_buyback_slot: u64,
-    pub buyback_count: u64,
     pub harvested_fees: u64,
     pub bump: u8,
 
+    // Baseline for post-migration ratio gating on `swap_fees_to_sol`.
     pub baseline_sol_reserves: u64,
     pub baseline_token_reserves: u64,
-    pub ratio_threshold_bps: u16,
-    pub reserve_ratio_bps: u16,
-    // Sentinel u16::MAX = short selling enabled for this token.
-    pub buyback_percent_bps: u16,
+    // Flag: short selling has been enabled for this token. Replaces the
+    // `buyback_percent_bps == u16::MAX` sentinel from pre-v20.
+    pub short_selling_enabled: bool,
     pub min_buyback_interval_slots: u64,
     pub baseline_initialized: bool,
 
@@ -140,6 +120,7 @@ pub struct Treasury {
     pub star_sol_balance: u64,
     pub creator_paid_out: bool,
 
+    // Treasury lending state.
     pub total_sol_lent: u64,
     pub total_collateral_locked: u64,
     pub active_loans: u64,
@@ -158,26 +139,19 @@ impl Treasury {
         + 32  // bonding_curve
         + 32  // mint
         + 8   // sol_balance
-        + 8   // total_bought_back
-        + 8   // total_burned_from_buyback
-        + 8   // tokens_held
+        + 1   // is_community_token
+        + 8   // short_collateral_reserved
         + 8   // last_buyback_slot
-        + 8   // buyback_count
-        + 8   // harvested_fees (V3)
+        + 8   // harvested_fees
         + 1   // bump
-        // V9: Auto Buyback Config
         + 8   // baseline_sol_reserves
         + 8   // baseline_token_reserves
-        + 2   // ratio_threshold_bps
-        + 2   // reserve_ratio_bps
-        + 2   // buyback_percent_bps
+        + 1   // short_selling_enabled
         + 8   // min_buyback_interval_slots
         + 1   // baseline_initialized
-        // V10: Star/Creator Payout
         + 8   // total_stars
         + 8   // star_sol_balance
         + 1   // creator_paid_out
-        // V2.4: Treasury Lending
         + 8   // total_sol_lent
         + 8   // total_collateral_locked
         + 8   // active_loans
@@ -188,7 +162,7 @@ impl Treasury {
         + 2   // liquidation_threshold_bps
         + 2   // liquidation_bonus_bps
         + 2   // liquidation_close_bps
-        + 2;  // lending_utilization_cap_bps
+        + 2; // lending_utilization_cap_bps
 }
 
 #[account]
@@ -212,7 +186,7 @@ impl UserStats {
         + 8   // last_epoch_claimed
         + 8   // total_rewards_claimed
         + 8   // last_volume_epoch
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -228,7 +202,7 @@ impl StarRecord {
         + 32  // user
         + 32  // mint
         + 8   // starred_at_slot
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -258,7 +232,7 @@ impl ProtocolTreasury {
         + 8   // total_volume_current_epoch
         + 8   // total_volume_previous_epoch
         + 8   // distributable_amount
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -280,7 +254,7 @@ impl LoanPosition {
         + 8   // borrowed_amount
         + 8   // accrued_interest
         + 8   // last_update_slot
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -305,10 +279,10 @@ impl TorchVault {
         + 8   // total_deposited
         + 8   // total_withdrawn
         + 8   // total_spent
-        + 8   // total_received [V18]
+        + 8   // total_received
         + 1   // linked_wallets
         + 8   // created_at
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -324,7 +298,7 @@ impl VaultWalletLink {
         + 32  // vault
         + 32  // wallet
         + 8   // linked_at
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -336,7 +310,7 @@ pub struct TreasuryLock {
 impl TreasuryLock {
     pub const LEN: usize = 8   // discriminator
         + 32  // mint
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -358,7 +332,7 @@ impl ShortPosition {
         + 8   // tokens_borrowed
         + 8   // accrued_interest
         + 8   // last_update_slot
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -376,5 +350,5 @@ impl ShortConfig {
         + 8   // total_tokens_lent
         + 8   // active_positions
         + 8   // total_interest_collected
-        + 1;  // bump
+        + 1; // bump
 }
