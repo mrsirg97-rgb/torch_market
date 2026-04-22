@@ -15,6 +15,13 @@ anchor build
 cargo kani
 ```
 
+## run proptest
+
+```bash
+anchor build
+cargo test
+```
+
 ## run the sim
 
 ```bash
