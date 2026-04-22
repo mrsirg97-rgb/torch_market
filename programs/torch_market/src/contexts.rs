@@ -1,13 +1,16 @@
-
 use anchor_lang::prelude::*;
 use anchor_spl::{
     associated_token::AssociatedToken,
-    token_interface::{Mint as MintInterface, TokenAccount as TokenAccountInterface, TokenInterface},
+    token_interface::{
+        Mint as MintInterface, TokenAccount as TokenAccountInterface, TokenInterface,
+    },
 };
 
 use crate::constants::*;
 use crate::errors::TorchMarketError;
-use crate::pool_validation::{order_mints, derive_pool_state, derive_pool_vault, derive_observation_state};
+use crate::pool_validation::{
+    derive_observation_state, derive_pool_state, derive_pool_vault, order_mints,
+};
 use crate::state::*;
 use crate::token_2022_utils::TOKEN_2022_PROGRAM_ID;
 

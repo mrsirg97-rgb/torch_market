@@ -1,19 +1,15 @@
 pub const TOTAL_SUPPLY: u64 = 1_000_000_000_000_000;
 pub const MAX_WALLET_TOKENS: u64 = 20_000_000_000_000;
-pub const TREASURY_SOL_MAX_BPS: u16 = 1750;  // 17.5% at start
-pub const TREASURY_SOL_MIN_BPS: u16 = 250;   // 2.5% at completion
+pub const TREASURY_SOL_MAX_BPS: u16 = 1750; // 17.5% at start
+pub const TREASURY_SOL_MIN_BPS: u16 = 250; // 2.5% at completion
 pub const TREASURY_FEE_BPS: u16 = 0;
-pub const DEV_WALLET_SHARE_BPS: u16 = 5000;  // 50% of protocol fee to dev, 50% to user rewards
+pub const DEV_WALLET_SHARE_BPS: u16 = 5000; // 50% of protocol fee to dev, 50% to user rewards
 pub const SELL_FEE_BPS: u16 = 0;
 pub const BONDING_TARGET_LAMPORTS: u64 = 200_000_000_000;
-pub const BONDING_TARGET_SPARK: u64 = 50_000_000_000;   // 50 SOL
-pub const BONDING_TARGET_FLAME: u64 = 100_000_000_000;  // 100 SOL
-pub const BONDING_TARGET_TORCH: u64 = 200_000_000_000;  // 200 SOL (default)
-pub const VALID_BONDING_TARGETS: [u64; 2] = [
-    BONDING_TARGET_FLAME,
-    BONDING_TARGET_TORCH,
-];
-
+pub const BONDING_TARGET_SPARK: u64 = 50_000_000_000; // 50 SOL
+pub const BONDING_TARGET_FLAME: u64 = 100_000_000_000; // 100 SOL
+pub const BONDING_TARGET_TORCH: u64 = 200_000_000_000; // 200 SOL (default)
+pub const VALID_BONDING_TARGETS: [u64; 2] = [BONDING_TARGET_FLAME, BONDING_TARGET_TORCH];
 pub const TOKEN_DECIMALS: u8 = 6;
 pub const INITIAL_VIRTUAL_SOL: u64 = 30_000_000_000;
 pub const INITIAL_VIRTUAL_TOKENS: u64 = 107_300_000_000_000;
@@ -24,10 +20,10 @@ pub const INITIAL_VIRTUAL_TOKENS_V27: u64 = 756_250_000_000_000;
 
 pub fn initial_virtual_reserves(bonding_target: u64) -> (u64, u64) {
     match bonding_target {
-        BONDING_TARGET_SPARK => (18_750_000_000, INITIAL_VIRTUAL_TOKENS_V27),   // 18.75 SOL
-        BONDING_TARGET_FLAME => (37_500_000_000, INITIAL_VIRTUAL_TOKENS_V27),   // 37.5 SOL
-        BONDING_TARGET_TORCH => (75_000_000_000, INITIAL_VIRTUAL_TOKENS_V27),   // 75 SOL
-        _ => (INITIAL_VIRTUAL_SOL, INITIAL_VIRTUAL_TOKENS),                      // Legacy
+        BONDING_TARGET_SPARK => (18_750_000_000, INITIAL_VIRTUAL_TOKENS_V27), // 18.75 SOL
+        BONDING_TARGET_FLAME => (37_500_000_000, INITIAL_VIRTUAL_TOKENS_V27), // 37.5 SOL
+        BONDING_TARGET_TORCH => (75_000_000_000, INITIAL_VIRTUAL_TOKENS_V27), // 75 SOL
+        _ => (INITIAL_VIRTUAL_SOL, INITIAL_VIRTUAL_TOKENS),                   // Legacy
     }
 }
 
@@ -52,15 +48,17 @@ pub const MIN_MIGRATION_SOL: u64 = 1_500_000_000; // 1.5 SOL
 // Mainnet: CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C
 // Devnet:  CPMDWBwJDtYax9qW7AyRuVC19Cc4L4Vcy4n2BHAbHkCW
 #[cfg(not(feature = "devnet"))]
-pub const RAYDIUM_CPMM_PROGRAM_ID: anchor_lang::prelude::Pubkey = anchor_lang::prelude::Pubkey::new_from_array([
-    169, 42, 90, 139, 79, 41, 89, 82, 132, 37, 80, 170, 147, 253, 91, 149,
-    181, 172, 230, 168, 235, 146, 12, 147, 148, 46, 67, 105, 12, 32, 236, 115,
-]);
+pub const RAYDIUM_CPMM_PROGRAM_ID: anchor_lang::prelude::Pubkey =
+    anchor_lang::prelude::Pubkey::new_from_array([
+        169, 42, 90, 139, 79, 41, 89, 82, 132, 37, 80, 170, 147, 253, 91, 149, 181, 172, 230, 168,
+        235, 146, 12, 147, 148, 46, 67, 105, 12, 32, 236, 115,
+    ]);
 #[cfg(feature = "devnet")]
-pub const RAYDIUM_CPMM_PROGRAM_ID: anchor_lang::prelude::Pubkey = anchor_lang::prelude::Pubkey::new_from_array([
-    169, 42, 49, 26, 136, 152, 134, 77, 32, 99, 200, 252, 203, 83, 110, 30,
-    138, 48, 77, 141, 83, 152, 76, 10, 78, 179, 193, 68, 7, 214, 116, 231,
-]);
+pub const RAYDIUM_CPMM_PROGRAM_ID: anchor_lang::prelude::Pubkey =
+    anchor_lang::prelude::Pubkey::new_from_array([
+        169, 42, 49, 26, 136, 152, 134, 77, 32, 99, 200, 252, 203, 83, 110, 30, 138, 48, 77, 141,
+        83, 152, 76, 10, 78, 179, 193, 68, 7, 214, 116, 231,
+    ]);
 
 // Raydium AMM Config
 // Constrains which Raydium pool can be used for vault swaps.
@@ -68,15 +66,17 @@ pub const RAYDIUM_CPMM_PROGRAM_ID: anchor_lang::prelude::Pubkey = anchor_lang::p
 // Mainnet: D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2
 // Devnet:  9zSzfkYy6awexsHvmggeH36pfVUdDGyCcwmjT3AQPBj6
 #[cfg(not(feature = "devnet"))]
-pub const RAYDIUM_AMM_CONFIG: anchor_lang::prelude::Pubkey = anchor_lang::prelude::Pubkey::new_from_array([
-    179, 33, 63, 186, 139, 249, 200, 127, 169, 30, 71, 129, 150, 40, 195, 131,
-    224, 11, 234, 126, 152, 199, 160, 62, 3, 186, 16, 105, 207, 195, 246, 243,
-]);
+pub const RAYDIUM_AMM_CONFIG: anchor_lang::prelude::Pubkey =
+    anchor_lang::prelude::Pubkey::new_from_array([
+        179, 33, 63, 186, 139, 249, 200, 127, 169, 30, 71, 129, 150, 40, 195, 131, 224, 11, 234,
+        126, 152, 199, 160, 62, 3, 186, 16, 105, 207, 195, 246, 243,
+    ]);
 #[cfg(feature = "devnet")]
-pub const RAYDIUM_AMM_CONFIG: anchor_lang::prelude::Pubkey = anchor_lang::prelude::Pubkey::new_from_array([
-    133, 148, 254, 76, 78, 52, 206, 247, 143, 191, 153, 193, 196, 159, 191, 131,
-    75, 191, 127, 200, 157, 54, 17, 92, 40, 71, 106, 78, 131, 72, 250, 241,
-]);
+pub const RAYDIUM_AMM_CONFIG: anchor_lang::prelude::Pubkey =
+    anchor_lang::prelude::Pubkey::new_from_array([
+        133, 148, 254, 76, 78, 52, 206, 247, 143, 191, 153, 193, 196, 159, 191, 131, 75, 191, 127,
+        200, 157, 54, 17, 92, 40, 71, 106, 78, 131, 72, 250, 241,
+    ]);
 
 pub const STAR_COST_LAMPORTS: u64 = 20_000_000;
 pub const CREATOR_FEE_SHARE_BPS: u16 = 1500;
@@ -120,11 +120,11 @@ pub const MAX_PRICE_DEVIATION_BPS: u64 = 5000;
 
 // Depth-based risk bands: pool SOL thresholds and corresponding max LTV (bps).
 // More SOL in pool = harder to manipulate = higher LTV allowed.
-pub const DEPTH_TIER_1: u64 = 50_000_000_000;   // 50 SOL
-pub const DEPTH_TIER_2: u64 = 200_000_000_000;  // 200 SOL
-pub const DEPTH_TIER_3: u64 = 500_000_000_000;  // 500 SOL
-pub const DEPTH_LTV_0: u16 = 2500;  // < 50 SOL  → 25%
-pub const DEPTH_LTV_1: u16 = 3500;  // 50-200 SOL → 35%
-pub const DEPTH_LTV_2: u16 = 4500;  // 200-500 SOL → 45%
-pub const DEPTH_LTV_3: u16 = 5000;  // 500+ SOL  → 50%
+pub const DEPTH_TIER_1: u64 = 50_000_000_000; // 50 SOL
+pub const DEPTH_TIER_2: u64 = 200_000_000_000; // 200 SOL
+pub const DEPTH_TIER_3: u64 = 500_000_000_000; // 500 SOL
+pub const DEPTH_LTV_0: u16 = 2500; // < 50 SOL  → 25%
+pub const DEPTH_LTV_1: u16 = 3500; // 50-200 SOL → 35%
+pub const DEPTH_LTV_2: u16 = 4500; // 200-500 SOL → 45%
+pub const DEPTH_LTV_3: u16 = 5000; // 500+ SOL  → 50%
 pub const SHORT_ENABLED_SENTINEL: u16 = u16::MAX; // Stored in Treasury.buyback_percent_bps to flag short selling enabled

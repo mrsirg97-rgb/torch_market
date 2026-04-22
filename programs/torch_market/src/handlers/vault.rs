@@ -95,7 +95,7 @@ pub fn link_wallet(ctx: Context<LinkWallet>) -> Result<()> {
     wallet_link.wallet = ctx.accounts.wallet_to_link.key();
     wallet_link.linked_at = Clock::get()?.unix_timestamp;
     wallet_link.bump = ctx.bumps.wallet_link;
-    
+
     let vault = &mut ctx.accounts.vault;
     vault.linked_wallets = vault
         .linked_wallets
@@ -136,11 +136,7 @@ pub fn withdraw_tokens(ctx: Context<WithdrawTokens>, amount: u64) -> Result<()> 
     );
 
     let creator_key = vault.creator;
-    let seeds = &[
-        TORCH_VAULT_SEED,
-        creator_key.as_ref(),
-        &[vault.bump],
-    ];
+    let seeds = &[TORCH_VAULT_SEED, creator_key.as_ref(), &[vault.bump]];
     let signer_seeds = &[&seeds[..]][..];
 
     transfer_checked(

@@ -23,7 +23,7 @@ impl GlobalConfig {
         + 1   // paused
         + 8   // total_tokens_launched
         + 8   // total_volume_sol
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -83,7 +83,7 @@ impl BondingCurve {
         + 200 // uri
         + 1   // bump
         + 1   // treasury_bump [V2]
-        + 8;  // bonding_target [V23]
+        + 8; // bonding_target [V23]
 }
 
 #[account]
@@ -109,7 +109,7 @@ impl UserPosition {
         + 8   // total_sol_spent
         + 1   // has_voted
         + 1   // vote_return
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -188,7 +188,7 @@ impl Treasury {
         + 2   // liquidation_threshold_bps
         + 2   // liquidation_bonus_bps
         + 2   // liquidation_close_bps
-        + 2;  // lending_utilization_cap_bps
+        + 2; // lending_utilization_cap_bps
 }
 
 #[account]
@@ -212,7 +212,7 @@ impl UserStats {
         + 8   // last_epoch_claimed
         + 8   // total_rewards_claimed
         + 8   // last_volume_epoch
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -228,7 +228,7 @@ impl StarRecord {
         + 32  // user
         + 32  // mint
         + 8   // starred_at_slot
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -258,7 +258,7 @@ impl ProtocolTreasury {
         + 8   // total_volume_current_epoch
         + 8   // total_volume_previous_epoch
         + 8   // distributable_amount
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -280,7 +280,7 @@ impl LoanPosition {
         + 8   // borrowed_amount
         + 8   // accrued_interest
         + 8   // last_update_slot
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -308,7 +308,7 @@ impl TorchVault {
         + 8   // total_received [V18]
         + 1   // linked_wallets
         + 8   // created_at
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -324,7 +324,7 @@ impl VaultWalletLink {
         + 32  // vault
         + 32  // wallet
         + 8   // linked_at
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -336,7 +336,7 @@ pub struct TreasuryLock {
 impl TreasuryLock {
     pub const LEN: usize = 8   // discriminator
         + 32  // mint
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -358,7 +358,7 @@ impl ShortPosition {
         + 8   // tokens_borrowed
         + 8   // accrued_interest
         + 8   // last_update_slot
-        + 1;  // bump
+        + 1; // bump
 }
 
 #[account]
@@ -376,5 +376,5 @@ impl ShortConfig {
         + 8   // total_tokens_lent
         + 8   // active_positions
         + 8   // total_interest_collected
-        + 1;  // bump
+        + 1; // bump
 }

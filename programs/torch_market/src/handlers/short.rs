@@ -4,40 +4,14 @@ use anchor_spl::token_interface::{transfer_checked, TransferChecked};
 use crate::constants::*;
 use crate::contexts::*;
 use crate::errors::TorchMarketError;
-use crate::pool_validation::{read_token_account_balance, validate_pool_accounts, require_min_pool_liquidity, get_depth_max_ltv_bps, is_wsol_vault_0};
+use crate::math;
+use crate::pool_validation::{
+    get_depth_max_ltv_bps, is_wsol_vault_0, read_token_account_balance, require_min_pool_liquidity,
+    validate_pool_accounts,
+};
 use crate::state::ShortPosition;
 
-// Calculate token debt value in lamports using Raydium pool reserves.
-// value = token_debt * pool_sol / pool_tokens
-fn calculate_debt_value(
-    token_debt: u64,
-    pool_sol: u64,
-    pool_tokens: u64,
-) -> Result<u64> {
-    let value = (token_debt as u128)
-        .checked_mul(pool_sol as u128)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(pool_tokens as u128)
-        .ok_or(TorchMarketError::MathOverflow)?;
-    Ok(value as u64)
-}
-
-// Calculate LTV in basis points: (debt_value * 10000) / collateral_value
-fn calculate_ltv_bps(debt_value: u64, collateral_value: u64) -> Result<u64> {
-    if collateral_value == 0 {
-        return Ok(u64::MAX);
-    }
-
-    let ltv = (debt_value as u128)
-        .checked_mul(10000)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(collateral_value as u128)
-        .ok_or(TorchMarketError::MathOverflow)?;
-    Ok(ltv as u64)
-}
-
 // Accrue interest on a short position in token terms.
-// interest = tokens_borrowed * rate_bps * slots_elapsed / (10000 * EPOCH_DURATION_SLOTS)
 fn accrue_interest(position: &mut Account<ShortPosition>, interest_rate_bps: u16) -> Result<()> {
     if position.tokens_borrowed == 0 {
         return Ok(());
@@ -49,17 +23,9 @@ fn accrue_interest(position: &mut Account<ShortPosition>, interest_rate_bps: u16
         return Ok(());
     }
 
-    let interest = (position.tokens_borrowed as u128)
-        .checked_mul(interest_rate_bps as u128)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_mul(slots_elapsed as u128)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(
-            10000_u128
-                .checked_mul(EPOCH_DURATION_SLOTS as u128)
-                .ok_or(TorchMarketError::MathOverflow)?,
-        )
-        .ok_or(TorchMarketError::MathOverflow)? as u64;
+    let interest =
+        math::calc_short_interest(position.tokens_borrowed, interest_rate_bps, slots_elapsed)
+            .ok_or(TorchMarketError::MathOverflow)?;
 
     position.accrued_interest = position
         .accrued_interest
@@ -182,8 +148,15 @@ pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
     let vault_0_bal = read_token_account_balance(&ctx.accounts.token_vault_0)?;
     let vault_1_bal = read_token_account_balance(&ctx.accounts.token_vault_1)?;
     let wsol_is_0 = is_wsol_vault_0(&ctx.accounts.pool_state)?;
-    let (pool_sol, pool_tokens) = if wsol_is_0 { (vault_0_bal, vault_1_bal) } else { (vault_1_bal, vault_0_bal) };
-    require!(pool_sol > 0 && pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
+    let (pool_sol, pool_tokens) = if wsol_is_0 {
+        (vault_0_bal, vault_1_bal)
+    } else {
+        (vault_1_bal, vault_0_bal)
+    };
+    require!(
+        pool_sol > 0 && pool_tokens > 0,
+        TorchMarketError::ZeroPoolReserves
+    );
 
     let depth_max_ltv = get_depth_max_ltv_bps(pool_sol);
     require!(depth_max_ltv > 0, TorchMarketError::PoolTooThin);
@@ -195,8 +168,10 @@ pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
         .ok_or(TorchMarketError::MathOverflow)?
         .checked_add(args.tokens_to_borrow)
         .ok_or(TorchMarketError::MathOverflow)?;
-    let debt_value = calculate_debt_value(total_token_debt, pool_sol, pool_tokens)?;
-    let new_ltv = calculate_ltv_bps(debt_value, user_collateral)?;
+    let debt_value = math::calc_short_debt_value(total_token_debt, pool_sol, pool_tokens)
+        .ok_or(TorchMarketError::MathOverflow)?;
+    let new_ltv =
+        math::calc_ltv_bps(debt_value, user_collateral).ok_or(TorchMarketError::MathOverflow)?;
     require!(
         new_ltv <= effective_max_ltv as u64,
         TorchMarketError::LtvExceeded
@@ -353,7 +328,11 @@ pub fn close_short(ctx: Context<CloseShort>, token_amount: u64) -> Result<()> {
         .checked_add(position.accrued_interest)
         .ok_or(TorchMarketError::MathOverflow)?;
     let is_full_close = token_amount >= total_owed;
-    let actual_return = if is_full_close { total_owed } else { token_amount };
+    let actual_return = if is_full_close {
+        total_owed
+    } else {
+        token_amount
+    };
     let token_source = if ctx.accounts.vault_token_account.is_some() {
         ctx.accounts
             .vault_token_account
@@ -367,11 +346,7 @@ pub fn close_short(ctx: Context<CloseShort>, token_amount: u64) -> Result<()> {
     if ctx.accounts.torch_vault.is_some() {
         let vault = ctx.accounts.torch_vault.as_ref().unwrap();
         let creator_key = vault.creator;
-        let vault_seeds = &[
-            TORCH_VAULT_SEED,
-            creator_key.as_ref(),
-            &[vault.bump],
-        ];
+        let vault_seeds = &[TORCH_VAULT_SEED, creator_key.as_ref(), &[vault.bump]];
         let vault_signer_seeds = &[&vault_seeds[..]][..];
 
         transfer_checked(
@@ -538,8 +513,15 @@ pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
     let vault_0_bal = read_token_account_balance(&ctx.accounts.token_vault_0)?;
     let vault_1_bal = read_token_account_balance(&ctx.accounts.token_vault_1)?;
     let wsol_is_0 = is_wsol_vault_0(&ctx.accounts.pool_state)?;
-    let (pool_sol, pool_tokens) = if wsol_is_0 { (vault_0_bal, vault_1_bal) } else { (vault_1_bal, vault_0_bal) };
-    require!(pool_sol > 0 && pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
+    let (pool_sol, pool_tokens) = if wsol_is_0 {
+        (vault_0_bal, vault_1_bal)
+    } else {
+        (vault_1_bal, vault_0_bal)
+    };
+    require!(
+        pool_sol > 0 && pool_tokens > 0,
+        TorchMarketError::ZeroPoolReserves
+    );
 
     require_min_pool_liquidity(pool_sol)?;
 
@@ -547,8 +529,10 @@ pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
         .tokens_borrowed
         .checked_add(position.accrued_interest)
         .ok_or(TorchMarketError::MathOverflow)?;
-    let debt_value = calculate_debt_value(total_token_debt, pool_sol, pool_tokens)?;
-    let current_ltv = calculate_ltv_bps(debt_value, position.sol_collateral)?;
+    let debt_value = math::calc_short_debt_value(total_token_debt, pool_sol, pool_tokens)
+        .ok_or(TorchMarketError::MathOverflow)?;
+    let current_ltv = math::calc_ltv_bps(debt_value, position.sol_collateral)
+        .ok_or(TorchMarketError::MathOverflow)?;
     require!(
         current_ltv > treasury.liquidation_threshold_bps as u64,
         TorchMarketError::ShortNotLiquidatable
@@ -560,12 +544,11 @@ pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
         .checked_div(10000)
         .ok_or(TorchMarketError::MathOverflow)? as u64;
     let tokens_to_cover = max_tokens_to_cover.min(total_token_debt);
-    let tokens_covered_value = calculate_debt_value(tokens_to_cover, pool_sol, pool_tokens)?;
-    let sol_to_seize = (tokens_covered_value as u128)
-        .checked_mul((10000 + treasury.liquidation_bonus_bps as u64) as u128)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(10000)
-        .ok_or(TorchMarketError::MathOverflow)? as u64;
+    let tokens_covered_value = math::calc_short_debt_value(tokens_to_cover, pool_sol, pool_tokens)
+        .ok_or(TorchMarketError::MathOverflow)?;
+    let sol_to_seize =
+        math::calc_short_sol_to_seize(tokens_covered_value, treasury.liquidation_bonus_bps)
+            .ok_or(TorchMarketError::MathOverflow)?;
     let actual_sol_seized = sol_to_seize.min(position.sol_collateral);
     let actual_tokens_covered = if sol_to_seize > position.sol_collateral {
         (tokens_to_cover as u128)
@@ -598,11 +581,7 @@ pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
         if ctx.accounts.torch_vault.is_some() {
             let vault = ctx.accounts.torch_vault.as_ref().unwrap();
             let creator_key = vault.creator;
-            let vault_seeds = &[
-                TORCH_VAULT_SEED,
-                creator_key.as_ref(),
-                &[vault.bump],
-            ];
+            let vault_seeds = &[TORCH_VAULT_SEED, creator_key.as_ref(), &[vault.bump]];
             let vault_signer_seeds = &[&vault_seeds[..]][..];
 
             transfer_checked(
@@ -688,21 +667,15 @@ pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
             .saturating_sub(remaining_tokens_paid);
     }
 
-    position.sol_collateral = position
-        .sol_collateral
-        .saturating_sub(actual_sol_seized);
+    position.sol_collateral = position.sol_collateral.saturating_sub(actual_sol_seized);
     if bad_debt_tokens > 0 {
-        position.tokens_borrowed = position
-            .tokens_borrowed
-            .saturating_sub(bad_debt_tokens);
+        position.tokens_borrowed = position.tokens_borrowed.saturating_sub(bad_debt_tokens);
         position.accrued_interest = 0;
     }
 
     let fully_liquidated = position.tokens_borrowed == 0 && position.accrued_interest == 0;
     let treasury = &mut ctx.accounts.treasury;
-    treasury.sol_balance = treasury
-        .sol_balance
-        .saturating_sub(actual_sol_seized);
+    treasury.sol_balance = treasury.sol_balance.saturating_sub(actual_sol_seized);
     treasury.total_burned_from_buyback = treasury
         .total_burned_from_buyback
         .saturating_sub(actual_sol_seized);

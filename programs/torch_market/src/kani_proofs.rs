@@ -9,144 +9,12 @@
 //! using symbolic inputs constrained to realistic protocol ranges.
 
 use crate::constants::*;
+use crate::math::*;
 
-// ============================================================================
-// Pure math replicas (extracted from handlers for standalone verification)
-// ============================================================================
-
-fn calc_protocol_fee(sol_amount: u64, fee_bps: u16) -> Option<u64> {
-    sol_amount.checked_mul(fee_bps as u64)?.checked_div(10000)
-}
-
-fn calc_dev_wallet_share(protocol_fee_total: u64) -> Option<u64> {
-    protocol_fee_total
-        .checked_mul(DEV_WALLET_SHARE_BPS as u64)?
-        .checked_div(10000)
-}
-
-fn calc_token_treasury_fee(sol_amount: u64) -> Option<u64> {
-    sol_amount
-        .checked_mul(TREASURY_FEE_BPS as u64)?
-        .checked_div(10000)
-}
-
-// [V10] Flat 15% → 2.5% treasury rate decay (was 12.5% → 4% in V4.0, 20% → 5% in V2.3)
-fn calc_treasury_rate_bps(real_sol_reserves: u64, target: u64) -> Option<u16> {
-    let rate_range = (TREASURY_SOL_MAX_BPS - TREASURY_SOL_MIN_BPS) as u128;
-    let decay = (real_sol_reserves as u128)
-        .checked_mul(rate_range)?
-        .checked_div(target as u128)?;
-    let rate = (TREASURY_SOL_MAX_BPS as u128).saturating_sub(decay);
-    Some(rate.max(TREASURY_SOL_MIN_BPS as u128) as u16)
-}
-
-// Helper: assume target is one of the valid tiers
+// Kani-only helper: restrict `target` to a valid bonding tier.
 // [V4.0] Removed SPARK (50 SOL) — no longer a valid creation target
 fn assume_valid_target(target: u64) {
-    kani::assume(
-        target == BONDING_TARGET_FLAME
-            || target == BONDING_TARGET_TORCH,
-    );
-}
-
-fn calc_tokens_out(vt: u64, vs: u64, sol_in: u64) -> Option<u64> {
-    let num = (vt as u128).checked_mul(sol_in as u128)?;
-    let den = (vs as u128).checked_add(sol_in as u128)?;
-    Some(num.checked_div(den)? as u64)
-}
-
-fn calc_sol_out(vs: u64, vt: u64, tokens: u64) -> Option<u64> {
-    let num = (vs as u128).checked_mul(tokens as u128)?;
-    let den = (vt as u128).checked_add(tokens as u128)?;
-    Some(num.checked_div(den)? as u64)
-}
-
-// [V36] calc_tokens_to_buyer removed — tokens_to_buyer == tokens_out (100%)
-
-// [V34] Creator SOL rate: 0.2%→1% linear growth as bonding progresses
-fn calc_creator_rate_bps(real_sol_reserves: u64, target: u64) -> Option<u16> {
-    let rate_range = (CREATOR_SOL_MAX_BPS - CREATOR_SOL_MIN_BPS) as u128;
-    let growth = (real_sol_reserves as u128)
-        .checked_mul(rate_range)?
-        .checked_div(target as u128)?;
-    let rate = (CREATOR_SOL_MIN_BPS as u128).checked_add(growth)?;
-    Some(rate.min(CREATOR_SOL_MAX_BPS as u128) as u16)
-}
-
-// [V34] Creator's share of post-migration fee swap proceeds
-fn calc_creator_fee_share(sol_received: u64) -> Option<u64> {
-    Some(
-        (sol_received as u128)
-            .checked_mul(CREATOR_FEE_SHARE_BPS as u128)?
-            .checked_div(10000)? as u64,
-    )
-}
-
-fn calc_transfer_fee(amount: u64) -> Option<u64> {
-    let num = (amount as u128).checked_mul(TRANSFER_FEE_BPS as u128)?;
-    let fee = num.checked_add(9999)?.checked_div(10000)? as u64;
-    Some(fee.min(MAX_TRANSFER_FEE))
-}
-
-fn calc_collateral_value(collateral: u64, pool_sol: u64, pool_tokens: u64) -> Option<u64> {
-    Some(
-        (collateral as u128)
-            .checked_mul(pool_sol as u128)?
-            .checked_div(pool_tokens as u128)? as u64,
-    )
-}
-
-fn calc_ltv_bps(debt: u64, collateral_value: u64) -> Option<u64> {
-    if collateral_value == 0 {
-        return Some(u64::MAX);
-    }
-    Some(
-        (debt as u128)
-            .checked_mul(10000)?
-            .checked_div(collateral_value as u128)? as u64,
-    )
-}
-
-fn calc_interest(principal: u64, rate_bps: u16, slots: u64) -> Option<u64> {
-    Some(
-        (principal as u128)
-            .checked_mul(rate_bps as u128)?
-            .checked_mul(slots as u128)?
-            .checked_div(10000_u128.checked_mul(EPOCH_DURATION_SLOTS as u128)?)?
-            as u64,
-    )
-}
-
-fn calc_collateral_to_seize(
-    debt: u64,
-    bonus_bps: u16,
-    pool_tokens: u64,
-    pool_sol: u64,
-) -> Option<u64> {
-    Some(
-        (debt as u128)
-            .checked_mul((10000 + bonus_bps as u64) as u128)?
-            .checked_mul(pool_tokens as u128)?
-            .checked_div(10000_u128.checked_mul(pool_sol as u128)?)?
-            as u64,
-    )
-}
-
-fn calc_user_share(user_vol: u64, distributable: u64, total_vol: u64) -> Option<u64> {
-    Some(
-        (user_vol as u128)
-            .checked_mul(distributable as u128)?
-            .checked_div(total_vol as u128)? as u64,
-    )
-}
-
-// [V26] Price-matched migration: tokens_for_pool = real_sol * virtual_tokens / virtual_sol
-fn calc_tokens_for_pool(real_sol: u64, virtual_tokens: u64, virtual_sol: u64) -> Option<u64> {
-    Some(
-        (real_sol as u128)
-            .checked_mul(virtual_tokens as u128)?
-            .checked_div(virtual_sol as u128)? as u64,
-    )
+    kani::assume(target == BONDING_TARGET_FLAME || target == BONDING_TARGET_TORCH);
 }
 
 // ============================================================================
@@ -253,24 +121,40 @@ fn verify_sol_distribution_conservation() {
     let dev = calc_dev_wallet_share(pf_total).unwrap();
     let pf = pf_total.checked_sub(dev).unwrap();
     let tf = calc_token_treasury_fee(sol_amount).unwrap();
-    let after = sol_amount.checked_sub(pf_total).unwrap().checked_sub(tf).unwrap();
+    let after = sol_amount
+        .checked_sub(pf_total)
+        .unwrap()
+        .checked_sub(tf)
+        .unwrap();
 
     let treasury_rate = calc_treasury_rate_bps(reserves, target).unwrap();
     let creator_rate = calc_creator_rate_bps(reserves, target).unwrap();
 
     // Total split from sol_after_fees (unchanged total)
-    let total_split = after.checked_mul(treasury_rate as u64).unwrap().checked_div(10000).unwrap();
+    let total_split = after
+        .checked_mul(treasury_rate as u64)
+        .unwrap()
+        .checked_div(10000)
+        .unwrap();
     // [V34] Creator's portion carved from total_split
-    let creator_sol = after.checked_mul(creator_rate as u64).unwrap().checked_div(10000).unwrap();
+    let creator_sol = after
+        .checked_mul(creator_rate as u64)
+        .unwrap()
+        .checked_div(10000)
+        .unwrap();
     let sol_to_treasury_split = total_split.checked_sub(creator_sol).unwrap();
     let to_curve = after.checked_sub(total_split).unwrap();
     let total_treasury = tf.checked_add(sol_to_treasury_split).unwrap();
 
     let distributed = to_curve
-        .checked_add(total_treasury).unwrap()
-        .checked_add(creator_sol).unwrap()
-        .checked_add(dev).unwrap()
-        .checked_add(pf).unwrap();
+        .checked_add(total_treasury)
+        .unwrap()
+        .checked_add(creator_sol)
+        .unwrap()
+        .checked_add(dev)
+        .unwrap()
+        .checked_add(pf)
+        .unwrap();
 
     assert!(distributed == sol_amount);
 }
@@ -688,8 +572,12 @@ fn assert_price_matched(real_sol: u64, virtual_tokens: u64, virtual_sol: u64) {
     let tokens_for_pool = calc_tokens_for_pool(real_sol, virtual_tokens, virtual_sol).unwrap();
 
     // Cross-multiply: tokens_for_pool * virtual_sol <= real_sol * virtual_tokens
-    let lhs = (tokens_for_pool as u128).checked_mul(virtual_sol as u128).unwrap();
-    let rhs = (real_sol as u128).checked_mul(virtual_tokens as u128).unwrap();
+    let lhs = (tokens_for_pool as u128)
+        .checked_mul(virtual_sol as u128)
+        .unwrap();
+    let rhs = (real_sol as u128)
+        .checked_mul(virtual_tokens as u128)
+        .unwrap();
     assert!(lhs <= rhs);
     assert!(rhs - lhs < virtual_sol as u128);
 }
@@ -781,17 +669,18 @@ fn assert_full_supply_conservation(bonding_target: u64) {
     let real_token_reserves = CURVE_SUPPLY.checked_sub(in_wallets).unwrap();
 
     // Pool tokens = real_sol * virtual_tokens / virtual_sol
-    let tokens_for_pool = calc_tokens_for_pool(
-        bonding_target, virtual_tokens_remaining, virtual_sol,
-    ).unwrap();
+    let tokens_for_pool =
+        calc_tokens_for_pool(bonding_target, virtual_tokens_remaining, virtual_sol).unwrap();
 
     // Excess burned = vault - pool
     let excess_burned = real_token_reserves.checked_sub(tokens_for_pool).unwrap();
 
     // FULL CONSERVATION: curve tokens + treasury lock = total supply
     let curve_total = (in_wallets as u128)
-        .checked_add(tokens_for_pool as u128).unwrap()
-        .checked_add(excess_burned as u128).unwrap();
+        .checked_add(tokens_for_pool as u128)
+        .unwrap()
+        .checked_add(excess_burned as u128)
+        .unwrap();
 
     assert!(curve_total + TREASURY_LOCK_TOKENS as u128 == TOTAL_SUPPLY as u128);
 }
@@ -839,9 +728,8 @@ fn verify_v31_pool_tokens_positive_and_bounded() {
     // [V31] Vault starts at CURVE_SUPPLY (700M)
     let real_token_reserves = CURVE_SUPPLY - tokens_sold;
 
-    let tokens_for_pool = calc_tokens_for_pool(
-        target, virtual_tokens_remaining, virtual_sol,
-    ).unwrap();
+    let tokens_for_pool =
+        calc_tokens_for_pool(target, virtual_tokens_remaining, virtual_sol).unwrap();
 
     // Pool always has tokens (non-empty pool)
     assert!(tokens_for_pool > 0);
@@ -868,9 +756,8 @@ fn assert_zero_excess_burn(bonding_target: u64) {
     // [V31] Vault starts at CURVE_SUPPLY (700M)
     let real_token_reserves = CURVE_SUPPLY.checked_sub(tokens_sold).unwrap();
 
-    let tokens_for_pool = calc_tokens_for_pool(
-        bonding_target, virtual_tokens_remaining, virtual_sol,
-    ).unwrap();
+    let tokens_for_pool =
+        calc_tokens_for_pool(bonding_target, virtual_tokens_remaining, virtual_sol).unwrap();
 
     let excess_burned = real_token_reserves.checked_sub(tokens_for_pool).unwrap();
 
@@ -1009,7 +896,7 @@ fn verify_lending_lifecycle_conservation() {
     // Symbolic inputs constrained to realistic ranges
     let collateral: u64 = kani::any();
     let sol_borrowed: u64 = kani::any();
-    let pool_sol: u64 = 100_000_000_000;    // 100 SOL pool
+    let pool_sol: u64 = 100_000_000_000; // 100 SOL pool
     let pool_tokens: u64 = 50_000_000_000_000; // 50T tokens
 
     kani::assume(collateral >= MIN_SOL_AMOUNT);
@@ -1214,9 +1101,9 @@ fn check_per_user_cap(max_lendable: u64) {
 fn verify_per_user_borrow_cap_bounded() {
     // 70% utilization cap at each tier:
     // Spark: 70% of 50 SOL = 35 SOL, Flame: 70 SOL, Torch: 140 SOL
-    check_per_user_cap(35_000_000_000);   // Spark
-    check_per_user_cap(70_000_000_000);   // Flame
-    check_per_user_cap(140_000_000_000);  // Torch
+    check_per_user_cap(35_000_000_000); // Spark
+    check_per_user_cap(70_000_000_000); // Flame
+    check_per_user_cap(140_000_000_000); // Torch
 }
 
 // ============================================================================
@@ -1225,18 +1112,11 @@ fn verify_per_user_borrow_cap_bounded() {
 //     per epoch, even if they generated 100% of the volume.
 // ============================================================================
 
-fn calc_claim_with_cap(user_vol: u64, distributable: u64, total_vol: u64) -> Option<u64> {
-    let share = calc_user_share(user_vol, distributable, total_vol)?;
-    let claim_amount = share.min(distributable);
-    let max_claim = distributable.checked_mul(MAX_CLAIM_SHARE_BPS)? / 10_000;
-    Some(claim_amount.min(max_claim))
-}
-
 // Concrete pool params keep SAT tractable. Only user_vol is symbolic.
 // Property: capped claim <= 10% of distributable for any user volume share.
 #[kani::proof]
 fn verify_claim_cap_enforced() {
-    let total_vol: u64 = 500_000_000_000;  // 500 SOL epoch volume
+    let total_vol: u64 = 500_000_000_000; // 500 SOL epoch volume
     let distributable: u64 = 50_000_000_000; // 50 SOL distributable
     let user_vol: u64 = kani::any();
     kani::assume(user_vol >= MIN_EPOCH_VOLUME_ELIGIBILITY); // >= 2 SOL
@@ -1252,7 +1132,7 @@ fn verify_claim_cap_enforced() {
 // Concrete: user with 100% of volume only gets 10%
 #[kani::proof]
 fn verify_claim_cap_monopoly_trader() {
-    let total_vol: u64 = 500_000_000_000;    // 500 SOL epoch volume
+    let total_vol: u64 = 500_000_000_000; // 500 SOL epoch volume
     let distributable: u64 = 50_000_000_000; // 50 SOL distributable
 
     // User has ALL the volume
@@ -1286,12 +1166,20 @@ fn verify_community_token_buy_conservation() {
     let dev = calc_dev_wallet_share(pf_total).unwrap();
     let pf = pf_total.checked_sub(dev).unwrap();
     let tf = calc_token_treasury_fee(sol_amount).unwrap();
-    let after = sol_amount.checked_sub(pf_total).unwrap().checked_sub(tf).unwrap();
+    let after = sol_amount
+        .checked_sub(pf_total)
+        .unwrap()
+        .checked_sub(tf)
+        .unwrap();
 
     let treasury_rate = calc_treasury_rate_bps(reserves, target).unwrap();
 
     // Total split from sol_after_fees
-    let total_split = after.checked_mul(treasury_rate as u64).unwrap().checked_div(10000).unwrap();
+    let total_split = after
+        .checked_mul(treasury_rate as u64)
+        .unwrap()
+        .checked_div(10000)
+        .unwrap();
 
     // [V35] Community token: creator_sol = 0, full split to treasury
     let creator_sol: u64 = 0;
@@ -1300,10 +1188,14 @@ fn verify_community_token_buy_conservation() {
     let total_treasury = tf.checked_add(sol_to_treasury_split).unwrap();
 
     let distributed = to_curve
-        .checked_add(total_treasury).unwrap()
-        .checked_add(creator_sol).unwrap()
-        .checked_add(dev).unwrap()
-        .checked_add(pf).unwrap();
+        .checked_add(total_treasury)
+        .unwrap()
+        .checked_add(creator_sol)
+        .unwrap()
+        .checked_add(dev)
+        .unwrap()
+        .checked_add(pf)
+        .unwrap();
 
     assert!(distributed == sol_amount);
     // Community token: treasury gets MORE than with creator fees
@@ -1334,33 +1226,6 @@ fn verify_community_token_swap_fees_conservation() {
 // ============================================================================
 // V5: SHORT SELLING PROOFS
 // ============================================================================
-
-// Pure math replicas for short selling (mirrors lending math, inverted)
-
-/// Debt value = token_debt * pool_sol / pool_tokens
-fn calc_short_debt_value(token_debt: u64, pool_sol: u64, pool_tokens: u64) -> Option<u64> {
-    let value = (token_debt as u128)
-        .checked_mul(pool_sol as u128)?
-        .checked_div(pool_tokens as u128)?;
-    Some(value as u64)
-}
-
-/// Short interest in token terms: tokens_borrowed * rate * slots / (10000 * epoch_slots)
-fn calc_short_interest(tokens_borrowed: u64, rate_bps: u16, slots: u64) -> Option<u64> {
-    let interest = (tokens_borrowed as u128)
-        .checked_mul(rate_bps as u128)?
-        .checked_mul(slots as u128)?
-        .checked_div(10000_u128.checked_mul(EPOCH_DURATION_SLOTS as u128)?)?;
-    Some(interest as u64)
-}
-
-/// SOL to seize on short liquidation = debt_value * (10000 + bonus) / 10000
-fn calc_short_sol_to_seize(debt_value: u64, bonus_bps: u16) -> Option<u64> {
-    let sol = (debt_value as u128)
-        .checked_mul((10000 + bonus_bps as u64) as u128)?
-        .checked_div(10000)?;
-    Some(sol as u64)
-}
 
 // ============================================================================
 // 47. [V5] SHORT: Debt Value Bounded
@@ -1462,7 +1327,7 @@ fn verify_short_liquidation_bonus_increases_seizure() {
 fn verify_short_lifecycle_conservation() {
     let tokens_borrowed: u64 = kani::any();
     let sol_collateral: u64 = kani::any();
-    let pool_sol: u64 = 100_000_000_000;     // 100 SOL pool
+    let pool_sol: u64 = 100_000_000_000; // 100 SOL pool
     let pool_tokens: u64 = 50_000_000_000_000; // 50T tokens
 
     kani::assume(tokens_borrowed >= MIN_SHORT_TOKENS);
@@ -1494,7 +1359,9 @@ fn verify_short_lifecycle_conservation() {
     let total_owed = tokens_borrowed; // No interest (same slot)
     let actual_return = total_owed;
 
-    let treasury_tokens_after_close = treasury_tokens_after_open.checked_add(actual_return).unwrap();
+    let treasury_tokens_after_close = treasury_tokens_after_open
+        .checked_add(actual_return)
+        .unwrap();
     let treasury_sol_after_close = treasury_sol_after_open.checked_sub(sol_collateral).unwrap();
     let short_collateral_after = short_collateral_reserved - sol_collateral;
 
@@ -1660,9 +1527,9 @@ fn verify_short_collateral_reservation() {
 
 #[kani::proof]
 fn verify_liquidation_bad_debt_accounting() {
-    let pool_sol: u64 = 100_000_000_000;       // 100 SOL pool
-    let pool_tokens: u64 = 50_000_000_000_000;  // 50T tokens
-    let interest: u64 = 500_000_000;             // 0.5 SOL accrued interest
+    let pool_sol: u64 = 100_000_000_000; // 100 SOL pool
+    let pool_tokens: u64 = 50_000_000_000_000; // 50T tokens
+    let interest: u64 = 500_000_000; // 0.5 SOL accrued interest
     let total_sol_lent_before: u64 = 200_000_000_000; // 200 SOL aggregate
 
     let borrowed: u64 = kani::any();
@@ -1670,7 +1537,7 @@ fn verify_liquidation_bad_debt_accounting() {
 
     kani::assume(borrowed >= MIN_BORROW_AMOUNT);
     kani::assume(borrowed <= 50_000_000_000); // Max 50 SOL
-    kani::assume(borrowed >= interest);        // Principal >= accrued interest
+    kani::assume(borrowed >= interest); // Principal >= accrued interest
     kani::assume(collateral > 0);
     kani::assume(collateral <= 500_000_000_000); // Bounded collateral tokens
 
@@ -1685,9 +1552,13 @@ fn verify_liquidation_bad_debt_accounting() {
     let debt_to_cover = max_debt_to_cover.min(total_debt);
 
     // Compute collateral to seize
-    let collateral_to_seize =
-        calc_collateral_to_seize(debt_to_cover, DEFAULT_LIQUIDATION_BONUS_BPS, pool_tokens, pool_sol)
-            .unwrap();
+    let collateral_to_seize = calc_collateral_to_seize(
+        debt_to_cover,
+        DEFAULT_LIQUIDATION_BONUS_BPS,
+        pool_tokens,
+        pool_sol,
+    )
+    .unwrap();
 
     let actual_collateral_seized = collateral_to_seize.min(collateral);
 
@@ -1749,9 +1620,9 @@ fn verify_liquidation_bad_debt_accounting() {
 
 #[kani::proof]
 fn verify_short_liquidation_bad_debt_accounting() {
-    let pool_sol: u64 = 100_000_000_000;       // 100 SOL pool
-    let pool_tokens: u64 = 50_000_000_000_000;  // 50T tokens
-    let interest: u64 = 1_000_000_000;           // 1B token interest
+    let pool_sol: u64 = 100_000_000_000; // 100 SOL pool
+    let pool_tokens: u64 = 50_000_000_000_000; // 50T tokens
+    let interest: u64 = 1_000_000_000; // 1B token interest
     let total_tokens_lent_before: u64 = 100_000_000_000_000; // 100T aggregate
 
     let tokens_borrowed: u64 = kani::any();
@@ -1832,7 +1703,9 @@ fn verify_short_liquidation_bad_debt_accounting() {
     // Key property: if position is fully liquidated, total_tokens_lent decreased
     // by at least the original tokens_borrowed
     if pos_borrowed == 0 && pos_interest == 0 {
-        assert!(total_tokens_lent_after <= total_tokens_lent_before.saturating_sub(tokens_borrowed));
+        assert!(
+            total_tokens_lent_after <= total_tokens_lent_before.saturating_sub(tokens_borrowed)
+        );
     }
 
     // total_tokens_lent never goes negative (saturating)
@@ -1920,13 +1793,10 @@ fn calc_price_in_band(
 #[kani::proof]
 fn verify_circuit_breaker_baseline_passes() {
     // Baseline price always passes its own check
-    let baseline_sol: u64 = 100_000_000_000;    // 100 SOL
+    let baseline_sol: u64 = 100_000_000_000; // 100 SOL
     let baseline_tokens: u64 = 50_000_000_000_000; // 50T tokens
 
-    let result = calc_price_in_band(
-        baseline_sol, baseline_tokens,
-        baseline_sol, baseline_tokens,
-    );
+    let result = calc_price_in_band(baseline_sol, baseline_tokens, baseline_sol, baseline_tokens);
     assert!(result.unwrap());
 }
 
@@ -1942,8 +1812,10 @@ fn verify_circuit_breaker_rejects_doubled_price() {
 
     // Double the SOL = 2x price (100% increase, exceeds 50% band)
     let result = calc_price_in_band(
-        200_000_000_000, baseline_tokens,
-        baseline_sol, baseline_tokens,
+        200_000_000_000,
+        baseline_tokens,
+        baseline_sol,
+        baseline_tokens,
     );
     assert!(!result.unwrap());
 }
@@ -1956,34 +1828,42 @@ fn verify_circuit_breaker_rejects_doubled_price() {
 
 #[kani::proof]
 fn verify_circuit_breaker_band_edges() {
-    let baseline_sol: u64 = 100_000_000_000;       // 100 SOL
+    let baseline_sol: u64 = 100_000_000_000; // 100 SOL
     let baseline_tokens: u64 = 100_000_000_000_000; // 100T tokens
 
     // +49%: pool_sol = 149 SOL (price up 49%)
     let up_49 = calc_price_in_band(
-        149_000_000_000, baseline_tokens,
-        baseline_sol, baseline_tokens,
+        149_000_000_000,
+        baseline_tokens,
+        baseline_sol,
+        baseline_tokens,
     );
     assert!(up_49.unwrap());
 
     // +51%: pool_sol = 151 SOL (price up 51%)
     let up_51 = calc_price_in_band(
-        151_000_000_000, baseline_tokens,
-        baseline_sol, baseline_tokens,
+        151_000_000_000,
+        baseline_tokens,
+        baseline_sol,
+        baseline_tokens,
     );
     assert!(!up_51.unwrap());
 
     // -49%: pool_sol = 51 SOL (price down 49%)
     let down_49 = calc_price_in_band(
-        51_000_000_000, baseline_tokens,
-        baseline_sol, baseline_tokens,
+        51_000_000_000,
+        baseline_tokens,
+        baseline_sol,
+        baseline_tokens,
     );
     assert!(down_49.unwrap());
 
     // -51%: pool_sol = 49 SOL (price down 51%)
     let down_51 = calc_price_in_band(
-        49_000_000_000, baseline_tokens,
-        baseline_sol, baseline_tokens,
+        49_000_000_000,
+        baseline_tokens,
+        baseline_sol,
+        baseline_tokens,
     );
     assert!(!down_51.unwrap());
 }
@@ -2110,9 +1990,9 @@ fn verify_ratio_gate_fee_subtraction_safe() {
     let sol_fees: u64 = kani::any();
     let token_fees: u64 = kani::any();
 
-    kani::assume(vault_sol <= 10_000_000_000_000);  // Max 10K SOL
+    kani::assume(vault_sol <= 10_000_000_000_000); // Max 10K SOL
     kani::assume(vault_tokens <= TOTAL_SUPPLY);
-    kani::assume(sol_fees <= vault_sol);             // Fees can't exceed vault (Raydium invariant)
+    kani::assume(sol_fees <= vault_sol); // Fees can't exceed vault (Raydium invariant)
     kani::assume(token_fees <= vault_tokens);
 
     let pool_sol = vault_sol.saturating_sub(sol_fees);
@@ -2166,7 +2046,7 @@ fn verify_treasury_sell_amount_bounded() {
     // Above threshold: sell exactly 15%
     if token_amount > SELL_ALL_TOKEN_THRESHOLD {
         assert!(sell_amount <= token_amount / 6); // 15% < 1/6 ≈ 16.7%
-        // And it's non-zero for any positive amount above threshold
+                                                  // And it's non-zero for any positive amount above threshold
         assert!(sell_amount > 0);
     }
 }

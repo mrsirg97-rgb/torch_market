@@ -4,13 +4,12 @@ use anchor_lang::solana_program::{
 };
 
 use crate::constants::{
-    METADATA_POINTER_EXTENSION_SIZE, TOKEN_METADATA_FIXED_SIZE,
-    EXTENSION_TLV_HEADER_SIZE,
+    EXTENSION_TLV_HEADER_SIZE, METADATA_POINTER_EXTENSION_SIZE, TOKEN_METADATA_FIXED_SIZE,
 };
 
 pub const TOKEN_2022_PROGRAM_ID: Pubkey = Pubkey::new_from_array([
-    6, 221, 246, 225, 238, 117, 143, 222, 24, 66, 93, 188, 228, 108, 205, 218,
-    182, 26, 252, 77, 131, 185, 13, 39, 254, 189, 249, 40, 216, 161, 139, 252,
+    6, 221, 246, 225, 238, 117, 143, 222, 24, 66, 93, 188, 228, 108, 205, 218, 182, 26, 252, 77,
+    131, 185, 13, 39, 254, 189, 249, 40, 216, 161, 139, 252,
 ]);
 
 pub const EXTENSION_TYPE_TRANSFER_FEE_CONFIG: u16 = 1;
@@ -108,8 +107,8 @@ pub fn build_mint_to_instruction(
 }
 
 pub const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey = Pubkey::new_from_array([
-    140, 151, 37, 143, 78, 36, 137, 241, 187, 61, 16, 41, 20, 142, 13, 131,
-    11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216, 219, 233, 248, 89,
+    140, 151, 37, 143, 78, 36, 137, 241, 187, 61, 16, 41, 20, 142, 13, 131, 11, 90, 19, 153, 218,
+    255, 16, 132, 4, 142, 123, 216, 219, 233, 248, 89,
 ]);
 // Token-2022 token account size (base + transfer fee extension for accounts)
 pub const TOKEN_ACCOUNT_SIZE: usize = 165;
@@ -336,7 +335,7 @@ pub fn build_initialize_token_metadata_instruction(
     Instruction {
         program_id: TOKEN_2022_PROGRAM_ID,
         accounts: vec![
-            AccountMeta::new(*mint, false),         // metadata account (mint itself)
+            AccountMeta::new(*mint, false), // metadata account (mint itself)
             AccountMeta::new_readonly(*update_authority, false),
             AccountMeta::new_readonly(*mint, false), // mint
             AccountMeta::new_readonly(*mint_authority, true),

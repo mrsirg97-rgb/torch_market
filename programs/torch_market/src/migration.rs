@@ -2,9 +2,8 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::invoke;
 use anchor_spl::token::spl_token;
 use anchor_spl::token_interface::{
-    transfer_checked, burn, set_authority, close_account,
-    TransferChecked, Burn, SetAuthority, CloseAccount,
-    spl_token_2022::instruction::AuthorityType,
+    burn, close_account, set_authority, spl_token_2022::instruction::AuthorityType,
+    transfer_checked, Burn, CloseAccount, SetAuthority, TransferChecked,
 };
 
 use crate::constants::*;
@@ -16,8 +15,8 @@ pub use raydium_cpmm_cpi;
 
 // Native SOL mint (WSOL): So11111111111111111111111111111111111111112
 pub const WSOL_MINT: Pubkey = Pubkey::new_from_array([
-    6, 155, 136, 87, 254, 171, 129, 132, 251, 104, 127, 99, 70, 24, 192, 53,
-    218, 196, 57, 220, 26, 235, 59, 85, 152, 160, 240, 0, 0, 0, 0, 1,
+    6, 155, 136, 87, 254, 171, 129, 132, 251, 104, 127, 99, 70, 24, 192, 53, 218, 196, 57, 220, 26,
+    235, 59, 85, 152, 160, 240, 0, 0, 0, 0, 1,
 ]);
 
 // Order tokens for Raydium (token_0 < token_1 by pubkey)
@@ -75,24 +74,18 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
     let bonding_curve = &ctx.accounts.bonding_curve;
     let treasury = &ctx.accounts.treasury;
     let mint_key = ctx.accounts.mint.key();
-    let bc_seeds = &[
-        BONDING_CURVE_SEED,
-        mint_key.as_ref(),
-        &[bonding_curve.bump],
-    ];
+    let bc_seeds = &[BONDING_CURVE_SEED, mint_key.as_ref(), &[bonding_curve.bump]];
     let bc_signer = &[&bc_seeds[..]][..];
 
-    close_account(
-        CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            CloseAccount {
-                account: ctx.accounts.bc_wsol.to_account_info(),
-                destination: ctx.accounts.payer_wsol.to_account_info(),
-                authority: ctx.accounts.bonding_curve.to_account_info(),
-            },
-            bc_signer,
-        ),
-    )?;
+    close_account(CpiContext::new_with_signer(
+        ctx.accounts.token_program.to_account_info(),
+        CloseAccount {
+            account: ctx.accounts.bc_wsol.to_account_info(),
+            destination: ctx.accounts.payer_wsol.to_account_info(),
+            authority: ctx.accounts.bonding_curve.to_account_info(),
+        },
+        bc_signer,
+    ))?;
 
     invoke(
         &spl_token::instruction::sync_native(
@@ -103,19 +96,13 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
     )?;
 
     let vote_vault_amount = ctx.accounts.treasury_token_account.amount;
-    let treasury_seeds = &[
-        TREASURY_SEED,
-        mint_key.as_ref(),
-        &[treasury.bump],
-    ];
+    let treasury_seeds = &[TREASURY_SEED, mint_key.as_ref(), &[treasury.bump]];
     let treasury_signer = &[&treasury_seeds[..]][..];
     if vote_vault_amount > 0 {
         if bonding_curve.vote_result_return {
             // [V31] Validate treasury_lock_token_account is the correct ATA
-            let expected_lock_ata = get_associated_token_address_2022(
-                &ctx.accounts.treasury_lock.key(),
-                &mint_key,
-            );
+            let expected_lock_ata =
+                get_associated_token_address_2022(&ctx.accounts.treasury_lock.key(), &mint_key);
             require!(
                 ctx.accounts.treasury_lock_token_account.key() == expected_lock_ata,
                 TorchMarketError::InvalidTokenAccount
@@ -155,11 +142,12 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
 
     let sol_amount = bonding_curve.real_sol_reserves;
     let vault_token_amount = ctx.accounts.token_vault.amount;
-    let tokens_for_pool = (sol_amount as u128)
-        .checked_mul(bonding_curve.virtual_token_reserves as u128)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(bonding_curve.virtual_sol_reserves as u128)
-        .ok_or(TorchMarketError::MathOverflow)? as u64;
+    let tokens_for_pool = crate::math::calc_tokens_for_pool(
+        sol_amount,
+        bonding_curve.virtual_token_reserves,
+        bonding_curve.virtual_sol_reserves,
+    )
+    .ok_or(TorchMarketError::MathOverflow)?;
     let token_amount = tokens_for_pool.min(vault_token_amount);
     let excess_tokens = vault_token_amount
         .checked_sub(token_amount)
@@ -183,10 +171,8 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
     let tokens_payer_will_receive = token_amount
         .checked_sub(transfer_fee)
         .ok_or(TorchMarketError::MathOverflow)?;
-    let (_token_0, _token_1, is_wsol_token_0) = order_tokens_for_raydium(
-        &WSOL_MINT,
-        &ctx.accounts.mint.key(),
-    );
+    let (_token_0, _token_1, is_wsol_token_0) =
+        order_tokens_for_raydium(&WSOL_MINT, &ctx.accounts.mint.key());
     let (init_amount_0, init_amount_1) = if is_wsol_token_0 {
         (sol_amount, tokens_payer_will_receive) // WSOL is token_0, Token is token_1
     } else {
@@ -226,8 +212,8 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
             create_pool_fee: ctx.accounts.create_pool_fee.to_account_info(),
             observation_state: ctx.accounts.observation_state.to_account_info(),
             token_program: ctx.accounts.token_program.to_account_info(),
-            token_0_program: ctx.accounts.token_program.to_account_info(),        // WSOL = SPL Token
-            token_1_program: ctx.accounts.token_2022_program.to_account_info(),   // Token = Token-2022
+            token_0_program: ctx.accounts.token_program.to_account_info(), // WSOL = SPL Token
+            token_1_program: ctx.accounts.token_2022_program.to_account_info(), // Token = Token-2022
             associated_token_program: ctx.accounts.associated_token_program.to_account_info(),
             system_program: ctx.accounts.system_program.to_account_info(),
             rent: ctx.accounts.rent.to_account_info(),
@@ -249,18 +235,15 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
             create_pool_fee: ctx.accounts.create_pool_fee.to_account_info(),
             observation_state: ctx.accounts.observation_state.to_account_info(),
             token_program: ctx.accounts.token_program.to_account_info(),
-            token_0_program: ctx.accounts.token_2022_program.to_account_info(),   // Token = Token-2022
-            token_1_program: ctx.accounts.token_program.to_account_info(),        // WSOL = SPL Token
+            token_0_program: ctx.accounts.token_2022_program.to_account_info(), // Token = Token-2022
+            token_1_program: ctx.accounts.token_program.to_account_info(),      // WSOL = SPL Token
             associated_token_program: ctx.accounts.associated_token_program.to_account_info(),
             system_program: ctx.accounts.system_program.to_account_info(),
             rent: ctx.accounts.rent.to_account_info(),
         }
     };
 
-    let cpi_ctx = CpiContext::new(
-        ctx.accounts.raydium_program.to_account_info(),
-        cpi_accounts,
-    );
+    let cpi_ctx = CpiContext::new(ctx.accounts.raydium_program.to_account_info(), cpi_accounts);
 
     raydium_cpmm_cpi::cpi::initialize(cpi_ctx, init_amount_0, init_amount_1, 0)?;
 
@@ -285,7 +268,6 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
             ),
             lp_amount,
         )?;
-
     }
 
     set_authority(
@@ -358,7 +340,8 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
     bonding_curve.real_sol_reserves = 0;
     bonding_curve.real_token_reserves = 0;
     bonding_curve.vote_vault_balance = 0;
-    treasury.sol_balance = treasury.sol_balance
+    treasury.sol_balance = treasury
+        .sol_balance
         .checked_sub(migration_cost)
         .ok_or(TorchMarketError::InsufficientMigrationFee)?;
 

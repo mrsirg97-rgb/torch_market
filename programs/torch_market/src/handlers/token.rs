@@ -59,15 +59,11 @@ pub fn create_token(ctx: Context<CreateToken2022>, args: CreateTokenArgs) -> Res
         MAX_TRANSFER_FEE,
     );
 
-    invoke(
-        &init_fee_ix,
-        &[ctx.accounts.mint.to_account_info()],
-    )?;
+    invoke(&init_fee_ix, &[ctx.accounts.mint.to_account_info()])?;
 
     let init_metadata_pointer_ix = build_initialize_metadata_pointer_instruction(
-        &mint_key,
-        None,       // no authority — pointer is permanently immutable
-        &mint_key,  // metadata lives on mint itself
+        &mint_key, None,      // no authority — pointer is permanently immutable
+        &mint_key, // metadata lives on mint itself
     );
 
     invoke(
@@ -75,19 +71,13 @@ pub fn create_token(ctx: Context<CreateToken2022>, args: CreateTokenArgs) -> Res
         &[ctx.accounts.mint.to_account_info()],
     )?;
 
-    let init_mint_ix = build_initialize_mint2_instruction(
-        &mint_key,
-        &bonding_curve_key,
-        None,
-        TOKEN_DECIMALS,
-    );
+    let init_mint_ix =
+        build_initialize_mint2_instruction(&mint_key, &bonding_curve_key, None, TOKEN_DECIMALS);
 
-    invoke(
-        &init_mint_ix,
-        &[ctx.accounts.mint.to_account_info()],
-    )?;
+    invoke(&init_mint_ix, &[ctx.accounts.mint.to_account_info()])?;
 
-    let final_space = get_mint_with_metadata_space(args.name.len(), args.symbol.len(), args.uri.len());
+    let final_space =
+        get_mint_with_metadata_space(args.name.len(), args.symbol.len(), args.uri.len());
     let final_rent = Rent::get()?.minimum_balance(final_space);
     let additional_rent = final_rent.saturating_sub(initial_rent);
     if additional_rent > 0 {
@@ -113,8 +103,8 @@ pub fn create_token(ctx: Context<CreateToken2022>, args: CreateTokenArgs) -> Res
     let signer_seeds = &[&seeds[..]];
     let init_metadata_ix = build_initialize_token_metadata_instruction(
         &mint_key,
-        &bonding_curve_key,    // update authority
-        &bonding_curve_key,    // mint authority (signer via PDA)
+        &bonding_curve_key, // update authority
+        &bonding_curve_key, // mint authority (signer via PDA)
         &args.name,
         &args.symbol,
         &args.uri,
@@ -142,10 +132,10 @@ pub fn create_token(ctx: Context<CreateToken2022>, args: CreateTokenArgs) -> Res
     bonding_curve.permanently_burned_tokens = 0;
     bonding_curve.bonding_complete = false;
     bonding_curve.bonding_complete_slot = 0;
-    bonding_curve.votes_return = 0;   // [V36] Unused — kept for layout compat
-    bonding_curve.votes_burn = 0;     // [V36] Unused
-    bonding_curve.total_voters = 0;   // [V36] Unused
-    bonding_curve.vote_finalized = true;  // [V36] Set true so migration gate passes without votes
+    bonding_curve.votes_return = 0; // [V36] Unused — kept for layout compat
+    bonding_curve.votes_burn = 0; // [V36] Unused
+    bonding_curve.total_voters = 0; // [V36] Unused
+    bonding_curve.vote_finalized = true; // [V36] Set true so migration gate passes without votes
     bonding_curve.vote_result_return = false; // [V36] Irrelevant when vault is empty
     bonding_curve.migrated = false;
     bonding_curve.is_token_2022 = true; // V3 flag

@@ -1,6 +1,6 @@
 [package]
 name = "torch_market"
-version = "10.2.6"
+version = "11.0.0"
 description = "torch.market"
 edition = "2021"
 
@@ -27,6 +27,9 @@ anchor-spl = { version = "0.32.1", features = ["token", "associated_token"] }
 
 # Raydium CPMM CPI for DEX migration
 raydium-cpmm-cpi = { git = "https://github.com/raydium-io/raydium-cpi", package = "raydium-cpmm-cpi" }
+
+[dev-dependencies]
+proptest = "1.5"
 
 
 [lints.rust]

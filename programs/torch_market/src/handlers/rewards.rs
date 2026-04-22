@@ -80,10 +80,13 @@ pub fn star_token(ctx: Context<StarToken>) -> Result<()> {
         let payout_amount = token_treasury.star_sol_balance;
         if payout_amount > 0 {
             **token_treasury.to_account_info().try_borrow_mut_lamports()? -= payout_amount;
-            **ctx.accounts.creator.to_account_info().try_borrow_mut_lamports()? += payout_amount;
+            **ctx
+                .accounts
+                .creator
+                .to_account_info()
+                .try_borrow_mut_lamports()? += payout_amount;
             token_treasury.creator_paid_out = true;
             token_treasury.star_sol_balance = 0;
-
         }
     }
 

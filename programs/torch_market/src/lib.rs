@@ -4,6 +4,7 @@ pub mod constants;
 pub mod contexts;
 pub mod errors;
 pub mod handlers;
+pub mod math;
 pub mod migration;
 pub mod pool_validation;
 pub mod state;
@@ -150,5 +151,4 @@ pub mod torch_market {
     pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
         handlers::short::liquidate_short(ctx)
     }
-
 }

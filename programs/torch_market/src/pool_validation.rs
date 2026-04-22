@@ -1,6 +1,10 @@
 use anchor_lang::prelude::*;
 
-use crate::constants::{RAYDIUM_AMM_CONFIG, RAYDIUM_CPMM_PROGRAM_ID, MIN_POOL_SOL_LENDING, MAX_PRICE_DEVIATION_BPS, RATIO_PRECISION, DEPTH_TIER_1, DEPTH_TIER_2, DEPTH_TIER_3, DEPTH_LTV_0, DEPTH_LTV_1, DEPTH_LTV_2, DEPTH_LTV_3};
+use crate::constants::{
+    DEPTH_LTV_0, DEPTH_LTV_1, DEPTH_LTV_2, DEPTH_LTV_3, DEPTH_TIER_1, DEPTH_TIER_2, DEPTH_TIER_3,
+    MAX_PRICE_DEVIATION_BPS, MIN_POOL_SOL_LENDING, RATIO_PRECISION, RAYDIUM_AMM_CONFIG,
+    RAYDIUM_CPMM_PROGRAM_ID,
+};
 use crate::errors::TorchMarketError;
 use crate::migration::WSOL_MINT;
 
@@ -17,7 +21,12 @@ pub fn order_mints(mint: &Pubkey) -> (Pubkey, Pubkey) {
 pub fn derive_pool_state(mint: &Pubkey) -> Pubkey {
     let (t0, t1) = order_mints(mint);
     Pubkey::find_program_address(
-        &[b"pool", RAYDIUM_AMM_CONFIG.as_ref(), t0.as_ref(), t1.as_ref()],
+        &[
+            b"pool",
+            RAYDIUM_AMM_CONFIG.as_ref(),
+            t0.as_ref(),
+            t1.as_ref(),
+        ],
         &RAYDIUM_CPMM_PROGRAM_ID,
     )
     .0
@@ -51,7 +60,10 @@ pub fn read_token_account_balance(account: &AccountInfo) -> Result<u64> {
 
 // Read a Pubkey from raw account data at a given offset.
 pub fn read_pubkey_at(data: &[u8], offset: usize) -> Result<Pubkey> {
-    require!(data.len() >= offset + 32, TorchMarketError::ZeroPoolReserves);
+    require!(
+        data.len() >= offset + 32,
+        TorchMarketError::ZeroPoolReserves
+    );
     Ok(Pubkey::new_from_array(
         data[offset..offset + 32].try_into().unwrap(),
     ))
@@ -104,10 +116,7 @@ pub fn validate_pool_accounts(
     let mint_1 = read_pubkey_at(&data, 200)?;
     let has_token = mint_0 == *expected_mint || mint_1 == *expected_mint;
     let has_wsol = mint_0 == WSOL_MINT || mint_1 == WSOL_MINT;
-    require!(
-        has_token && has_wsol,
-        TorchMarketError::InvalidPoolAccount
-    );
+    require!(has_token && has_wsol, TorchMarketError::InvalidPoolAccount);
 
     Ok(())
 }
@@ -134,7 +143,10 @@ pub fn require_price_in_band(
 ) -> Result<()> {
     // Callers enforce treasury.baseline_initialized before calling this function.
     // Zero baseline is a hard error — no silent bypass.
-    require!(baseline_sol > 0 && baseline_tokens > 0, TorchMarketError::BaselineNotInitialized);
+    require!(
+        baseline_sol > 0 && baseline_tokens > 0,
+        TorchMarketError::BaselineNotInitialized
+    );
 
     let current_ratio = (pool_sol as u128)
         .checked_mul(RATIO_PRECISION)
@@ -206,7 +218,7 @@ pub fn read_pool_accumulated_fees(
 ) -> Result<(u64, u64)> {
     let data = pool_state.try_borrow_data()?;
     require!(data.len() >= 373, TorchMarketError::InvalidPoolAccount);
-
+    
     let protocol_fee_0 = u64::from_le_bytes(data[341..349].try_into().unwrap());
     let protocol_fee_1 = u64::from_le_bytes(data[349..357].try_into().unwrap());
     let fund_fee_0 = u64::from_le_bytes(data[357..365].try_into().unwrap());
