@@ -18,6 +18,13 @@ anchor build
 cargo kani
 ```
 
+## run proptest
+
+```bash
+anchor build
+cargo test
+```
+
 ## run the sim
 
 ```bash
@@ -25,3 +32,9 @@ python3 sim/torch_sim.py
 ```
 
 Brightside Solutions, 2026
+
+solana program deploy ./target/deploy/torch_market.so --program-id ./keys/program.json --keypair ./keys/mainnet-deploy-wallet.json --url http://localhost:8899
+
+PAYER_KEYPAIR=/Users/mrbrightside/Projects/torch_market/keys/mainnet-deploy-wallet.json npx tsx scripts/bootstrap_global_config.ts 
+
+solana program deploy ./target/deploy/torch_market.so --program-id ./keys/program.json --url devnet

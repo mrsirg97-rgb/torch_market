@@ -35,12 +35,8 @@ pub struct BondingCurve {
     pub bonding_complete: bool,
     pub bonding_complete_slot: u64,
     pub migrated: bool,
-    pub is_token_2022: bool,
     pub last_activity_slot: u64,
     pub reclaimed: bool,
-    pub name: [u8; 32],
-    pub symbol: [u8; 10],
-    pub uri: [u8; 200],
     pub bump: u8,
     pub treasury_bump: u8,
     pub bonding_target: u64,
@@ -57,12 +53,8 @@ impl BondingCurve {
         + 1   // bonding_complete
         + 8   // bonding_complete_slot
         + 1   // migrated
-        + 1   // is_token_2022
         + 8   // last_activity_slot
         + 1   // reclaimed
-        + 32  // name
-        + 10  // symbol
-        + 200 // uri
         + 1   // bump
         + 1   // treasury_bump
         + 8; // bonding_target
@@ -106,7 +98,6 @@ pub struct Treasury {
     pub last_buyback_slot: u64,
     pub harvested_fees: u64,
     pub bump: u8,
-
     // Baseline for post-migration ratio gating on `swap_fees_to_sol`.
     pub baseline_sol_reserves: u64,
     pub baseline_token_reserves: u64,
@@ -115,11 +106,9 @@ pub struct Treasury {
     pub short_selling_enabled: bool,
     pub min_buyback_interval_slots: u64,
     pub baseline_initialized: bool,
-
     pub total_stars: u64,
     pub star_sol_balance: u64,
     pub creator_paid_out: bool,
-
     // Treasury lending state.
     pub total_sol_lent: u64,
     pub total_collateral_locked: u64,

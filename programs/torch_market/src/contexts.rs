@@ -313,7 +313,6 @@ pub struct HarvestFees<'info> {
     #[account(
         seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
         bump = bonding_curve.bump,
-        constraint = bonding_curve.is_token_2022 @ TorchMarketError::NotToken2022,
     )]
     pub bonding_curve: Box<Account<'info, BondingCurve>>,
     #[account(
@@ -343,7 +342,6 @@ pub struct SwapFeesToSol<'info> {
         seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
         bump = bonding_curve.bump,
         constraint = bonding_curve.migrated @ TorchMarketError::NotMigrated,
-        constraint = bonding_curve.is_token_2022 @ TorchMarketError::NotToken2022,
     )]
     pub bonding_curve: Box<Account<'info, BondingCurve>>,
     /// CHECK: Validated against bonding_curve.creator
@@ -963,6 +961,14 @@ pub struct VaultSwap<'info> {
         bump = torch_vault.bump,
     )]
     pub torch_vault: Account<'info, TorchVault>,
+    /// CHECK: System-owned PDA used as sol_source in the deep_pool swap CPI.
+    /// 0 bytes, holds SOL only for the duration of a swap.
+    #[account(
+        mut,
+        seeds = [TORCH_VAULT_SOL_SEED, torch_vault.creator.as_ref()],
+        bump,
+    )]
+    pub vault_sol: AccountInfo<'info>,
     #[account(
         seeds = [VAULT_WALLET_LINK_SEED, signer.key().as_ref()],
         bump = vault_wallet_link.bump,

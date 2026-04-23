@@ -80,6 +80,9 @@ pub const METADATA_POINTER_EXTENSION_SIZE: usize = 68;
 pub const TOKEN_METADATA_FIXED_SIZE: usize = 80;
 pub const EXTENSION_TLV_HEADER_SIZE: usize = 4;
 pub const TORCH_VAULT_SEED: &[u8] = b"torch_vault";
+// System-owned companion PDA holding SOL for the duration of a deep_pool swap
+// CPI. Only used in vault_swap; sits at 0 lamports between swaps.
+pub const TORCH_VAULT_SOL_SEED: &[u8] = b"torch_vault_sol";
 pub const VAULT_WALLET_LINK_SEED: &[u8] = b"vault_wallet";
 pub const SHORT_SEED: &[u8] = b"short";
 pub const SHORT_CONFIG_SEED: &[u8] = b"short_config";

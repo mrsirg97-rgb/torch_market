@@ -1,5 +1,5 @@
 {
-  "address": "8hbUkonssSEEtkqzwM7ZcZrD9evacM92TcWSooVF4BeT",
+  "address": "4nwTCWyR6vapTQRkV39f32xJ3uQztdjBqfhubnR6wQQC",
   "metadata": {
     "name": "torch_market",
     "version": "20.0.0",
@@ -3097,7 +3097,7 @@
         },
         {
           "name": "torch_config",
-          "address": "Hd6gaP3GPm48s5mD2nGRrYkBoCmKBhyXBFVbBrwYNqzr"
+          "address": "HUnCBnwNRVRVCG98bc3DeC1S4VH3gsL1E9FGmMt6ccdb"
         },
         {
           "name": "deep_pool",
@@ -4795,6 +4795,42 @@
           }
         },
         {
+          "name": "vault_sol",
+          "docs": [
+            "0 bytes, holds SOL only for the duration of a swap."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  114,
+                  99,
+                  104,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116,
+                  95,
+                  115,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault.creator",
+                "account": "TorchVault"
+              }
+            ]
+          }
+        },
+        {
           "name": "vault_wallet_link",
           "pda": {
             "seeds": [
@@ -5535,256 +5571,251 @@
     },
     {
       "code": 6018,
-      "name": "NotToken2022",
-      "msg": "This operation requires a Token-2022 mint"
-    },
-    {
-      "code": 6019,
       "name": "AlreadyReclaimed",
       "msg": "Token has already been reclaimed"
     },
     {
-      "code": 6020,
+      "code": 6019,
       "name": "TokenStillActive",
       "msg": "Token is still active, cannot reclaim yet"
     },
     {
-      "code": 6021,
+      "code": 6020,
       "name": "BelowReclaimThreshold",
       "msg": "Token SOL balance below reclaim threshold"
     },
     {
-      "code": 6022,
+      "code": 6021,
       "name": "EpochNotComplete",
       "msg": "Epoch has not ended yet"
     },
     {
-      "code": 6023,
+      "code": 6022,
       "name": "AlreadyClaimed",
       "msg": "Already claimed rewards for this epoch"
     },
     {
-      "code": 6024,
+      "code": 6023,
       "name": "NoRewardsAvailable",
       "msg": "No rewards available to claim"
     },
     {
-      "code": 6025,
+      "code": 6024,
       "name": "NoVolumeInEpoch",
       "msg": "No volume recorded in claimable epoch"
     },
     {
-      "code": 6026,
+      "code": 6025,
       "name": "NotMigrated",
       "msg": "Token not migrated to DEX yet"
     },
     {
-      "code": 6027,
+      "code": 6026,
       "name": "PoolCreationFailed",
       "msg": "DEX pool creation failed"
     },
     {
-      "code": 6028,
+      "code": 6027,
       "name": "InsufficientMigrationFee",
       "msg": "Insufficient treasury balance for migration fee"
     },
     {
-      "code": 6029,
+      "code": 6028,
       "name": "CannotStarSelf",
       "msg": "Cannot star yourself"
     },
     {
-      "code": 6030,
+      "code": 6029,
       "name": "InvalidDevWallet",
       "msg": "Invalid dev wallet address"
     },
     {
-      "code": 6031,
+      "code": 6030,
       "name": "Unauthorized",
       "msg": "Unauthorized - only authority can perform this action"
     },
     {
-      "code": 6032,
+      "code": 6031,
       "name": "BaselineNotInitialized",
       "msg": "Baseline must be initialized before auto buyback"
     },
     {
-      "code": 6033,
+      "code": 6032,
       "name": "ZeroPoolReserves",
       "msg": "Pool reserves cannot be zero"
     },
     {
-      "code": 6034,
+      "code": 6033,
       "name": "RatioAboveThreshold",
       "msg": "Price above threshold - no buyback needed"
     },
     {
-      "code": 6035,
+      "code": 6034,
       "name": "AtReserveFloor",
       "msg": "Treasury at reserve floor - cannot execute buyback"
     },
     {
-      "code": 6036,
+      "code": 6035,
       "name": "InsufficientVolumeForRewards",
       "msg": "Insufficient volume for protocol rewards (need >= 2 SOL/epoch)"
     },
     {
-      "code": 6037,
+      "code": 6036,
       "name": "ProtocolTreasuryBelowFloor",
       "msg": "Protocol treasury below reserve floor"
     },
     {
-      "code": 6038,
+      "code": 6037,
       "name": "ProtocolTreasuryAlreadyInitialized",
       "msg": "Protocol treasury already initialized"
     },
     {
-      "code": 6039,
+      "code": 6038,
       "name": "TokenNotReclaimed",
       "msg": "Token has not been reclaimed - cannot contribute to revival"
     },
     {
-      "code": 6040,
+      "code": 6039,
       "name": "LendingNotEnabled",
       "msg": "Lending is not enabled for this token"
     },
     {
-      "code": 6041,
+      "code": 6040,
       "name": "LendingRequiresMigration",
       "msg": "Token must be migrated to DEX before lending"
     },
     {
-      "code": 6042,
+      "code": 6041,
       "name": "LtvExceeded",
       "msg": "Loan-to-value ratio exceeds maximum"
     },
     {
-      "code": 6043,
+      "code": 6042,
       "name": "LendingCapExceeded",
       "msg": "Treasury lending capacity exhausted (utilization cap reached)"
     },
     {
-      "code": 6044,
+      "code": 6043,
       "name": "UserBorrowCapExceeded",
       "msg": "Per-user borrow cap exceeded (max 5x collateral share of supply)"
     },
     {
-      "code": 6045,
+      "code": 6044,
       "name": "BorrowTooSmall",
       "msg": "Borrow amount below minimum (0.1 SOL)"
     },
     {
-      "code": 6046,
+      "code": 6045,
       "name": "NoActiveLoan",
       "msg": "No active loan position"
     },
     {
-      "code": 6047,
+      "code": 6046,
       "name": "NotLiquidatable",
       "msg": "Position is not liquidatable (LTV below threshold)"
     },
     {
-      "code": 6048,
+      "code": 6047,
       "name": "EmptyBorrowRequest",
       "msg": "Must provide collateral or borrow amount"
     },
     {
-      "code": 6049,
+      "code": 6048,
       "name": "RepayExceedsDebt",
       "msg": "Repay amount exceeds total owed"
     },
     {
-      "code": 6050,
+      "code": 6049,
       "name": "InvalidPoolAccount",
       "msg": "Invalid pool account"
     },
     {
-      "code": 6051,
+      "code": 6050,
       "name": "InsufficientVaultBalance",
       "msg": "Insufficient vault balance"
     },
     {
-      "code": 6052,
+      "code": 6051,
       "name": "VaultUnauthorized",
       "msg": "Unauthorized - only vault authority can perform this action"
     },
     {
-      "code": 6053,
+      "code": 6052,
       "name": "WalletNotLinked",
       "msg": "Wallet is not linked to any vault"
     },
     {
-      "code": 6054,
+      "code": 6053,
       "name": "VaultWalletLinkMismatch",
       "msg": "Wallet link does not point to the provided vault"
     },
     {
-      "code": 6055,
+      "code": 6054,
       "name": "InvalidPoolVault",
       "msg": "Invalid pool vault account"
     },
     {
-      "code": 6056,
+      "code": 6055,
       "name": "InvalidBondingTarget",
       "msg": "Invalid bonding target: must be 50, 100, or 200 SOL"
     },
     {
-      "code": 6057,
+      "code": 6056,
       "name": "InvalidTokenAccount",
       "msg": "Invalid token account - must be treasury lock's Token-2022 ATA"
     },
     {
-      "code": 6058,
+      "code": 6057,
       "name": "ClaimBelowMinimum",
       "msg": "Claim amount below minimum (0.1 SOL)"
     },
     {
-      "code": 6059,
+      "code": 6058,
       "name": "ShortNotEnabled",
       "msg": "Short selling is not enabled for this token"
     },
     {
-      "code": 6060,
+      "code": 6059,
       "name": "ShortTooSmall",
       "msg": "Short position size below minimum (1,000 tokens)"
     },
     {
-      "code": 6061,
+      "code": 6060,
       "name": "ShortCapExceeded",
       "msg": "Token lending capacity exhausted (short utilization cap reached)"
     },
     {
-      "code": 6062,
+      "code": 6061,
       "name": "UserShortCapExceeded",
       "msg": "Per-user short cap exceeded"
     },
     {
-      "code": 6063,
+      "code": 6062,
       "name": "ShortNotLiquidatable",
       "msg": "Short position is not liquidatable (LTV below threshold)"
     },
     {
-      "code": 6064,
+      "code": 6063,
       "name": "NoActiveShort",
       "msg": "No active short position"
     },
     {
-      "code": 6065,
+      "code": 6064,
       "name": "InsufficientTreasuryTokens",
       "msg": "Treasury has insufficient tokens for short lending"
     },
     {
-      "code": 6066,
+      "code": 6065,
       "name": "ShortAlreadyEnabled",
       "msg": "Short selling already enabled for this token"
     },
     {
-      "code": 6067,
+      "code": 6066,
       "name": "PoolTooThin",
       "msg": "Pool depth below minimum for margin operations"
     },
     {
-      "code": 6068,
+      "code": 6067,
       "name": "PriceDeviationTooHigh",
       "msg": "Pool price deviates too far from baseline"
     }
@@ -5832,43 +5863,12 @@
             "type": "bool"
           },
           {
-            "name": "is_token_2022",
-            "type": "bool"
-          },
-          {
             "name": "last_activity_slot",
             "type": "u64"
           },
           {
             "name": "reclaimed",
             "type": "bool"
-          },
-          {
-            "name": "name",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "symbol",
-            "type": {
-              "array": [
-                "u8",
-                10
-              ]
-            }
-          },
-          {
-            "name": "uri",
-            "type": {
-              "array": [
-                "u8",
-                200
-              ]
-            }
           },
           {
             "name": "bump",

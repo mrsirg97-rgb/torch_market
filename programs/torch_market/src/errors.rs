@@ -38,8 +38,6 @@ pub enum TorchMarketError {
     BuybackTooSoon,
     #[msg("Treasury has insufficient SOL")]
     InsufficientTreasury,
-    #[msg("This operation requires a Token-2022 mint")]
-    NotToken2022,
     #[msg("Token has already been reclaimed")]
     AlreadyReclaimed,
     #[msg("Token is still active, cannot reclaim yet")]

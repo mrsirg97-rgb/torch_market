@@ -131,18 +131,8 @@ pub fn create_token(ctx: Context<CreateToken2022>, args: CreateTokenArgs) -> Res
     bonding_curve.bonding_complete = false;
     bonding_curve.bonding_complete_slot = 0;
     bonding_curve.migrated = false;
-    bonding_curve.is_token_2022 = true; // V3 flag
     bonding_curve.last_activity_slot = Clock::get()?.slot;
     bonding_curve.reclaimed = false;
-
-    let name_bytes = args.name.as_bytes();
-    bonding_curve.name[..name_bytes.len()].copy_from_slice(name_bytes);
-
-    let symbol_bytes = args.symbol.as_bytes();
-    bonding_curve.symbol[..symbol_bytes.len()].copy_from_slice(symbol_bytes);
-
-    let uri_bytes = args.uri.as_bytes();
-    bonding_curve.uri[..uri_bytes.len()].copy_from_slice(uri_bytes);
     bonding_curve.bump = ctx.bumps.bonding_curve;
     bonding_curve.treasury_bump = ctx.bumps.treasury;
     bonding_curve.bonding_target = bonding_target; // [V23]

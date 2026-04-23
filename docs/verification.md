@@ -8,6 +8,8 @@ This is **not** a security audit. It proves the arithmetic is correct, but does 
 
 **73 proof harnesses. All passing. Zero failures.**
 
+Complemented by 31 [proptest properties](./properties.md) × 5,000 cases each — ~155,000 random-input checks per test run — covering the same math surface with broad empirical coverage.
+
 ---
 
 ## Overview
@@ -15,9 +17,10 @@ This is **not** a security audit. It proves the arithmetic is correct, but does 
 torch_market's core arithmetic has been formally verified using [Kani](https://model-checking.github.io/kani/), a Rust model checker backed by the CBMC bounded model checker. Kani exhaustively proves properties hold for **all** valid inputs within constrained ranges -- not just sampled test cases.
 
 **Tool:** Kani Rust Verifier 0.67.0 / CBMC 6.8.0
-**Target:** `torch_market` v20.0.0
+**Target:** `torch_market` v20.0.0 (torch_next)
 **Harnesses:** 73 proof harnesses, all passing
 **Source:** `programs/torch_market/src/kani_proofs.rs`
+**Companion:** [properties.md](./properties.md) — proptest fuzz properties for broader random coverage
 
 ## What Is Formally Verified
 

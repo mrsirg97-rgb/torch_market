@@ -3,7 +3,7 @@
 **Version:** V20.0.0 Production
 **Date:** April 2026
 **Auditor:** Claude Opus 4.7 (Anthropic)
-**Program ID:** `8hbUkonssSEEtkqzwM7ZcZrD9evacM92TcWSooVF4BeT`
+**Program ID:** `4nwTCWyR6vapTQRkV39f32xJ3uQztdjBqfhubnR6wQQC` (torch_next rebuild; pre-torch_next: `8hbUkonssSEEtkqzwM7ZcZrD9evacM92TcWSooVF4BeT`)
 
 ---
 
@@ -25,7 +25,7 @@ torch_market V20.0.0 replaces the Raydium CPMM integration with [DeepPool](https
 |-------|----------|
 | On-chain program (V20.0.0) | 24 source files, ~7,900 lines Rust, 30 instructions |
 | Kani proofs | 73 harnesses, all passing |
-| Adversarial redhat pass | 17 exploit classes, all mitigated or accepted |
+| Adversarial redhat pass | 24 exploit classes (17 original + 7 torch_next), all mitigated or accepted |
 | Composition with DeepPool | DeepPool's own 16 Kani proofs + separate redhat audit |
 
 Out of scope for this document: frontend (`torchmarket/packages/app`), SDK (`torchsdk`), keeper bot (`torch-liquidation-kit`). Each has its own audit.
@@ -50,6 +50,24 @@ Out of scope for this document: frontend (`torchmarket/packages/app`), SDK (`tor
 
 ---
 
+## V20.0.0 Refinements (torch_next)
+
+Iterations on V20.0.0 prior to mainnet. No version bump; same release line.
+
+1. **TorchVault split for DeepPool v3.1 compatibility.** DeepPool v3.1 unified the swap path so all SOL flow goes through `System.transfer(from=sol_source)`, which requires `sol_source.owner == system_program`. Torch's `TorchVault` is a data-holding program-owned PDA and cannot be a System.transfer source. Solution: introduce a sibling `TorchVaultSol` PDA at `seeds = ["torch_vault_sol", creator]`, system-owned and data-less, used only during `vault_swap` buys. On buy, torch moves `amount_in` lamports from `torch_vault` → `vault_sol` via direct manipulation, then CPIs DeepPool's `swap` with `user = torch_vault` (token authority) and `sol_source = vault_sol`. On sell, `sol_source = torch_vault` directly — DeepPool credits lamports via owner-agnostic direct add.
+
+2. **BondingCurve shrink.** Removed `is_token_2022`, `name`, `symbol`, `uri` fields (243 bytes per curve). Metadata now lives exclusively in the Token-2022 `TokenMetadata` extension on the mint. `BondingCurve::LEN` updated in sync. `is_token_2022` was always `true` in V20 (torch only creates Token-2022 tokens via `create_token`), making the field redundant. Downstream constraint checks using these fields were removed — all were dead or trivially-satisfied paths.
+
+3. **Error variant cleanup.** Removed `NotToken2022` variant. No remaining references anywhere in handlers or tests.
+
+4. **`sol_source` wiring in downstream CPIs.** `vault_swap` (both directions) and `swap_fees_to_sol` now include the new `sol_source` field in their DeepPool swap CPI account lists. Treasury sell uses `sol_source = treasury` directly (program-owned, but sell path uses direct lamport credit which is owner-agnostic).
+
+5. **Fresh program ID.** Rebuilt as `4nwTCWyR6vapTQRkV39f32xJ3uQztdjBqfhubnR6wQQC`. No migration concerns — greenfield deploy.
+
+These refinements are additive. No behavior change visible to on-chain state of tokens or users beyond the TorchVault+TorchVaultSol account shape and the smaller BondingCurve. See redhat findings #18-24 and deep dive #7 for the adversarial coverage.
+
+---
+
 ## Findings
 
 ### Severity Counts
@@ -60,7 +78,7 @@ Out of scope for this document: frontend (`torchmarket/packages/app`), SDK (`tor
 | High     | 0 | 0 | — |
 | Medium   | 4 | 0 | **-4** (see "Closed in V20" below) |
 | Low      | 5 | 0 | **-5** (all closed across V10.2.x) |
-| Informational | 32 | 14 | -18 (historical cleanup) |
+| Informational | 32 | 15 | -17 (historical cleanup, +1 from torch_next refinements) |
 
 ### Closed in V20
 
@@ -71,17 +89,18 @@ Out of scope for this document: frontend (`torchmarket/packages/app`), SDK (`tor
 
 ### Remaining Informational
 
-14 informational carryovers, all design tradeoffs:
+15 informational carryovers, all design tradeoffs:
 - Permissionless migration means nobody is forced to call `migrate_to_dex` after bonding completes (accepted — economic incentive exists).
 - Shorts become unliquidatable if pool depth drops below 5 SOL (accepted — the alternative enables sandwich attacks on the liquidation path).
 - Oracle-free margin trading: Torch uses pool reserves directly, not TWAP or external oracles. Depth bands + per-user borrow caps substitute for oracle manipulation resistance.
 - Upgrade authority remains live on mainnet. Intentional during early production; revoke via `solana program set-upgrade-authority --final` after stabilization window.
+- **`vault_sol` lamport dust sink (new).** Anyone can direct-credit lamports to a creator's `vault_sol` PDA. No instruction reclaims that SOL. Griefer self-traps their funds; creator / protocol unaffected. Critically: do not add a reclaim instruction without understanding the side-channel — see redhat deep dive #7.
 
 ---
 
 ## Redhat Audit — V20.0.0
 
-An adversarial pass covered 17 exploit classes. Summary of findings:
+An adversarial pass covered 24 exploit classes (17 original + 7 added during torch_next refinement). Summary of findings:
 
 | # | Exploit Class | Result |
 |---|---|---|
@@ -102,6 +121,13 @@ An adversarial pass covered 17 exploit classes. Summary of findings:
 | 15 | V20-specific surprises | **VERIFIED** — DeepPool integration is minimal and clean |
 | 16 | Close account / lamport recovery | **VERIFIED** — no unsafe `close_account` paths |
 | 17 | Hardcoded pubkeys | **VERIFIED** — program IDs imported from dependency crates, not hardcoded |
+| 18 | `vault_sol` account substitution | **MITIGATED** — Anchor `seeds = [torch_vault_sol, creator]` constraint binds the account to its PDA; no substitution possible |
+| 19 | `vault_sol` pre-credit / donation griefing | **NOT EXPLOITABLE** — see deep dive #7 |
+| 20 | `vault_swap` buy-path lamport-shuffle race | **N/A** — Solana instructions execute atomically; direct lamport manipulation followed by CPI within one handler cannot be interrupted |
+| 21 | Sell path `sol_source = torch_vault` abuse | **MITIGATED** — DeepPool requires `sol_source` as `Signer`; torch_vault signs via `invoke_signed` with its own seeds, substitution impossible |
+| 22 | Treasury swap `sol_source = treasury` abuse | **MITIGATED** — same mechanism; treasury PDA signs for itself |
+| 23 | BondingCurve field removal leaving dead reads | **VERIFIED** — fresh program ID, no legacy accounts; IDL regenerated; all handlers that referenced removed fields (`is_token_2022`, `name`, `symbol`, `uri`) updated or cleaned |
+| 24 | `is_token_2022` / `NotToken2022` constraint removal | **DEAD-CODE REMOVAL** — `create_token` only produces Token-2022 mints; no handler path ever saw a non-2022 token, so the guard was trivially-satisfied |
 
 No exploit confirmed. See "Deep Dives" below for the non-trivial cases.
 
@@ -202,6 +228,45 @@ The `net` measurement pattern (read before, transfer, reload, subtract) is used 
 
 Other Token-2022 extensions: `create_token` handler does not emit tokens with `PermanentDelegate`, `NonTransferable`, or `DefaultAccountState::Frozen`. Tokens created by torch_market have a fixed extension set: `TransferFeeConfig`, `MetadataPointer`, `TokenMetadata`. Extension policy is enforced at the torch layer, not the DeepPool layer.
 
+### 7. TorchVault / TorchVaultSol Split (torch_next)
+
+**Motivation.** DeepPool v3.1 unified its swap path: all SOL flow uses `System.transfer(from=sol_source, ...)`. The system program requires `from.owner == system_program`. Torch's `TorchVault` is a program-owned PDA (holds state: `sol_balance`, totals, `linked_wallets`, etc.) and can't be a System.transfer source. Solution: a companion system-owned PDA for SOL routing.
+
+**Accounts:**
+- `TorchVault` — PDA at `["torch_vault", creator]`, owned by torch_market. Holds the vault's accounting and the token ATA authority.
+- `TorchVaultSol` — PDA at `["torch_vault_sol", creator]`, system-owned, 0 bytes. Used only during `vault_swap` buys as a lamport waypoint. Sits at 0 lamports between swaps.
+
+**Buy flow** (`handlers/swap.rs::vault_swap`):
+1. Decrement `torch_vault.sol_balance -= amount_in`, increment `total_spent += amount_in`.
+2. Direct lamport shuffle: `torch_vault.lamports -= amount_in; vault_sol.lamports += amount_in`. Torch owns `torch_vault` (can `sub_lamports`); anyone can `add_lamports` to any account.
+3. CPI DeepPool `swap` with `user = torch_vault` (token authority) and `sol_source = vault_sol`. DeepPool does `System.transfer(from=vault_sol, to=pool, amount_in)`.
+4. After the CPI, `vault_sol.lamports` returns to whatever it started with (typically 0).
+
+**Sell flow** — `sol_source = torch_vault` directly. DeepPool's sell credits lamports via direct add (owner-agnostic), which works for program-owned accounts. `vault_sol` is not touched.
+
+**Atomicity.** Steps 1-3 execute within a single instruction. Solana's single-threaded runtime makes the sequence uninterruptible. If the CPI in step 3 fails, the full transaction reverts — including the `sol_balance` decrement and the lamport shuffle.
+
+**Attack surface probed:**
+
+- **Substitution (#18):** The `vault_sol` account has `seeds = [TORCH_VAULT_SOL_SEED, creator]` + `bump` constraint. Anchor enforces the address at deserialization. No other account can satisfy the constraint.
+
+- **Pre-credit / donation griefing (#19):** A third party can `System.transfer` lamports directly to any `vault_sol` PDA address. The donation lands on `vault_sol`, owner stays `system_program`. Next time the creator does a buy-swap:
+  - Step 2 pushes `amount_in` from torch_vault into vault_sol. `vault_sol.lamports == donation + amount_in`.
+  - Step 3's `System.transfer(from=vault_sol, amount_in)` drains exactly `amount_in`, leaving the donation in place.
+  - No instruction exists that drains arbitrary `vault_sol` balances — only `vault_swap` buy touches it, and only for exactly `amount_in`.
+
+  Net: the donated SOL is trapped. Donor loses their SOL; creator and protocol are unaffected. `torch_vault.sol_balance` is derived from `amount_in`, not from `vault_sol.lamports`, so the accounting is clean.
+
+  **Critical:** if a future maintainer adds a "reclaim `vault_sol` dust" instruction, it must **not** be permissionless. An instruction that drains `vault_sol.lamports()` to any caller would let attackers direct-credit `vault_sol` and sweep it through that handler. Any such reclaim must require the creator's signature and cap at a safe amount. This is the main reason dust stays trapped by design.
+
+- **Race (#20):** Solana atomicity — already noted.
+
+- **Sell-path sol_source (#21):** `sol_source = torch_vault`. DeepPool requires `sol_source: Signer`. torch_vault signs via `invoke_signed` with `["torch_vault", creator, bump]`. Any attacker passing a different account as `sol_source` fails the Signer check unless they can produce a valid PDA signature for that account — which they can't (seeds are torch's namespace).
+
+- **Treasury sell (#22):** Same as #21 but with `["treasury", mint, bump]` signing for `treasury` as `sol_source`.
+
+**Why this is strictly better than the pre-v3.1 CPI pattern:** the old flow had torch pre-depositing lamports to the DeepPool pool PDA via direct manipulation, then CPIing swap with `amount_in` claimed. DeepPool's swap trusted the claim (no verification that the deposit actually happened). A malicious program could CPI with phantom `amount_in` and drain tokens. The v3.1 unified path made `System.transfer` self-authenticating — no claims, no trust. The TorchVault split preserves torch's composability without reintroducing any trust model.
+
 ---
 
 ## Composition with DeepPool
@@ -246,6 +311,7 @@ This document covers on-chain program correctness, not:
 | Version | Date | Key Changes |
 |---------|------|-------------|
 | V20.0.0 | Apr 2026 | Raydium → DeepPool. 73 Kani proofs. This audit. |
+| V20.0.0 (torch_next) | Apr 2026 | TorchVault split for DeepPool v3.1 compatibility (new `TorchVaultSol` PDA). BondingCurve shrink (−243 bytes/curve, metadata moved to Token-2022 extension). Dead constraint cleanup. 7 additional redhat exploit classes (#18-24). New program ID. |
 | V10.2.6 | Apr 2026 | Dev wallet share rebalance to 50%. Final pre-V20 version. |
 | V10.2.5 | Apr 2026 | Per-user borrow cap 5x → 23x. |
 | V10.2.3 | Apr 2026 | Per-user borrow cap 3x → 5x. |

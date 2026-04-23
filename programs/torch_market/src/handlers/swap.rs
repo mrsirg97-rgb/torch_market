@@ -20,8 +20,14 @@ pub fn vault_swap(
     let vault = &ctx.accounts.torch_vault;
     let creator_key = vault.creator;
     let vault_bump = vault.bump;
+    let vault_sol_bump = ctx.bumps.vault_sol;
     let vault_seeds: &[&[u8]] = &[TORCH_VAULT_SEED, creator_key.as_ref(), &[vault_bump]];
-    let vault_signer = &[vault_seeds][..];
+    let vault_sol_seeds: &[&[u8]] = &[
+        TORCH_VAULT_SOL_SEED,
+        creator_key.as_ref(),
+        &[vault_sol_bump],
+    ];
+    let cpi_signers = &[vault_seeds, vault_sol_seeds][..];
 
     if is_buy {
         // Buy: vault sends SOL, receives tokens
@@ -41,21 +47,22 @@ pub fn vault_swap(
             .checked_add(amount_in)
             .ok_or(TorchMarketError::MathOverflow)?;
 
-        // Pre-deposit SOL to deep_pool pool PDA (torch_market owns vault,
-        // so we can debit it; deep_pool verifies the delta)
+        // Stage SOL on the system-owned vault_sol PDA. deep_pool's swap will
+        // pull it via System.transfer, which needs a system-owned `from`.
         let vault_info = ctx.accounts.torch_vault.to_account_info();
-        let pool_info = ctx.accounts.deep_pool.to_account_info();
+        let vault_sol_info = ctx.accounts.vault_sol.to_account_info();
         **vault_info.try_borrow_mut_lamports()? = vault_info
             .lamports()
             .checked_sub(amount_in)
             .ok_or(TorchMarketError::MathOverflow)?;
-        **pool_info.try_borrow_mut_lamports()? = pool_info
+        **vault_sol_info.try_borrow_mut_lamports()? = vault_sol_info
             .lamports()
             .checked_add(amount_in)
             .ok_or(TorchMarketError::MathOverflow)?;
 
         let swap_accounts = deep_pool::cpi::accounts::Swap {
             user: ctx.accounts.torch_vault.to_account_info(),
+            sol_source: ctx.accounts.vault_sol.to_account_info(),
             pool: ctx.accounts.deep_pool.to_account_info(),
             token_mint: ctx.accounts.mint.to_account_info(),
             token_vault: ctx.accounts.deep_pool_token_vault.to_account_info(),
@@ -69,7 +76,7 @@ pub fn vault_swap(
             CpiContext::new_with_signer(
                 ctx.accounts.deep_pool_program.to_account_info(),
                 swap_accounts,
-                vault_signer,
+                cpi_signers,
             ),
             deep_pool::SwapArgs {
                 amount_in,
@@ -95,8 +102,11 @@ pub fn vault_swap(
 
         let vault_lamports_before = ctx.accounts.torch_vault.to_account_info().lamports();
 
+        // sol_source = torch_vault: deep_pool credits lamports via direct
+        // manipulation on sell, which is owner-agnostic. No need for vault_sol.
         let swap_accounts = deep_pool::cpi::accounts::Swap {
             user: ctx.accounts.torch_vault.to_account_info(),
+            sol_source: ctx.accounts.torch_vault.to_account_info(),
             pool: ctx.accounts.deep_pool.to_account_info(),
             token_mint: ctx.accounts.mint.to_account_info(),
             token_vault: ctx.accounts.deep_pool_token_vault.to_account_info(),
@@ -110,7 +120,7 @@ pub fn vault_swap(
             CpiContext::new_with_signer(
                 ctx.accounts.deep_pool_program.to_account_info(),
                 swap_accounts,
-                vault_signer,
+                cpi_signers,
             ),
             deep_pool::SwapArgs {
                 amount_in,

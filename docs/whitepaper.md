@@ -194,11 +194,11 @@ Every parameter is readable on-chain. Every outcome is calculable before executi
 
 ## Verification
 
-73 Kani proof harnesses. 53 end-to-end tests. All passing. Cross-validated by independent audit (OpenAI o3).
+73 Kani proof harnesses. 31 proptest properties (5,000 random cases each). 53 end-to-end tests. All passing. Cross-validated by independent audit (OpenAI o3).
 
-Core arithmetic is formally verified with [Kani](https://model-checking.github.io/kani/) covering every possible input in constrained ranges: fee calculations, bonding curve pricing, lending formulas, liquidation lifecycle, short selling, bad debt accounting, depth-based risk band boundaries, circuit breaker band math, reward distribution, migration conservation, token distribution, and DeepPool integration. No SOL created from nothing. No tokens minted from thin air. No fees exceeding stated rates.
+Core arithmetic is formally verified with [Kani](https://model-checking.github.io/kani/) covering every possible input in constrained ranges: fee calculations, bonding curve pricing, lending formulas, liquidation lifecycle, short selling, bad debt accounting, depth-based risk band boundaries, circuit breaker band math, reward distribution, migration conservation, token distribution, and DeepPool integration. Kani proves exact correctness at representative values; proptest sweeps the full u64 input space with thousands of randomly-drawn cases per property. No SOL created from nothing. No tokens minted from thin air. No fees exceeding stated rates.
 
-See [verification.md](https://torch.market/verification.md).
+See [verification.md](./verification.md) for the Kani suite and [properties.md](./properties.md) for the proptest properties.
 
 ---
 

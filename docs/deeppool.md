@@ -151,7 +151,7 @@ One dependency removed. Zero external program crates.
 |---------|------------------|-------------------|
 | MigrateToDex | ~18 accounts | ~8 accounts |
 | SwapFeesToSol | ~15 accounts | ~8 accounts |
-| VaultSwap (buy/sell) | ~15 accounts | ~8 accounts |
+| VaultSwap (buy/sell) | ~15 accounts | ~9 accounts (includes `vault_sol` for buy-path `sol_source`, see torch_next section) |
 | Borrow | ~12 accounts | ~8 accounts |
 | Liquidate | ~12 accounts | ~8 accounts |
 | OpenShort | ~12 accounts | ~8 accounts |
@@ -165,3 +165,46 @@ Fewer accounts = smaller transactions = more headroom = less failure.
 - **Existing Raydium pools** — tokens already migrated to Raydium stay there. This integration only affects new migrations
 - **CPI compute budget** — DeepPool CPI should be cheaper than Raydium CPI (simpler program), but verify
 - **LP token handling** — Torch must burn DeepPool LP tokens at migration. Verify the burn flow works with Token-2022 LP mints
+
+---
+
+## torch_next Refinements — DeepPool v3.1 Compatibility
+
+DeepPool v3.1 unified its swap path: all SOL flow now goes through `System.transfer(from=sol_source, ...)`, which the system program verifies against real lamport balances. This closed the implicit-trust CPI surface in DeepPool v3.0 but required torch to adapt.
+
+**The constraint:** `System.transfer` requires `from.owner == system_program`. Torch's `TorchVault` is a program-owned PDA (holds `sol_balance`, totals, `linked_wallets` — non-trivial state). It can't be a System.transfer source.
+
+**The fix:** a companion system-owned PDA that holds SOL only during a swap's buy path.
+
+```
+TorchVault        → seeds = ["torch_vault", creator]       → torch-owned, has state
+TorchVaultSol     → seeds = ["torch_vault_sol", creator]   → system-owned, 0 bytes
+```
+
+### vault_swap updates
+
+| Direction | `user` in CPI | `sol_source` in CPI | Notes |
+|-----------|---------------|--------------------|---------|
+| Buy | `torch_vault` | `vault_sol` | Pre-CPI: direct lamport shuffle `torch_vault → vault_sol` for exactly `amount_in`. DeepPool's `System.transfer` drains it. |
+| Sell | `torch_vault` | `torch_vault` | DeepPool's sell credits lamports via owner-agnostic direct add. No `vault_sol` touch. |
+
+### swap_fees_to_sol (treasury sell)
+
+`sol_source = treasury`. Same pattern as vault sell — direct lamport credit works for program-owned destinations.
+
+### BondingCurve shrink
+
+Dropped `is_token_2022`, `name`, `symbol`, `uri` from state. Metadata lives exclusively in the Token-2022 `TokenMetadata` extension on the mint. Saves 243 bytes per curve and trims CU off every handler that loads `BondingCurve`.
+
+### What didn't change
+
+- All DeepPool CPI signer logic remains — `torch_config` PDA signs for migration, `torch_vault` + `vault_sol` sign for swaps.
+- No new error variants, no new constraint classes, no new privilege levels.
+- `pool_validation.rs`, `read_deep_pool_reserves`, depth bands, baseline gating — all unchanged.
+
+### Why this works (redhat summary)
+
+- `vault_sol` is Anchor-seed-constrained; substitution impossible.
+- Lamport donations to `vault_sol` are self-trapping — no reclaim instruction exists. Attackers lose their own SOL; creator and protocol are unaffected.
+- The lamport shuffle + CPI on buy is a single-instruction atomic sequence; Solana's runtime makes it uninterruptible.
+- Full adversarial coverage in [audit.md](./audit.md) §V20.0.0 Refinements and Deep Dive #7.

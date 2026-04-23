@@ -11,10 +11,8 @@ use crate::token_2022_utils::*;
 // into the token treasury. Anyone can call this (permissionless).
 // The harvested tokens can be used in future buybacks to reduce supply.
 pub fn harvest_fees<'info>(ctx: Context<'_, '_, 'info, 'info, HarvestFees<'info>>) -> Result<()> {
-    let bonding_curve = &ctx.accounts.bonding_curve;
     let token_treasury = &mut ctx.accounts.token_treasury;
     let mint_key = ctx.accounts.mint.key();
-    require!(bonding_curve.is_token_2022, TorchMarketError::NotToken2022);
 
     if !ctx.remaining_accounts.is_empty() {
         let source_pubkeys: Vec<Pubkey> = ctx.remaining_accounts.iter().map(|a| a.key()).collect();
@@ -135,8 +133,11 @@ pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) ->
     ];
     let treasury_signer = &[&treasury_seeds[..]][..];
 
+    // sol_source = treasury (sell only): deep_pool credits lamports via direct
+    // manipulation, which doesn't require sol_source to be system-owned.
     let swap_accounts = deep_pool::cpi::accounts::Swap {
         user: ctx.accounts.treasury.to_account_info(),
+        sol_source: ctx.accounts.treasury.to_account_info(),
         pool: ctx.accounts.deep_pool.to_account_info(),
         token_mint: ctx.accounts.mint.to_account_info(),
         token_vault: ctx.accounts.deep_pool_token_vault.to_account_info(),
