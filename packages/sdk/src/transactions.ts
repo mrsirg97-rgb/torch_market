@@ -300,33 +300,41 @@ const buildBuyTransactionInternal = async (
     tx.add(createVaultTokenAtaIx(buyer, mint, torchVaultAccount))
   }
 
-  const buyIx = await program.methods
-    .buy({
-      solAmount: new BN(amount_sol.toString()),
-      minTokensOut: new BN(minTokens.toString()),
-    })
-    .accounts({
-      buyer,
-      globalConfig: globalConfigPda,
-      devWallet: (globalConfigAccount as any).devWallet || globalConfigAccount.dev_wallet,
-      protocolTreasury: protocolTreasuryPda,
-      creator: bondingCurve.creator,
-      mint,
-      bondingCurve: bondingCurvePda,
-      tokenVault: bondingCurveTokenAccount,
-      tokenTreasury: treasuryPda,
-      treasuryTokenAccount,
-      buyerTokenAccount,
-      userPosition: userPositionPda,
-      userStats: userStatsPda,
-      torchVault: torchVaultAccount,
-      vaultWalletLink: vaultWalletLinkAccount,
-      vaultTokenAccount,
-      tokenProgram: TOKEN_2022_PROGRAM_ID,
-      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-      systemProgram: SystemProgram.programId,
-    } as any)
-    .instruction()
+  const buyArgs = {
+    solAmount: new BN(amount_sol.toString()),
+    minTokensOut: new BN(minTokens.toString()),
+  }
+  const buyBaseAccounts = {
+    buyer,
+    globalConfig: globalConfigPda,
+    devWallet: (globalConfigAccount as any).devWallet || globalConfigAccount.dev_wallet,
+    protocolTreasury: protocolTreasuryPda,
+    creator: bondingCurve.creator,
+    mint,
+    bondingCurve: bondingCurvePda,
+    tokenVault: bondingCurveTokenAccount,
+    tokenTreasury: treasuryPda,
+    treasuryTokenAccount,
+    buyerTokenAccount,
+    userPosition: userPositionPda,
+    userStats: userStatsPda,
+    tokenProgram: TOKEN_2022_PROGRAM_ID,
+    associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+    systemProgram: SystemProgram.programId,
+  }
+
+  const buyIx =
+    torchVaultAccount && vaultWalletLinkAccount && vaultTokenAccount
+      ? await program.methods
+          .buyViaVault(buyArgs)
+          .accounts({
+            ...buyBaseAccounts,
+            torchVault: torchVaultAccount,
+            vaultWalletLink: vaultWalletLinkAccount,
+            vaultTokenAccount,
+          })
+          .instruction()
+      : await program.methods.buy(buyArgs).accounts(buyBaseAccounts).instruction()
 
   tx.add(buyIx)
   addMemoIx(tx, buyer, message)
@@ -594,27 +602,38 @@ export const buildSellTransaction = async (
   const provider = makeDummyProvider(connection, seller)
   const program = new Program(idl as unknown, provider)
 
-  const sellIx = await program.methods
-    .sell({
-      tokenAmount: new BN(amount_tokens.toString()),
-      minSolOut: new BN(minSol.toString()),
-    })
-    .accounts({
-      seller,
-      mint,
-      bondingCurve: bondingCurvePda,
-      tokenVault: bondingCurveTokenAccount,
-      sellerTokenAccount,
-      userPosition: userPositionAccount,
-      tokenTreasury: treasuryPda,
-      userStats: userStatsAccount,
-      torchVault: torchVaultAccount,
-      vaultWalletLink: vaultWalletLinkAccount,
-      vaultTokenAccount,
-      tokenProgram: TOKEN_2022_PROGRAM_ID,
-      systemProgram: SystemProgram.programId,
-    } as any)
-    .instruction()
+  const sellArgs = {
+    tokenAmount: new BN(amount_tokens.toString()),
+    minSolOut: new BN(minSol.toString()),
+  }
+  // userPosition / userStats are Optional accounts in the Sell context;
+  // Anchor accepts null at runtime to skip them but the loosely-typed
+  // Program<unknown> typing rejects the union — cast each to PublicKey.
+  const sellBaseAccounts = {
+    seller,
+    mint,
+    bondingCurve: bondingCurvePda,
+    tokenVault: bondingCurveTokenAccount,
+    sellerTokenAccount,
+    userPosition: userPositionAccount as PublicKey,
+    tokenTreasury: treasuryPda,
+    userStats: userStatsAccount as PublicKey,
+    tokenProgram: TOKEN_2022_PROGRAM_ID,
+    systemProgram: SystemProgram.programId,
+  }
+
+  const sellIx =
+    torchVaultAccount && vaultWalletLinkAccount && vaultTokenAccount
+      ? await program.methods
+          .sellViaVault(sellArgs)
+          .accounts({
+            ...sellBaseAccounts,
+            torchVault: torchVaultAccount,
+            vaultWalletLink: vaultWalletLinkAccount,
+            vaultTokenAccount,
+          })
+          .instruction()
+      : await program.methods.sell(sellArgs).accounts(sellBaseAccounts).instruction()
 
   tx.add(sellIx)
 
@@ -807,20 +826,27 @@ export const buildStarTransaction = async (
   const provider = makeDummyProvider(connection, user)
   const program = new Program(idl as unknown, provider)
 
-  const starIx = await program.methods
-    .starToken()
-    .accounts({
-      user,
-      mint,
-      bondingCurve: bondingCurvePda,
-      tokenTreasury: treasuryPda,
-      creator: bondingCurve.creator,
-      starRecord: starRecordPda,
-      torchVault: torchVaultAccount,
-      vaultWalletLink: vaultWalletLinkAccount,
-      systemProgram: SystemProgram.programId,
-    } as any)
-    .instruction()
+  const starBaseAccounts = {
+    user,
+    mint,
+    bondingCurve: bondingCurvePda,
+    tokenTreasury: treasuryPda,
+    creator: bondingCurve.creator,
+    starRecord: starRecordPda,
+    systemProgram: SystemProgram.programId,
+  }
+
+  const starIx =
+    torchVaultAccount && vaultWalletLinkAccount
+      ? await program.methods
+          .starTokenViaVault()
+          .accounts({
+            ...starBaseAccounts,
+            torchVault: torchVaultAccount,
+            vaultWalletLink: vaultWalletLinkAccount,
+          })
+          .instruction()
+      : await program.methods.starToken().accounts(starBaseAccounts).instruction()
 
   tx.add(starIx)
   const versionedTx = await finalizeTransaction(connection, tx, user)
@@ -1153,28 +1179,36 @@ export const buildBorrowTransaction = async (
   const provider = makeDummyProvider(connection, borrower)
   const program = new Program(idl as unknown, provider)
 
-  const borrowIx = await program.methods
-    .borrow({
-      collateralAmount: new BN(collateral_amount.toString()),
-      solToBorrow: new BN(sol_to_borrow.toString()),
-    })
-    .accounts({
-      borrower,
-      mint,
-      bondingCurve: bondingCurvePda,
-      treasury: treasuryPda,
-      collateralVault: collateralVaultPda,
-      borrowerTokenAccount,
-      loanPosition: loanPositionPda,
-      deepPool: deepPool.pool,
-      deepPoolTokenVault: deepPool.tokenVault,
-      torchVault: torchVaultAccount,
-      vaultWalletLink: vaultWalletLinkAccount,
-      vaultTokenAccount,
-      tokenProgram: TOKEN_2022_PROGRAM_ID,
-      systemProgram: SystemProgram.programId,
-    } as any)
-    .instruction()
+  const borrowArgs = {
+    collateralAmount: new BN(collateral_amount.toString()),
+    solToBorrow: new BN(sol_to_borrow.toString()),
+  }
+  const borrowBaseAccounts = {
+    borrower,
+    mint,
+    bondingCurve: bondingCurvePda,
+    treasury: treasuryPda,
+    collateralVault: collateralVaultPda,
+    borrowerTokenAccount,
+    loanPosition: loanPositionPda,
+    deepPool: deepPool.pool,
+    deepPoolTokenVault: deepPool.tokenVault,
+    tokenProgram: TOKEN_2022_PROGRAM_ID,
+    systemProgram: SystemProgram.programId,
+  }
+
+  const borrowIx =
+    torchVaultAccount && vaultWalletLinkAccount && vaultTokenAccount
+      ? await program.methods
+          .borrowViaVault(borrowArgs)
+          .accounts({
+            ...borrowBaseAccounts,
+            torchVault: torchVaultAccount,
+            vaultWalletLink: vaultWalletLinkAccount,
+            vaultTokenAccount,
+          })
+          .instruction()
+      : await program.methods.borrow(borrowArgs).accounts(borrowBaseAccounts).instruction()
 
   tx.add(borrowIx)
   const versionedTx = await finalizeTransaction(connection, tx, borrower)
@@ -1249,22 +1283,30 @@ export const buildRepayTransaction = async (
   const provider = makeDummyProvider(connection, borrower)
   const program = new Program(idl as unknown, provider)
 
-  const repayIx = await program.methods
-    .repay(new BN(sol_amount.toString()))
-    .accounts({
-      borrower,
-      mint,
-      treasury: treasuryPda,
-      collateralVault: collateralVaultPda,
-      borrowerTokenAccount,
-      loanPosition: loanPositionPda,
-      torchVault: torchVaultAccount,
-      vaultWalletLink: vaultWalletLinkAccount,
-      vaultTokenAccount,
-      tokenProgram: TOKEN_2022_PROGRAM_ID,
-      systemProgram: SystemProgram.programId,
-    } as any)
-    .instruction()
+  const repayArg = new BN(sol_amount.toString())
+  const repayBaseAccounts = {
+    borrower,
+    mint,
+    treasury: treasuryPda,
+    collateralVault: collateralVaultPda,
+    borrowerTokenAccount,
+    loanPosition: loanPositionPda,
+    tokenProgram: TOKEN_2022_PROGRAM_ID,
+    systemProgram: SystemProgram.programId,
+  }
+
+  const repayIx =
+    torchVaultAccount && vaultWalletLinkAccount && vaultTokenAccount
+      ? await program.methods
+          .repayViaVault(repayArg)
+          .accounts({
+            ...repayBaseAccounts,
+            torchVault: torchVaultAccount,
+            vaultWalletLink: vaultWalletLinkAccount,
+            vaultTokenAccount,
+          })
+          .instruction()
+      : await program.methods.repay(repayArg).accounts(repayBaseAccounts).instruction()
 
   tx.add(repayIx)
   const versionedTx = await finalizeTransaction(connection, tx, borrower)
@@ -1349,27 +1391,35 @@ export const buildLiquidateTransaction = async (
   const provider = makeDummyProvider(connection, liquidator)
   const program = new Program(idl as unknown, provider)
 
-  const liquidateIx = await program.methods
-    .liquidate()
-    .accounts({
-      liquidator,
-      borrower,
-      mint,
-      bondingCurve: bondingCurvePda,
-      treasury: treasuryPda,
-      collateralVault: collateralVaultPda,
-      liquidatorTokenAccount,
-      loanPosition: loanPositionPda,
-      deepPool: deepPool.pool,
-      deepPoolTokenVault: deepPool.tokenVault,
-      torchVault: torchVaultAccount,
-      vaultWalletLink: vaultWalletLinkAccount,
-      vaultTokenAccount,
-      tokenProgram: TOKEN_2022_PROGRAM_ID,
-      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-      systemProgram: SystemProgram.programId,
-    } as any)
-    .instruction()
+  const liquidateSharedAccounts = {
+    liquidator,
+    borrower,
+    mint,
+    bondingCurve: bondingCurvePda,
+    treasury: treasuryPda,
+    collateralVault: collateralVaultPda,
+    loanPosition: loanPositionPda,
+    deepPool: deepPool.pool,
+    deepPoolTokenVault: deepPool.tokenVault,
+    tokenProgram: TOKEN_2022_PROGRAM_ID,
+    associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+    systemProgram: SystemProgram.programId,
+  }
+  const liquidateIx =
+    torchVaultAccount && vaultWalletLinkAccount && vaultTokenAccount
+      ? await program.methods
+          .liquidateViaVault()
+          .accounts({
+            ...liquidateSharedAccounts,
+            torchVault: torchVaultAccount,
+            vaultWalletLink: vaultWalletLinkAccount,
+            vaultTokenAccount,
+          })
+          .instruction()
+      : await program.methods
+          .liquidate()
+          .accounts({ ...liquidateSharedAccounts, liquidatorTokenAccount })
+          .instruction()
 
   tx.add(liquidateIx)
   const versionedTx = await finalizeTransaction(connection, tx, liquidator)
@@ -1418,17 +1468,27 @@ export const buildClaimProtocolRewardsTransaction = async (
   const provider = makeDummyProvider(connection, user)
   const program = new Program(idl as unknown, provider)
 
-  const claimIx = await program.methods
-    .claimProtocolRewards()
-    .accounts({
-      user,
-      userStats: userStatsPda,
-      protocolTreasury: protocolTreasuryPda,
-      torchVault: torchVaultAccount,
-      vaultWalletLink: vaultWalletLinkAccount,
-      systemProgram: SystemProgram.programId,
-    } as any)
-    .instruction()
+  const claimBaseAccounts = {
+    user,
+    userStats: userStatsPda,
+    protocolTreasury: protocolTreasuryPda,
+    systemProgram: SystemProgram.programId,
+  }
+
+  const claimIx =
+    torchVaultAccount && vaultWalletLinkAccount
+      ? await program.methods
+          .claimProtocolRewardsViaVault()
+          .accounts({
+            ...claimBaseAccounts,
+            torchVault: torchVaultAccount,
+            vaultWalletLink: vaultWalletLinkAccount,
+          })
+          .instruction()
+      : await program.methods
+          .claimProtocolRewards()
+          .accounts(claimBaseAccounts)
+          .instruction()
 
   tx.add(claimIx)
   const versionedTx = await finalizeTransaction(connection, tx, user)
@@ -1476,7 +1536,7 @@ export const buildReclaimFailedTokenTransaction = async (
       tokenTreasury: tokenTreasuryPda,
       protocolTreasury: protocolTreasuryPda,
       systemProgram: SystemProgram.programId,
-    } as any)
+    })
     .instruction()
 
   tx.add(ix)
@@ -1651,7 +1711,7 @@ export const buildMigrateTransaction = async (
       payer,
       mint,
       bondingCurve: bondingCurvePda,
-    } as any)
+    })
     .instruction()
 
   // Step 2: Migrate to DeepPool (all CPI-based)
@@ -1680,7 +1740,7 @@ export const buildMigrateTransaction = async (
       token2022Program: TOKEN_2022_PROGRAM_ID,
       associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
-    } as any)
+    })
     .instruction()
 
   tx.add(fundIx, migrateIx)
@@ -1776,7 +1836,7 @@ const buildVaultSwapTransaction = async (
       token2022Program: TOKEN_2022_PROGRAM_ID,
       associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
-    } as any)
+    })
     .instruction()
 
   tx.add(swapIx)
@@ -1814,7 +1874,7 @@ export const buildAdvanceProtocolEpochTransaction = async (
 
   const ix = await program.methods
     .advanceProtocolEpoch()
-    .accounts({ payer, protocolTreasury: protocolTreasuryPda } as any)
+    .accounts({ payer, protocolTreasury: protocolTreasuryPda })
     .instruction()
 
   const tx = new Transaction()
@@ -1903,7 +1963,7 @@ export const buildHarvestFeesTransaction = async (
       treasuryTokenAccount,
       token2022Program: TOKEN_2022_PROGRAM_ID,
       associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-    } as any)
+    })
     .remainingAccounts(
       sourceAccounts.map((pubkey) => ({
         pubkey,
@@ -1975,7 +2035,7 @@ export const buildSwapFeesToSolTransaction = async (
         treasuryTokenAccount,
         token2022Program: TOKEN_2022_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-      } as any)
+      })
       .remainingAccounts(
         sources.map((pubkey) => ({
           pubkey,
@@ -2004,7 +2064,7 @@ export const buildSwapFeesToSolTransaction = async (
         token2022Program: TOKEN_2022_PROGRAM_ID,
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
-      } as any)
+      })
       .instruction()
   }
 
@@ -2162,30 +2222,40 @@ export const buildOpenShortTransaction = async (
   const provider = makeDummyProvider(connection, shorter)
   const program = new Program(idl as unknown, provider)
 
-  const openShortIx = await program.methods
-    .openShort({
-      solCollateral: new BN(sol_collateral.toString()),
-      tokensToBorrow: new BN(tokens_to_borrow.toString()),
-    })
-    .accounts({
-      shorter,
-      mint,
-      bondingCurve: bondingCurvePda,
-      treasury: treasuryPda,
-      treasuryLock: treasuryLockPda,
-      treasuryLockTokenAccount,
-      shortConfig: shortConfigPda,
-      shortPosition: shortPositionPda,
-      shorterTokenAccount,
-      deepPool: deepPool.pool,
-      deepPoolTokenVault: deepPool.tokenVault,
-      torchVault: torchVaultAccount,
-      vaultWalletLink: vaultWalletLinkAccount,
-      vaultTokenAccount,
-      tokenProgram: TOKEN_2022_PROGRAM_ID,
-      systemProgram: SystemProgram.programId,
-    } as any)
-    .instruction()
+  const openShortArgs = {
+    solCollateral: new BN(sol_collateral.toString()),
+    tokensToBorrow: new BN(tokens_to_borrow.toString()),
+  }
+  const openShortSharedAccounts = {
+    shorter,
+    mint,
+    bondingCurve: bondingCurvePda,
+    treasury: treasuryPda,
+    treasuryLock: treasuryLockPda,
+    treasuryLockTokenAccount,
+    shortConfig: shortConfigPda,
+    shortPosition: shortPositionPda,
+    deepPool: deepPool.pool,
+    deepPoolTokenVault: deepPool.tokenVault,
+    tokenProgram: TOKEN_2022_PROGRAM_ID,
+    systemProgram: SystemProgram.programId,
+  }
+
+  const openShortIx =
+    torchVaultAccount && vaultWalletLinkAccount && vaultTokenAccount
+      ? await program.methods
+          .openShortViaVault(openShortArgs)
+          .accounts({
+            ...openShortSharedAccounts,
+            torchVault: torchVaultAccount,
+            vaultWalletLink: vaultWalletLinkAccount,
+            vaultTokenAccount,
+          })
+          .instruction()
+      : await program.methods
+          .openShort(openShortArgs)
+          .accounts({ ...openShortSharedAccounts, shorterTokenAccount })
+          .instruction()
 
   tx.add(openShortIx)
   const versionedTx = await finalizeTransaction(connection, tx, shorter)
@@ -2264,25 +2334,35 @@ export const buildCloseShortTransaction = async (
   const provider = makeDummyProvider(connection, shorter)
   const program = new Program(idl as unknown, provider)
 
-  const closeShortIx = await program.methods
-    .closeShort(new BN(token_amount.toString()))
-    .accounts({
-      shorter,
-      mint,
-      bondingCurve: bondingCurvePda,
-      treasury: treasuryPda,
-      treasuryLock: treasuryLockPda,
-      treasuryLockTokenAccount,
-      shortConfig: shortConfigPda,
-      shortPosition: shortPositionPda,
-      shorterTokenAccount,
-      torchVault: torchVaultAccount,
-      vaultWalletLink: vaultWalletLinkAccount,
-      vaultTokenAccount,
-      tokenProgram: TOKEN_2022_PROGRAM_ID,
-      systemProgram: SystemProgram.programId,
-    } as any)
-    .instruction()
+  const closeShortArg = new BN(token_amount.toString())
+  const closeShortSharedAccounts = {
+    shorter,
+    mint,
+    bondingCurve: bondingCurvePda,
+    treasury: treasuryPda,
+    treasuryLock: treasuryLockPda,
+    treasuryLockTokenAccount,
+    shortConfig: shortConfigPda,
+    shortPosition: shortPositionPda,
+    tokenProgram: TOKEN_2022_PROGRAM_ID,
+    systemProgram: SystemProgram.programId,
+  }
+
+  const closeShortIx =
+    torchVaultAccount && vaultWalletLinkAccount && vaultTokenAccount
+      ? await program.methods
+          .closeShortViaVault(closeShortArg)
+          .accounts({
+            ...closeShortSharedAccounts,
+            torchVault: torchVaultAccount,
+            vaultWalletLink: vaultWalletLinkAccount,
+            vaultTokenAccount,
+          })
+          .instruction()
+      : await program.methods
+          .closeShort(closeShortArg)
+          .accounts({ ...closeShortSharedAccounts, shorterTokenAccount })
+          .instruction()
 
   tx.add(closeShortIx)
   const versionedTx = await finalizeTransaction(connection, tx, shorter)
@@ -2369,28 +2449,37 @@ export const buildLiquidateShortTransaction = async (
   const provider = makeDummyProvider(connection, liquidator)
   const program = new Program(idl as unknown, provider)
 
-  const liquidateShortIx = await program.methods
-    .liquidateShort()
-    .accounts({
-      liquidator,
-      borrower,
-      mint,
-      bondingCurve: bondingCurvePda,
-      treasury: treasuryPda,
-      treasuryLock: treasuryLockPda,
-      treasuryLockTokenAccount,
-      shortConfig: shortConfigPda,
-      shortPosition: shortPositionPda,
-      liquidatorTokenAccount,
-      deepPool: deepPool.pool,
-      deepPoolTokenVault: deepPool.tokenVault,
-      torchVault: torchVaultAccount,
-      vaultWalletLink: vaultWalletLinkAccount,
-      vaultTokenAccount,
-      tokenProgram: TOKEN_2022_PROGRAM_ID,
-      systemProgram: SystemProgram.programId,
-    } as any)
-    .instruction()
+  const liquidateShortSharedAccounts = {
+    liquidator,
+    borrower,
+    mint,
+    bondingCurve: bondingCurvePda,
+    treasury: treasuryPda,
+    treasuryLock: treasuryLockPda,
+    treasuryLockTokenAccount,
+    shortConfig: shortConfigPda,
+    shortPosition: shortPositionPda,
+    deepPool: deepPool.pool,
+    deepPoolTokenVault: deepPool.tokenVault,
+    tokenProgram: TOKEN_2022_PROGRAM_ID,
+    systemProgram: SystemProgram.programId,
+  }
+
+  const liquidateShortIx =
+    torchVaultAccount && vaultWalletLinkAccount && vaultTokenAccount
+      ? await program.methods
+          .liquidateShortViaVault()
+          .accounts({
+            ...liquidateShortSharedAccounts,
+            torchVault: torchVaultAccount,
+            vaultWalletLink: vaultWalletLinkAccount,
+            vaultTokenAccount,
+          })
+          .instruction()
+      : await program.methods
+          .liquidateShort()
+          .accounts({ ...liquidateShortSharedAccounts, liquidatorTokenAccount })
+          .instruction()
 
   tx.add(liquidateShortIx)
   const versionedTx = await finalizeTransaction(connection, tx, liquidator)
@@ -2444,7 +2533,7 @@ export const buildEnableShortSellingTransaction = async (
       treasury: treasuryPda,
       shortConfig: shortConfigPda,
       systemProgram: SystemProgram.programId,
-    } as any)
+    })
     .instruction()
 
   const tx = new Transaction()

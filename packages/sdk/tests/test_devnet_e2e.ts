@@ -213,9 +213,6 @@ const main = async () => {
       `  │    Output tokens:   ${(buyQuote.tokens_to_user / 1e6).toFixed(2).padStart(15)}         │`,
     )
     log(
-      `  │    Treasury tokens: ${(buyQuote.tokens_to_treasury / 1e6).toFixed(2).padStart(15)}         │`,
-    )
-    log(
       `  │    Price/token:     ${buyQuote.price_per_token_sol.toFixed(10).padStart(15)} SOL     │`,
     )
     log(
@@ -257,7 +254,6 @@ const main = async () => {
       buyer: walletAddr,
       amount_sol: BUY_AMOUNT,
       slippage_bps: 500,
-      vote: 'burn',
       vault: walletAddr,
     })
     const sig = await signAndSend(connection, wallet, result.transaction)
@@ -342,7 +338,6 @@ const main = async () => {
         buyer: buyer.publicKey.toBase58(),
         amount_sol: BUY_AMOUNT,
         slippage_bps: 1000,
-        vote: Math.random() > 0.5 ? 'burn' : 'return',
       })
       await signAndSend(connection, buyer, result.transaction, true)
       buyCount++
@@ -395,7 +390,6 @@ const main = async () => {
         buyer: walletAddr,
         amount_sol: BUY_AMOUNT,
         slippage_bps: 1000,
-        vote: 'burn',
       })
       await signAndSend(connection, wallet, result.transaction)
       bondingComplete = true
@@ -508,9 +502,7 @@ const main = async () => {
       log(`  │  Total Supply:     ${TOTAL_SUPPLY.toLocaleString().padStart(15)} tokens  │`)
       log(`  │  Treasury Lock:    ${TREASURY_LOCK.toLocaleString().padStart(15)} tokens  │`)
       log(`  │  Tokens Sold:      ${tokensSold.toFixed(0).padStart(15)} tokens  │`)
-      log(`  │  Vote Vault:       ${voteVault.toFixed(0).padStart(15)} tokens  │`)
       log(`  │  Pool Tokens:      ${poolTokens.toFixed(0).padStart(15)} tokens  │`)
-      log(`  │  Excess Burned:    ${excessBurned.toFixed(0).padStart(15)} tokens  │`)
       log(`  ├────────────────────────────────────────────────────────────┤`)
       log(`  │  Pool SOL:         ${poolSol.toFixed(4).padStart(15)} SOL     │`)
       log(`  │  Treasury SOL:     ${treasurySol.toFixed(4).padStart(15)} SOL     │`)

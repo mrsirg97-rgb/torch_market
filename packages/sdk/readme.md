@@ -95,13 +95,15 @@ Seven guarantees: full custody, closed economic loop, authority separation, one 
 
 All builders return `{ transaction: VersionedTransaction, message: string }`.
 
+Every builder accepts an optional `vault` param. When supplied, the SDK calls the on-chain `_via_vault` instruction (SOL funded by `TorchVault`, tokens to/from vault ATA). When omitted, the SDK calls the wallet-funded instruction. Same params, same return shape, routing is internal.
+
 | Function | Description |
 |----------|-------------|
-| `buildBuyTransaction(connection, params)` | Buy tokens via vault. Auto-routes bonding curve or DEX based on quote |
+| `buildBuyTransaction(connection, params)` | Buy tokens. Auto-routes wallet vs vault (via `params.vault`), bonding curve vs DEX (via quote source) |
 | `buildDirectBuyTransaction(connection, params)` | Buy without vault (human wallets only) |
 | `sendBuy(connection, wallet, params)` | Build + simulate + submit vault buy via `signAndSendTransaction` |
 | `sendDirectBuy(connection, wallet, params)` | Build + simulate + submit direct buy via `signAndSendTransaction` |
-| `buildSellTransaction(connection, params)` | Sell tokens via vault. Auto-routes bonding curve or DEX based on quote |
+| `buildSellTransaction(connection, params)` | Sell tokens. Auto-routes wallet vs vault, bonding curve vs DEX |
 | `buildCreateTokenTransaction(connection, params)` | Launch a new token with bonding curve + treasury + 300M token lock |
 | `sendCreateToken(connection, wallet, params)` | Build + simulate + submit token creation via `signAndSendTransaction` |
 | `buildStarTransaction(connection, params)` | Star a token (0.02 SOL, sybil-resistant) |
@@ -127,10 +129,10 @@ Interest is only written on-chain when an instruction touches the position, but 
 
 | Function | Description |
 |----------|-------------|
-| `buildBorrowTransaction(connection, params)` | Borrow SOL against token collateral (vault-routed) |
-| `buildRepayTransaction(connection, params)` | Repay debt + interest, unlock collateral (vault-routed) |
+| `buildBorrowTransaction(connection, params)` | Borrow SOL against token collateral |
+| `buildRepayTransaction(connection, params)` | Repay debt + interest, unlock collateral |
 | `buildLiquidateTransaction(connection, params)` | Liquidate underwater position (>65% LTV, permissionless) |
-| `buildClaimProtocolRewardsTransaction(connection, params)` | Claim epoch trading rewards (vault-routed) |
+| `buildClaimProtocolRewardsTransaction(connection, params)` | Claim epoch trading rewards |
 
 ### Short Selling (post-migration)
 
@@ -138,8 +140,8 @@ Borrow real tokens from the 300M treasury lock, sell on the market, buy back to 
 
 | Function | Description |
 |----------|-------------|
-| `buildOpenShortTransaction(connection, params)` | Post SOL collateral, borrow tokens from treasury lock (vault-routed) |
-| `buildCloseShortTransaction(connection, params)` | Return tokens + interest, recover SOL collateral (vault-routed) |
+| `buildOpenShortTransaction(connection, params)` | Post SOL collateral, borrow tokens from treasury lock |
+| `buildCloseShortTransaction(connection, params)` | Return tokens + interest, recover SOL collateral |
 | `buildLiquidateShortTransaction(connection, params)` | Liquidate underwater short (>65% LTV, permissionless) |
 | `buildEnableShortSellingTransaction(connection, params)` | Enable shorts for pre-V5 tokens (admin only) |
 

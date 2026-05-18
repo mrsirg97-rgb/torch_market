@@ -353,9 +353,6 @@ const main = async () => {
       `  │    Output tokens:   ${(buyQuote.tokens_to_user / 1e6).toFixed(2).padStart(15)}         │`,
     )
     log(
-      `  │    Treasury tokens: ${(buyQuote.tokens_to_treasury / 1e6).toFixed(2).padStart(15)}         │`,
-    )
-    log(
       `  │    Protocol fee:    ${(buyQuote.protocol_fee_sol / 1e9).toFixed(6).padStart(15)} SOL     │`,
     )
     log(
@@ -815,9 +812,7 @@ const main = async () => {
         log(`  │  Total Supply:     ${TOTAL_SUPPLY.toLocaleString().padStart(15)} tokens  │`)
         log(`  │  Treasury Lock:    ${TREASURY_LOCK.toLocaleString().padStart(15)} tokens  │`)
         log(`  │  Tokens Sold:      ${tokensSold.toFixed(0).padStart(15)} tokens  │`)
-        log(`  │  Vote Vault:       ${voteVault.toFixed(0).padStart(15)} tokens  │`)
         log(`  │  Pool Tokens:      ${poolTokens.toFixed(0).padStart(15)} tokens  │`)
-        log(`  │  Excess Burned:    ${excessBurned.toFixed(0).padStart(15)} tokens  │`)
         log(`  ├────────────────────────────────────────────────────────────┤`)
         log(`  │  Pool SOL:         ${poolSol2.toFixed(4).padStart(15)} SOL     │`)
         log(`  │  Treasury SOL:     ${treasurySol.toFixed(4).padStart(15)} SOL     │`)
@@ -831,9 +826,6 @@ const main = async () => {
         log(`  │  Final MC:         ${finalMcSol.toFixed(2).padStart(15)} SOL     │`)
         log(
           `  │  Sold %:           ${((tokensSold / CURVE_SUPPLY) * 100).toFixed(1).padStart(14)}%         │`,
-        )
-        log(
-          `  │  Excess Burn %:    ${((excessBurned / CURVE_SUPPLY) * 100).toFixed(1).padStart(14)}%         │`,
         )
         log(`  └────────────────────────────────────────────────────────────┘`)
       } catch {
@@ -1133,7 +1125,7 @@ const main = async () => {
         const ts = await getTreasuryState(connection, mint)
         if (!ts) throw new Error('Treasury not found for migrated token')
         log(
-          `  address=${ts.address.slice(0, 16)}...  sol_balance=${ts.sol_balance_sol.toFixed(4)} SOL  tokens_held=${(ts.tokens_held / 1e6).toFixed(0)}  stars=${ts.total_stars}`,
+          `  address=${ts.address.slice(0, 16)}...  sol_balance=${ts.sol_balance_sol.toFixed(4)} SOL  stars=${ts.total_stars}`,
         )
         log(
           `  baseline_initialized=${ts.baseline_initialized}  baseline_sol=${(ts.baseline_sol_reserves / LAMPORTS_PER_SOL).toFixed(2)}  baseline_tokens=${(ts.baseline_token_reserves / 1e6).toFixed(0)}`,

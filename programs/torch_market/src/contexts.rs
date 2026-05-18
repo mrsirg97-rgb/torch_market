@@ -136,14 +136,17 @@ pub struct CreateToken2022<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
+// Wallet-funded buy on the bonding curve. For vault-routed buys, use `BuyViaVault`.
 #[derive(Accounts)]
+#[instruction(args: BuyArgs)]
 pub struct Buy<'info> {
     #[account(mut)]
     pub buyer: Signer<'info>,
     #[account(
         seeds = [GLOBAL_CONFIG_SEED],
         bump = global_config.bump,
-        constraint = !global_config.paused @ TorchMarketError::ProtocolPaused
+        constraint = !global_config.paused @ TorchMarketError::ProtocolPaused,
+        constraint = args.sol_amount >= MIN_SOL_AMOUNT @ TorchMarketError::AmountTooSmall,
     )]
     pub global_config: Box<Account<'info, GlobalConfig>>,
     /// CHECK: Dev wallet receives 25% of protocol fee [V8]
@@ -217,28 +220,116 @@ pub struct Buy<'info> {
         constraint = creator.key() == bonding_curve.creator @ TorchMarketError::InvalidAuthority
     )]
     pub creator: AccountInfo<'info>,
-    #[account(mut)]
-    pub torch_vault: Option<Box<Account<'info, TorchVault>>>,
-    #[account(
-        seeds = [VAULT_WALLET_LINK_SEED, buyer.key().as_ref()],
-        bump = vault_wallet_link.bump,
-        constraint = vault_wallet_link.vault == torch_vault.as_ref().unwrap().key()
-            @ TorchMarketError::VaultWalletLinkMismatch,
-    )]
-    pub vault_wallet_link: Option<Box<Account<'info, VaultWalletLink>>>,
-    #[account(
-        mut,
-        associated_token::mint = mint,
-        associated_token::authority = torch_vault.as_ref().unwrap(),
-        associated_token::token_program = token_program,
-    )]
-    pub vault_token_account: Option<Box<InterfaceAccount<'info, TokenAccountInterface>>>,
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 
+// Vault-routed buy. Vault accounts are MANDATORY (not Optional) — no `unwrap()`
+// in constraints. The signer is a linked controller wallet acting on behalf of
+// the vault; vault holds the SOL paid and receives the tokens.
 #[derive(Accounts)]
+#[instruction(args: BuyArgs)]
+pub struct BuyViaVault<'info> {
+    #[account(mut)]
+    pub buyer: Signer<'info>,
+    #[account(
+        seeds = [GLOBAL_CONFIG_SEED],
+        bump = global_config.bump,
+        constraint = !global_config.paused @ TorchMarketError::ProtocolPaused,
+        constraint = args.sol_amount >= MIN_SOL_AMOUNT @ TorchMarketError::AmountTooSmall,
+    )]
+    pub global_config: Box<Account<'info, GlobalConfig>>,
+    /// CHECK: Dev wallet
+    #[account(
+        mut,
+        constraint = dev_wallet.key() == global_config.dev_wallet @ TorchMarketError::InvalidDevWallet
+    )]
+    pub dev_wallet: UncheckedAccount<'info>,
+    #[account(mut)]
+    pub mint: Box<InterfaceAccount<'info, MintInterface>>,
+    #[account(
+        mut,
+        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
+        bump = bonding_curve.bump,
+        constraint = !bonding_curve.bonding_complete @ TorchMarketError::BondingComplete
+    )]
+    pub bonding_curve: Box<Account<'info, BondingCurve>>,
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = bonding_curve,
+        associated_token::token_program = token_program,
+    )]
+    pub token_vault: Box<InterfaceAccount<'info, TokenAccountInterface>>,
+    #[account(
+        mut,
+        seeds = [TREASURY_SEED, mint.key().as_ref()],
+        bump = bonding_curve.treasury_bump,
+    )]
+    pub token_treasury: Box<Account<'info, Treasury>>,
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = token_treasury,
+        associated_token::token_program = token_program,
+    )]
+    pub treasury_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
+    #[account(
+        init_if_needed,
+        payer = buyer,
+        space = UserPosition::LEN,
+        seeds = [USER_POSITION_SEED, bonding_curve.key().as_ref(), buyer.key().as_ref()],
+        bump
+    )]
+    pub user_position: Box<Account<'info, UserPosition>>,
+    #[account(
+        init_if_needed,
+        payer = buyer,
+        space = UserStats::LEN,
+        seeds = [USER_STATS_SEED, buyer.key().as_ref()],
+        bump
+    )]
+    pub user_stats: Option<Box<Account<'info, UserStats>>>,
+    #[account(
+        mut,
+        seeds = [PROTOCOL_TREASURY_SEED],
+        bump,
+    )]
+    pub protocol_treasury: Box<Account<'info, ProtocolTreasury>>,
+    /// CHECK: Validated against bonding_curve.creator
+    #[account(
+        mut,
+        constraint = creator.key() == bonding_curve.creator @ TorchMarketError::InvalidAuthority
+    )]
+    pub creator: AccountInfo<'info>,
+    #[account(
+        mut,
+        seeds = [TORCH_VAULT_SEED, torch_vault.creator.as_ref()],
+        bump = torch_vault.bump,
+    )]
+    pub torch_vault: Box<Account<'info, TorchVault>>,
+    #[account(
+        seeds = [VAULT_WALLET_LINK_SEED, buyer.key().as_ref()],
+        bump = vault_wallet_link.bump,
+        constraint = vault_wallet_link.vault == torch_vault.key() @ TorchMarketError::VaultWalletLinkMismatch,
+    )]
+    pub vault_wallet_link: Box<Account<'info, VaultWalletLink>>,
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = torch_vault,
+        associated_token::token_program = token_program,
+    )]
+    pub vault_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+// Wallet-funded sell on the bonding curve. For vault-routed sells, use `SellViaVault`.
+#[derive(Accounts)]
+#[instruction(args: SellArgs)]
 pub struct Sell<'info> {
     #[account(mut)]
     pub seller: Signer<'info>,
@@ -247,7 +338,8 @@ pub struct Sell<'info> {
         mut,
         seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
         bump = bonding_curve.bump,
-        constraint = !bonding_curve.bonding_complete @ TorchMarketError::BondingComplete
+        constraint = !bonding_curve.bonding_complete @ TorchMarketError::BondingComplete,
+        constraint = args.token_amount > 0 @ TorchMarketError::ZeroAmount,
     )]
     pub bonding_curve: Box<Account<'info, BondingCurve>>,
     #[account(
@@ -287,22 +379,75 @@ pub struct Sell<'info> {
         bump,
     )]
     pub protocol_treasury: Option<Box<Account<'info, ProtocolTreasury>>>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
+}
+
+// Vault-routed sell. Vault accounts MANDATORY. Tokens come from vault ATA, SOL
+// proceeds go to vault.
+#[derive(Accounts)]
+#[instruction(args: SellArgs)]
+pub struct SellViaVault<'info> {
     #[account(mut)]
-    pub torch_vault: Option<Box<Account<'info, TorchVault>>>,
+    pub seller: Signer<'info>,
+    pub mint: Box<InterfaceAccount<'info, MintInterface>>,
     #[account(
-        seeds = [VAULT_WALLET_LINK_SEED, seller.key().as_ref()],
-        bump = vault_wallet_link.bump,
-        constraint = vault_wallet_link.vault == torch_vault.as_ref().unwrap().key()
-            @ TorchMarketError::VaultWalletLinkMismatch,
+        mut,
+        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
+        bump = bonding_curve.bump,
+        constraint = !bonding_curve.bonding_complete @ TorchMarketError::BondingComplete,
+        constraint = args.token_amount > 0 @ TorchMarketError::ZeroAmount,
     )]
-    pub vault_wallet_link: Option<Box<Account<'info, VaultWalletLink>>>,
+    pub bonding_curve: Box<Account<'info, BondingCurve>>,
     #[account(
         mut,
         associated_token::mint = mint,
-        associated_token::authority = torch_vault.as_ref().unwrap(),
+        associated_token::authority = bonding_curve,
         associated_token::token_program = token_program,
     )]
-    pub vault_token_account: Option<Box<InterfaceAccount<'info, TokenAccountInterface>>>,
+    pub token_vault: Box<InterfaceAccount<'info, TokenAccountInterface>>,
+    #[account(
+        seeds = [USER_POSITION_SEED, bonding_curve.key().as_ref(), seller.key().as_ref()],
+        bump = user_position.bump
+    )]
+    pub user_position: Option<Box<Account<'info, UserPosition>>>,
+    #[account(
+        mut,
+        seeds = [TREASURY_SEED, mint.key().as_ref()],
+        bump = bonding_curve.treasury_bump,
+    )]
+    pub token_treasury: Box<Account<'info, Treasury>>,
+    #[account(
+        mut,
+        seeds = [USER_STATS_SEED, seller.key().as_ref()],
+        bump = user_stats.bump,
+    )]
+    pub user_stats: Option<Box<Account<'info, UserStats>>>,
+    #[account(
+        mut,
+        seeds = [PROTOCOL_TREASURY_SEED],
+        bump,
+    )]
+    pub protocol_treasury: Option<Box<Account<'info, ProtocolTreasury>>>,
+    #[account(
+        mut,
+        seeds = [TORCH_VAULT_SEED, torch_vault.creator.as_ref()],
+        bump = torch_vault.bump,
+    )]
+    pub torch_vault: Box<Account<'info, TorchVault>>,
+    #[account(
+        seeds = [VAULT_WALLET_LINK_SEED, seller.key().as_ref()],
+        bump = vault_wallet_link.bump,
+        constraint = vault_wallet_link.vault == torch_vault.key() @ TorchMarketError::VaultWalletLinkMismatch,
+    )]
+    pub vault_wallet_link: Box<Account<'info, VaultWalletLink>>,
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = torch_vault,
+        associated_token::token_program = token_program,
+    )]
+    pub vault_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
@@ -357,6 +502,7 @@ pub struct SwapFeesToSol<'info> {
         mut,
         seeds = [TREASURY_SEED, mint.key().as_ref()],
         bump = treasury.bump,
+        constraint = treasury.baseline_initialized @ TorchMarketError::BaselineNotInitialized,
     )]
     pub treasury: Box<Account<'info, Treasury>>,
     #[account(
@@ -459,15 +605,54 @@ pub struct StarToken<'info> {
         bump
     )]
     pub star_record: Account<'info, StarRecord>,
+    pub system_program: Program<'info, System>,
+}
+
+// Vault-routed star. Vault pays the 0.02 SOL star cost. No vault_token_account
+// (star transfers SOL only).
+#[derive(Accounts)]
+pub struct StarTokenViaVault<'info> {
     #[account(mut)]
-    pub torch_vault: Option<Box<Account<'info, TorchVault>>>,
+    pub user: Signer<'info>,
+    pub mint: Box<InterfaceAccount<'info, MintInterface>>,
+    #[account(
+        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
+        bump = bonding_curve.bump,
+        constraint = user.key() != bonding_curve.creator @ TorchMarketError::CannotStarSelf,
+    )]
+    pub bonding_curve: Box<Account<'info, BondingCurve>>,
+    #[account(
+        mut,
+        seeds = [TREASURY_SEED, mint.key().as_ref()],
+        bump = token_treasury.bump,
+    )]
+    pub token_treasury: Box<Account<'info, Treasury>>,
+    /// CHECK: Creator wallet - receives auto-payout when threshold reached
+    #[account(
+        mut,
+        constraint = creator.key() == bonding_curve.creator @ TorchMarketError::InvalidAuthority
+    )]
+    pub creator: UncheckedAccount<'info>,
+    #[account(
+        init,
+        payer = user,
+        space = StarRecord::LEN,
+        seeds = [STAR_RECORD_SEED, user.key().as_ref(), mint.key().as_ref()],
+        bump
+    )]
+    pub star_record: Account<'info, StarRecord>,
+    #[account(
+        mut,
+        seeds = [TORCH_VAULT_SEED, torch_vault.creator.as_ref()],
+        bump = torch_vault.bump,
+    )]
+    pub torch_vault: Box<Account<'info, TorchVault>>,
     #[account(
         seeds = [VAULT_WALLET_LINK_SEED, user.key().as_ref()],
         bump = vault_wallet_link.bump,
-        constraint = vault_wallet_link.vault == torch_vault.as_ref().unwrap().key()
-            @ TorchMarketError::VaultWalletLinkMismatch,
+        constraint = vault_wallet_link.vault == torch_vault.key() @ TorchMarketError::VaultWalletLinkMismatch,
     )]
-    pub vault_wallet_link: Option<Box<Account<'info, VaultWalletLink>>>,
+    pub vault_wallet_link: Box<Account<'info, VaultWalletLink>>,
     pub system_program: Program<'info, System>,
 }
 
@@ -504,6 +689,7 @@ pub struct AdvanceProtocolEpoch<'info> {
     pub protocol_treasury: Account<'info, ProtocolTreasury>,
 }
 
+// Wallet-funded protocol reward claim. For vault-routed, use `ClaimProtocolRewardsViaVault`.
 #[derive(Accounts)]
 pub struct ClaimProtocolRewards<'info> {
     #[account(mut)]
@@ -521,15 +707,38 @@ pub struct ClaimProtocolRewards<'info> {
     )]
     pub protocol_treasury: Account<'info, ProtocolTreasury>,
     pub system_program: Program<'info, System>,
+}
+
+// Vault-routed protocol reward claim. Claimed SOL goes to vault instead of user.
+#[derive(Accounts)]
+pub struct ClaimProtocolRewardsViaVault<'info> {
     #[account(mut)]
-    pub torch_vault: Option<Box<Account<'info, TorchVault>>>,
+    pub user: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [USER_STATS_SEED, user.key().as_ref()],
+        bump = user_stats.bump,
+    )]
+    pub user_stats: Account<'info, UserStats>,
+    #[account(
+        mut,
+        seeds = [PROTOCOL_TREASURY_SEED],
+        bump = protocol_treasury.bump,
+    )]
+    pub protocol_treasury: Account<'info, ProtocolTreasury>,
+    #[account(
+        mut,
+        seeds = [TORCH_VAULT_SEED, torch_vault.creator.as_ref()],
+        bump = torch_vault.bump,
+    )]
+    pub torch_vault: Box<Account<'info, TorchVault>>,
     #[account(
         seeds = [VAULT_WALLET_LINK_SEED, user.key().as_ref()],
         bump = vault_wallet_link.bump,
-        constraint = vault_wallet_link.vault == torch_vault.as_ref().unwrap().key()
-            @ TorchMarketError::VaultWalletLinkMismatch,
+        constraint = vault_wallet_link.vault == torch_vault.key() @ TorchMarketError::VaultWalletLinkMismatch,
     )]
-    pub vault_wallet_link: Option<Box<Account<'info, VaultWalletLink>>>,
+    pub vault_wallet_link: Box<Account<'info, VaultWalletLink>>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -630,7 +839,9 @@ pub struct MigrateToDex<'info> {
     pub system_program: Program<'info, System>,
 }
 
+// Wallet-funded borrow against token collateral. For vault-routed borrows, use `BorrowViaVault`.
 #[derive(Accounts)]
+#[instruction(args: BorrowArgs)]
 pub struct Borrow<'info> {
     #[account(mut)]
     pub borrower: Signer<'info>,
@@ -647,6 +858,8 @@ pub struct Borrow<'info> {
         seeds = [TREASURY_SEED, mint.key().as_ref()],
         bump = treasury.bump,
         constraint = treasury.lending_enabled @ TorchMarketError::LendingNotEnabled,
+        constraint = (args.collateral_amount > 0 || args.sol_to_borrow > 0) @ TorchMarketError::EmptyBorrowRequest,
+        constraint = (args.sol_to_borrow == 0 || args.sol_to_borrow >= MIN_BORROW_AMOUNT) @ TorchMarketError::BorrowTooSmall,
     )]
     pub treasury: Box<Account<'info, Treasury>>,
     #[account(
@@ -680,26 +893,82 @@ pub struct Borrow<'info> {
     /// CHECK: DeepPool token vault - validated by address constraint
     #[account(address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
     pub deep_pool_token_vault: AccountInfo<'info>,
-    #[account(mut)]
-    pub torch_vault: Option<Box<Account<'info, TorchVault>>>,
-    #[account(
-        seeds = [VAULT_WALLET_LINK_SEED, borrower.key().as_ref()],
-        bump = vault_wallet_link.bump,
-        constraint = vault_wallet_link.vault == torch_vault.as_ref().unwrap().key()
-            @ TorchMarketError::VaultWalletLinkMismatch,
-    )]
-    pub vault_wallet_link: Option<Box<Account<'info, VaultWalletLink>>>,
-    #[account(
-        mut,
-        associated_token::mint = mint,
-        associated_token::authority = torch_vault.as_ref().unwrap(),
-        associated_token::token_program = token_program,
-    )]
-    pub vault_token_account: Option<Box<InterfaceAccount<'info, TokenAccountInterface>>>,
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
 
+// Vault-routed borrow. Vault accounts MANDATORY. Collateral from vault ATA,
+// borrowed SOL to vault.
+#[derive(Accounts)]
+#[instruction(args: BorrowArgs)]
+pub struct BorrowViaVault<'info> {
+    #[account(mut)]
+    pub borrower: Signer<'info>,
+    pub mint: Box<InterfaceAccount<'info, MintInterface>>,
+    #[account(
+        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
+        bump = bonding_curve.bump,
+        constraint = bonding_curve.migrated @ TorchMarketError::LendingRequiresMigration,
+        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
+    )]
+    pub bonding_curve: Box<Account<'info, BondingCurve>>,
+    #[account(
+        mut,
+        seeds = [TREASURY_SEED, mint.key().as_ref()],
+        bump = treasury.bump,
+        constraint = treasury.lending_enabled @ TorchMarketError::LendingNotEnabled,
+        constraint = (args.collateral_amount > 0 || args.sol_to_borrow > 0) @ TorchMarketError::EmptyBorrowRequest,
+        constraint = (args.sol_to_borrow == 0 || args.sol_to_borrow >= MIN_BORROW_AMOUNT) @ TorchMarketError::BorrowTooSmall,
+    )]
+    pub treasury: Box<Account<'info, Treasury>>,
+    #[account(
+        init_if_needed,
+        payer = borrower,
+        seeds = [COLLATERAL_VAULT_SEED, mint.key().as_ref()],
+        bump,
+        token::mint = mint,
+        token::authority = treasury,
+        token::token_program = token_program,
+    )]
+    pub collateral_vault: Box<InterfaceAccount<'info, TokenAccountInterface>>,
+    #[account(
+        init_if_needed,
+        payer = borrower,
+        space = LoanPosition::LEN,
+        seeds = [LOAN_SEED, mint.key().as_ref(), borrower.key().as_ref()],
+        bump
+    )]
+    pub loan_position: Box<Account<'info, LoanPosition>>,
+    /// CHECK: DeepPool pool PDA - validated by address constraint
+    #[account(address = derive_deep_pool(&derive_torch_config(), &mint.key()) @ TorchMarketError::InvalidPoolAccount)]
+    pub deep_pool: AccountInfo<'info>,
+    /// CHECK: DeepPool token vault - validated by address constraint
+    #[account(address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
+    pub deep_pool_token_vault: AccountInfo<'info>,
+    #[account(
+        mut,
+        seeds = [TORCH_VAULT_SEED, torch_vault.creator.as_ref()],
+        bump = torch_vault.bump,
+    )]
+    pub torch_vault: Box<Account<'info, TorchVault>>,
+    #[account(
+        seeds = [VAULT_WALLET_LINK_SEED, borrower.key().as_ref()],
+        bump = vault_wallet_link.bump,
+        constraint = vault_wallet_link.vault == torch_vault.key() @ TorchMarketError::VaultWalletLinkMismatch,
+    )]
+    pub vault_wallet_link: Box<Account<'info, VaultWalletLink>>,
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = torch_vault,
+        associated_token::token_program = token_program,
+    )]
+    pub vault_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
+}
+
+// Wallet-funded repay. For vault-routed repay, use `RepayViaVault`.
 #[derive(Accounts)]
 pub struct Repay<'info> {
     #[account(mut)]
@@ -734,26 +1003,63 @@ pub struct Repay<'info> {
         constraint = loan_position.borrowed_amount > 0 @ TorchMarketError::NoActiveLoan,
     )]
     pub loan_position: Box<Account<'info, LoanPosition>>,
-    #[account(mut)]
-    pub torch_vault: Option<Box<Account<'info, TorchVault>>>,
-    #[account(
-        seeds = [VAULT_WALLET_LINK_SEED, borrower.key().as_ref()],
-        bump = vault_wallet_link.bump,
-        constraint = vault_wallet_link.vault == torch_vault.as_ref().unwrap().key()
-            @ TorchMarketError::VaultWalletLinkMismatch,
-    )]
-    pub vault_wallet_link: Option<Box<Account<'info, VaultWalletLink>>>,
-    #[account(
-        mut,
-        associated_token::mint = mint,
-        associated_token::authority = torch_vault.as_ref().unwrap(),
-        associated_token::token_program = token_program,
-    )]
-    pub vault_token_account: Option<Box<InterfaceAccount<'info, TokenAccountInterface>>>,
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
 
+// Vault-routed repay. Vault accounts MANDATORY. SOL repaid from vault,
+// collateral returned to vault ATA.
+#[derive(Accounts)]
+pub struct RepayViaVault<'info> {
+    #[account(mut)]
+    pub borrower: Signer<'info>,
+    pub mint: Box<InterfaceAccount<'info, MintInterface>>,
+    #[account(
+        mut,
+        seeds = [TREASURY_SEED, mint.key().as_ref()],
+        bump = treasury.bump,
+    )]
+    pub treasury: Box<Account<'info, Treasury>>,
+    #[account(
+        mut,
+        seeds = [COLLATERAL_VAULT_SEED, mint.key().as_ref()],
+        bump,
+        token::mint = mint,
+        token::authority = treasury,
+        token::token_program = token_program,
+    )]
+    pub collateral_vault: Box<InterfaceAccount<'info, TokenAccountInterface>>,
+    #[account(
+        mut,
+        seeds = [LOAN_SEED, mint.key().as_ref(), borrower.key().as_ref()],
+        bump = loan_position.bump,
+        constraint = loan_position.borrowed_amount > 0 @ TorchMarketError::NoActiveLoan,
+    )]
+    pub loan_position: Box<Account<'info, LoanPosition>>,
+    #[account(
+        mut,
+        seeds = [TORCH_VAULT_SEED, torch_vault.creator.as_ref()],
+        bump = torch_vault.bump,
+    )]
+    pub torch_vault: Box<Account<'info, TorchVault>>,
+    #[account(
+        seeds = [VAULT_WALLET_LINK_SEED, borrower.key().as_ref()],
+        bump = vault_wallet_link.bump,
+        constraint = vault_wallet_link.vault == torch_vault.key() @ TorchMarketError::VaultWalletLinkMismatch,
+    )]
+    pub vault_wallet_link: Box<Account<'info, VaultWalletLink>>,
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = torch_vault,
+        associated_token::token_program = token_program,
+    )]
+    pub vault_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
+}
+
+// Wallet-funded liquidation. For vault-routed liquidation, use `LiquidateViaVault`.
 #[derive(Accounts)]
 pub struct Liquidate<'info> {
     #[account(mut)]
@@ -765,6 +1071,8 @@ pub struct Liquidate<'info> {
     #[account(
         seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
         bump = bonding_curve.bump,
+        constraint = bonding_curve.migrated @ TorchMarketError::LendingRequiresMigration,
+        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
     )]
     pub bonding_curve: Box<Account<'info, BondingCurve>>,
     #[account(
@@ -806,22 +1114,75 @@ pub struct Liquidate<'info> {
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
+}
+
+// Vault-routed liquidation. Vault accounts MANDATORY. Liquidator pays SOL from
+// vault, receives collateral to vault ATA.
+#[derive(Accounts)]
+pub struct LiquidateViaVault<'info> {
     #[account(mut)]
-    pub torch_vault: Option<Box<Account<'info, TorchVault>>>,
+    pub liquidator: Signer<'info>,
+    /// CHECK: Borrower wallet - receives rent if position is closed
+    #[account(mut)]
+    pub borrower: AccountInfo<'info>,
+    pub mint: Box<InterfaceAccount<'info, MintInterface>>,
+    #[account(
+        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
+        bump = bonding_curve.bump,
+        constraint = bonding_curve.migrated @ TorchMarketError::LendingRequiresMigration,
+        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
+    )]
+    pub bonding_curve: Box<Account<'info, BondingCurve>>,
+    #[account(
+        mut,
+        seeds = [TREASURY_SEED, mint.key().as_ref()],
+        bump = treasury.bump,
+    )]
+    pub treasury: Box<Account<'info, Treasury>>,
+    #[account(
+        mut,
+        seeds = [COLLATERAL_VAULT_SEED, mint.key().as_ref()],
+        bump,
+        token::mint = mint,
+        token::authority = treasury,
+        token::token_program = token_program,
+    )]
+    pub collateral_vault: Box<InterfaceAccount<'info, TokenAccountInterface>>,
+    #[account(
+        mut,
+        seeds = [LOAN_SEED, mint.key().as_ref(), borrower.key().as_ref()],
+        bump = loan_position.bump,
+        constraint = loan_position.borrowed_amount > 0 @ TorchMarketError::NoActiveLoan,
+    )]
+    pub loan_position: Box<Account<'info, LoanPosition>>,
+    /// CHECK: DeepPool pool PDA - validated by address constraint
+    #[account(address = derive_deep_pool(&derive_torch_config(), &mint.key()) @ TorchMarketError::InvalidPoolAccount)]
+    pub deep_pool: AccountInfo<'info>,
+    /// CHECK: DeepPool token vault - validated by address constraint
+    #[account(address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
+    pub deep_pool_token_vault: AccountInfo<'info>,
+    #[account(
+        mut,
+        seeds = [TORCH_VAULT_SEED, torch_vault.creator.as_ref()],
+        bump = torch_vault.bump,
+    )]
+    pub torch_vault: Box<Account<'info, TorchVault>>,
     #[account(
         seeds = [VAULT_WALLET_LINK_SEED, liquidator.key().as_ref()],
         bump = vault_wallet_link.bump,
-        constraint = vault_wallet_link.vault == torch_vault.as_ref().unwrap().key()
-            @ TorchMarketError::VaultWalletLinkMismatch,
+        constraint = vault_wallet_link.vault == torch_vault.key() @ TorchMarketError::VaultWalletLinkMismatch,
     )]
-    pub vault_wallet_link: Option<Box<Account<'info, VaultWalletLink>>>,
+    pub vault_wallet_link: Box<Account<'info, VaultWalletLink>>,
     #[account(
         mut,
         associated_token::mint = mint,
-        associated_token::authority = torch_vault.as_ref().unwrap(),
+        associated_token::authority = torch_vault,
         associated_token::token_program = token_program,
     )]
-    pub vault_token_account: Option<Box<InterfaceAccount<'info, TokenAccountInterface>>>,
+    pub vault_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -1056,7 +1417,9 @@ pub struct EnableShortSelling<'info> {
     pub system_program: Program<'info, System>,
 }
 
+// Wallet-funded short open. For vault-routed, use `OpenShortViaVault`.
 #[derive(Accounts)]
+#[instruction(args: OpenShortArgs)]
 pub struct OpenShort<'info> {
     #[account(mut)]
     pub shorter: Signer<'info>,
@@ -1073,6 +1436,8 @@ pub struct OpenShort<'info> {
         seeds = [TREASURY_SEED, mint.key().as_ref()],
         bump = treasury.bump,
         constraint = treasury.short_selling_enabled @ TorchMarketError::ShortNotEnabled,
+        constraint = (args.sol_collateral > 0 || args.tokens_to_borrow > 0) @ TorchMarketError::EmptyBorrowRequest,
+        constraint = (args.tokens_to_borrow == 0 || args.tokens_to_borrow >= MIN_SHORT_TOKENS) @ TorchMarketError::ShortTooSmall,
     )]
     pub treasury: Box<Account<'info, Treasury>>,
     #[account(
@@ -1116,16 +1481,94 @@ pub struct OpenShort<'info> {
     /// CHECK: DeepPool token vault - validated by address constraint
     #[account(address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
     pub deep_pool_token_vault: AccountInfo<'info>,
-    #[account(mut)]
-    pub torch_vault: Option<Box<Account<'info, TorchVault>>>,
-    pub vault_wallet_link: Option<Box<Account<'info, VaultWalletLink>>>,
-    #[account(mut)]
-    pub vault_token_account: Option<Box<InterfaceAccount<'info, TokenAccountInterface>>>,
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
 
+// Vault-routed short open. Vault accounts MANDATORY. SOL collateral from vault,
+// borrowed tokens to vault ATA.
 #[derive(Accounts)]
+#[instruction(args: OpenShortArgs)]
+pub struct OpenShortViaVault<'info> {
+    #[account(mut)]
+    pub shorter: Signer<'info>,
+    pub mint: Box<InterfaceAccount<'info, MintInterface>>,
+    #[account(
+        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
+        bump = bonding_curve.bump,
+        constraint = bonding_curve.migrated @ TorchMarketError::NotMigrated,
+        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
+    )]
+    pub bonding_curve: Box<Account<'info, BondingCurve>>,
+    #[account(
+        mut,
+        seeds = [TREASURY_SEED, mint.key().as_ref()],
+        bump = treasury.bump,
+        constraint = treasury.short_selling_enabled @ TorchMarketError::ShortNotEnabled,
+        constraint = (args.sol_collateral > 0 || args.tokens_to_borrow > 0) @ TorchMarketError::EmptyBorrowRequest,
+        constraint = (args.tokens_to_borrow == 0 || args.tokens_to_borrow >= MIN_SHORT_TOKENS) @ TorchMarketError::ShortTooSmall,
+    )]
+    pub treasury: Box<Account<'info, Treasury>>,
+    #[account(
+        seeds = [TREASURY_LOCK_SEED, mint.key().as_ref()],
+        bump = treasury_lock.bump,
+    )]
+    pub treasury_lock: Box<Account<'info, TreasuryLock>>,
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = treasury_lock,
+        associated_token::token_program = token_program,
+    )]
+    pub treasury_lock_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
+    #[account(
+        init_if_needed,
+        payer = shorter,
+        space = ShortConfig::LEN,
+        seeds = [SHORT_CONFIG_SEED, mint.key().as_ref()],
+        bump,
+    )]
+    pub short_config: Box<Account<'info, ShortConfig>>,
+    #[account(
+        init_if_needed,
+        payer = shorter,
+        space = ShortPosition::LEN,
+        seeds = [SHORT_SEED, mint.key().as_ref(), shorter.key().as_ref()],
+        bump,
+    )]
+    pub short_position: Box<Account<'info, ShortPosition>>,
+    /// CHECK: DeepPool pool PDA - validated by address constraint
+    #[account(address = derive_deep_pool(&derive_torch_config(), &mint.key()) @ TorchMarketError::InvalidPoolAccount)]
+    pub deep_pool: AccountInfo<'info>,
+    /// CHECK: DeepPool token vault - validated by address constraint
+    #[account(address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
+    pub deep_pool_token_vault: AccountInfo<'info>,
+    #[account(
+        mut,
+        seeds = [TORCH_VAULT_SEED, torch_vault.creator.as_ref()],
+        bump = torch_vault.bump,
+    )]
+    pub torch_vault: Box<Account<'info, TorchVault>>,
+    #[account(
+        seeds = [VAULT_WALLET_LINK_SEED, shorter.key().as_ref()],
+        bump = vault_wallet_link.bump,
+        constraint = vault_wallet_link.vault == torch_vault.key() @ TorchMarketError::VaultWalletLinkMismatch,
+    )]
+    pub vault_wallet_link: Box<Account<'info, VaultWalletLink>>,
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = torch_vault,
+        associated_token::token_program = token_program,
+    )]
+    pub vault_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
+}
+
+// Wallet-funded short close. For vault-routed, use `CloseShortViaVault`.
+#[derive(Accounts)]
+#[instruction(token_amount: u64)]
 pub struct CloseShort<'info> {
     #[account(mut)]
     pub shorter: Signer<'info>,
@@ -1133,6 +1576,9 @@ pub struct CloseShort<'info> {
     #[account(
         seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
         bump = bonding_curve.bump,
+        constraint = bonding_curve.migrated @ TorchMarketError::NotMigrated,
+        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
+        constraint = token_amount > 0 @ TorchMarketError::ZeroAmount,
     )]
     pub bonding_curve: Box<Account<'info, BondingCurve>>,
     #[account(
@@ -1173,15 +1619,81 @@ pub struct CloseShort<'info> {
         associated_token::token_program = token_program,
     )]
     pub shorter_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
-    #[account(mut)]
-    pub torch_vault: Option<Box<Account<'info, TorchVault>>>,
-    pub vault_wallet_link: Option<Box<Account<'info, VaultWalletLink>>>,
-    #[account(mut)]
-    pub vault_token_account: Option<Box<InterfaceAccount<'info, TokenAccountInterface>>>,
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
 
+// Vault-routed short close. Vault accounts MANDATORY. Tokens returned from
+// vault ATA, SOL collateral back to vault.
+#[derive(Accounts)]
+#[instruction(token_amount: u64)]
+pub struct CloseShortViaVault<'info> {
+    #[account(mut)]
+    pub shorter: Signer<'info>,
+    pub mint: Box<InterfaceAccount<'info, MintInterface>>,
+    #[account(
+        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
+        bump = bonding_curve.bump,
+        constraint = bonding_curve.migrated @ TorchMarketError::NotMigrated,
+        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
+        constraint = token_amount > 0 @ TorchMarketError::ZeroAmount,
+    )]
+    pub bonding_curve: Box<Account<'info, BondingCurve>>,
+    #[account(
+        mut,
+        seeds = [TREASURY_SEED, mint.key().as_ref()],
+        bump = treasury.bump,
+    )]
+    pub treasury: Box<Account<'info, Treasury>>,
+    #[account(
+        seeds = [TREASURY_LOCK_SEED, mint.key().as_ref()],
+        bump = treasury_lock.bump,
+    )]
+    pub treasury_lock: Box<Account<'info, TreasuryLock>>,
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = treasury_lock,
+        associated_token::token_program = token_program,
+    )]
+    pub treasury_lock_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
+    #[account(
+        mut,
+        seeds = [SHORT_CONFIG_SEED, mint.key().as_ref()],
+        bump = short_config.bump,
+    )]
+    pub short_config: Box<Account<'info, ShortConfig>>,
+    #[account(
+        mut,
+        seeds = [SHORT_SEED, mint.key().as_ref(), shorter.key().as_ref()],
+        bump = short_position.bump,
+        constraint = short_position.tokens_borrowed > 0 @ TorchMarketError::NoActiveShort,
+    )]
+    pub short_position: Box<Account<'info, ShortPosition>>,
+    #[account(
+        mut,
+        seeds = [TORCH_VAULT_SEED, torch_vault.creator.as_ref()],
+        bump = torch_vault.bump,
+    )]
+    pub torch_vault: Box<Account<'info, TorchVault>>,
+    #[account(
+        seeds = [VAULT_WALLET_LINK_SEED, shorter.key().as_ref()],
+        bump = vault_wallet_link.bump,
+        constraint = vault_wallet_link.vault == torch_vault.key() @ TorchMarketError::VaultWalletLinkMismatch,
+    )]
+    pub vault_wallet_link: Box<Account<'info, VaultWalletLink>>,
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = torch_vault,
+        associated_token::token_program = token_program,
+    )]
+    pub vault_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
+}
+
+// Wallet-funded short liquidation. For vault-routed, use `LiquidateShortViaVault`.
 #[derive(Accounts)]
 pub struct LiquidateShort<'info> {
     #[account(mut)]
@@ -1193,6 +1705,8 @@ pub struct LiquidateShort<'info> {
     #[account(
         seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
         bump = bonding_curve.bump,
+        constraint = bonding_curve.migrated @ TorchMarketError::NotMigrated,
+        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
     )]
     pub bonding_curve: Box<Account<'info, BondingCurve>>,
     #[account(
@@ -1239,11 +1753,83 @@ pub struct LiquidateShort<'info> {
     /// CHECK: DeepPool token vault - validated by address constraint
     #[account(address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
     pub deep_pool_token_vault: AccountInfo<'info>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
+}
+
+// Vault-routed short liquidation. Vault accounts MANDATORY. Liquidator covers
+// debt from vault ATA, receives SOL to vault.
+#[derive(Accounts)]
+pub struct LiquidateShortViaVault<'info> {
     #[account(mut)]
-    pub torch_vault: Option<Box<Account<'info, TorchVault>>>,
-    pub vault_wallet_link: Option<Box<Account<'info, VaultWalletLink>>>,
+    pub liquidator: Signer<'info>,
+    /// CHECK: Borrower wallet, receives rent on position close
     #[account(mut)]
-    pub vault_token_account: Option<Box<InterfaceAccount<'info, TokenAccountInterface>>>,
+    pub borrower: AccountInfo<'info>,
+    pub mint: Box<InterfaceAccount<'info, MintInterface>>,
+    #[account(
+        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
+        bump = bonding_curve.bump,
+        constraint = bonding_curve.migrated @ TorchMarketError::NotMigrated,
+        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
+    )]
+    pub bonding_curve: Box<Account<'info, BondingCurve>>,
+    #[account(
+        mut,
+        seeds = [TREASURY_SEED, mint.key().as_ref()],
+        bump = treasury.bump,
+    )]
+    pub treasury: Box<Account<'info, Treasury>>,
+    #[account(
+        seeds = [TREASURY_LOCK_SEED, mint.key().as_ref()],
+        bump = treasury_lock.bump,
+    )]
+    pub treasury_lock: Box<Account<'info, TreasuryLock>>,
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = treasury_lock,
+        associated_token::token_program = token_program,
+    )]
+    pub treasury_lock_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
+    #[account(
+        mut,
+        seeds = [SHORT_CONFIG_SEED, mint.key().as_ref()],
+        bump = short_config.bump,
+    )]
+    pub short_config: Box<Account<'info, ShortConfig>>,
+    #[account(
+        mut,
+        seeds = [SHORT_SEED, mint.key().as_ref(), borrower.key().as_ref()],
+        bump = short_position.bump,
+        constraint = short_position.tokens_borrowed > 0 @ TorchMarketError::NoActiveShort,
+    )]
+    pub short_position: Box<Account<'info, ShortPosition>>,
+    /// CHECK: DeepPool pool PDA - validated by address constraint
+    #[account(address = derive_deep_pool(&derive_torch_config(), &mint.key()) @ TorchMarketError::InvalidPoolAccount)]
+    pub deep_pool: AccountInfo<'info>,
+    /// CHECK: DeepPool token vault - validated by address constraint
+    #[account(address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
+    pub deep_pool_token_vault: AccountInfo<'info>,
+    #[account(
+        mut,
+        seeds = [TORCH_VAULT_SEED, torch_vault.creator.as_ref()],
+        bump = torch_vault.bump,
+    )]
+    pub torch_vault: Box<Account<'info, TorchVault>>,
+    #[account(
+        seeds = [VAULT_WALLET_LINK_SEED, liquidator.key().as_ref()],
+        bump = vault_wallet_link.bump,
+        constraint = vault_wallet_link.vault == torch_vault.key() @ TorchMarketError::VaultWalletLinkMismatch,
+    )]
+    pub vault_wallet_link: Box<Account<'info, VaultWalletLink>>,
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = torch_vault,
+        associated_token::token_program = token_program,
+    )]
+    pub vault_token_account: Box<InterfaceAccount<'info, TokenAccountInterface>>,
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }

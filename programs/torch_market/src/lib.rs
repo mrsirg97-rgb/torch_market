@@ -37,8 +37,16 @@ pub mod torch_market {
         handlers::market::buy(ctx, args)
     }
 
+    pub fn buy_via_vault(ctx: Context<BuyViaVault>, args: BuyArgs) -> Result<()> {
+        handlers::market::buy_via_vault(ctx, args)
+    }
+
     pub fn sell(ctx: Context<Sell>, args: SellArgs) -> Result<()> {
         handlers::market::sell(ctx, args)
+    }
+
+    pub fn sell_via_vault(ctx: Context<SellViaVault>, args: SellArgs) -> Result<()> {
+        handlers::market::sell_via_vault(ctx, args)
     }
 
     pub fn reclaim_failed_token(ctx: Context<ReclaimFailedToken>) -> Result<()> {
@@ -71,6 +79,10 @@ pub mod torch_market {
         handlers::rewards::star_token(ctx)
     }
 
+    pub fn star_token_via_vault(ctx: Context<StarTokenViaVault>) -> Result<()> {
+        handlers::rewards::star_token_via_vault(ctx)
+    }
+
     pub fn initialize_protocol_treasury(ctx: Context<InitializeProtocolTreasury>) -> Result<()> {
         handlers::protocol_treasury::initialize_protocol_treasury(ctx)
     }
@@ -83,16 +95,34 @@ pub mod torch_market {
         handlers::protocol_treasury::claim_protocol_rewards(ctx)
     }
 
+    pub fn claim_protocol_rewards_via_vault(
+        ctx: Context<ClaimProtocolRewardsViaVault>,
+    ) -> Result<()> {
+        handlers::protocol_treasury::claim_protocol_rewards_via_vault(ctx)
+    }
+
     pub fn borrow(ctx: Context<Borrow>, args: BorrowArgs) -> Result<()> {
         handlers::lending::borrow(ctx, args)
+    }
+
+    pub fn borrow_via_vault(ctx: Context<BorrowViaVault>, args: BorrowArgs) -> Result<()> {
+        handlers::lending::borrow_via_vault(ctx, args)
     }
 
     pub fn repay(ctx: Context<Repay>, sol_amount: u64) -> Result<()> {
         handlers::lending::repay(ctx, sol_amount)
     }
 
+    pub fn repay_via_vault(ctx: Context<RepayViaVault>, sol_amount: u64) -> Result<()> {
+        handlers::lending::repay_via_vault(ctx, sol_amount)
+    }
+
     pub fn liquidate(ctx: Context<Liquidate>) -> Result<()> {
         handlers::lending::liquidate(ctx)
+    }
+
+    pub fn liquidate_via_vault(ctx: Context<LiquidateViaVault>) -> Result<()> {
+        handlers::lending::liquidate_via_vault(ctx)
     }
 
     pub fn create_vault(ctx: Context<CreateVault>) -> Result<()> {
@@ -140,11 +170,29 @@ pub mod torch_market {
         handlers::short::open_short(ctx, args)
     }
 
+    pub fn open_short_via_vault(
+        ctx: Context<OpenShortViaVault>,
+        args: OpenShortArgs,
+    ) -> Result<()> {
+        handlers::short::open_short_via_vault(ctx, args)
+    }
+
     pub fn close_short(ctx: Context<CloseShort>, token_amount: u64) -> Result<()> {
         handlers::short::close_short(ctx, token_amount)
     }
 
+    pub fn close_short_via_vault(
+        ctx: Context<CloseShortViaVault>,
+        token_amount: u64,
+    ) -> Result<()> {
+        handlers::short::close_short_via_vault(ctx, token_amount)
+    }
+
     pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
         handlers::short::liquidate_short(ctx)
+    }
+
+    pub fn liquidate_short_via_vault(ctx: Context<LiquidateShortViaVault>) -> Result<()> {
+        handlers::short::liquidate_short_via_vault(ctx)
     }
 }

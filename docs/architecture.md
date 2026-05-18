@@ -1,6 +1,6 @@
 # Torch Market — V20.0.0 Architecture
 
-Every token launches with its own margin market. One Anchor program, 30 instructions, 13 account types, no external dependencies beyond DeepPool (also in-house) and the Token-2022 program.
+Every token launches with its own margin market. One Anchor program, 40 instructions, 13 account types, no external dependencies beyond DeepPool (also in-house) and the Token-2022 program.
 
 **Program ID:** `4nwTCWyR6vapTQRkV39f32xJ3uQztdjBqfhubnR6wQQC` (V20 torch_next, current)
 
@@ -405,7 +405,7 @@ System-owned companion to TorchVault. 0 bytes of data. Used only during `vault_s
 
 ## Instructions
 
-30 instructions across 7 domains. Vault-routed variants accept optional `torch_vault` + `vault_wallet_link` + `vault_token_account` accounts; without them, operations execute as wallet-funded.
+40 instructions across 7 domains. Every user-funded operation has two non-Optional context variants: a wallet path (`buy`, `borrow`, etc.) where the signer funds from their own SOL/ATA, and a `_via_vault` path (`buy_via_vault`, `borrow_via_vault`, etc.) where a linked `TorchVault` funds the operation. The split eliminates the V19 `Option<>` vault-triple pattern, removing all `as_ref().unwrap()` panic surface and moving all defense-in-depth + arg-validation checks to account-resolution time.
 
 ### Admin (2)
 
@@ -422,12 +422,14 @@ System-owned companion to TorchVault. 0 bytes of data. Used only during `vault_s
 
 `CreateTokenArgs`: `name: String`, `symbol: String`, `uri: String`, `sol_target: u64` (100 or 200 SOL, lamports), `community_token: bool` (default `true`).
 
-### Market (2)
+### Market (4)
 
 | Instruction | Description |
 |---|---|
 | `buy` | Buy tokens from bonding curve. SOL split: 0.5% protocol fee (50/50 dev/protocol_treasury), then decaying treasury share (17.5% → 2.5%), creator share (0% → 1%; 0 for community tokens), remainder to curve. 100% of tokens to buyer. 2% wallet cap enforced. |
+| `buy_via_vault` | Same as `buy`, funded from a linked `TorchVault`. Tokens delivered to vault ATA. |
 | `sell` | Sell tokens back to curve. No sell fee. Per-buyer position tracked. |
+| `sell_via_vault` | Same as `sell`, tokens sourced from vault ATA, SOL proceeds to vault. |
 
 ### Migration (2)
 
@@ -443,14 +445,16 @@ System-owned companion to TorchVault. 0 bytes of data. Used only during `vault_s
 | `harvest_fees` | Permissionless. Harvest accumulated Token-2022 withheld fees from arbitrary source accounts (passed via `remaining_accounts`) into the treasury's ATA. |
 | `swap_fees_to_sol` | Permissionless. Ratio-gated: only sells when DeepPool price is ≥120% of migration baseline. Sells 15% of held tokens (or 100% if balance ≤ 1M tokens). DeepPool swap CPI (treasury signs as `sol_source`). Creator fee split (15%) carved off the SOL received for creator tokens. |
 
-### Rewards (4)
+### Rewards (6)
 
 | Instruction | Description |
 |---|---|
 | `star_token` | One-time star per (user, mint) for 0.02 SOL. Goes to `star_sol_balance`. |
+| `star_token_via_vault` | Same as `star_token`, paid by vault. |
 | `initialize_protocol_treasury` | One-time setup of the ProtocolTreasury PDA |
 | `advance_protocol_epoch` | Permissionless crank. Time-gated to one epoch (~7 days). Snapshots previous-epoch volume, opens new epoch, computes `distributable_amount`. |
 | `claim_protocol_rewards` | User claims pro-rata share of `distributable_amount` based on `volume_previous_epoch`. Eligibility: ≥2 SOL volume in previous epoch. Capped at 10% of distributable per user. Min claim: 0.1 SOL. |
+| `claim_protocol_rewards_via_vault` | Same as `claim_protocol_rewards`, SOL credited to vault. Controller wallet's volume is the basis. |
 
 ### Recovery (2)
 
@@ -459,22 +463,28 @@ System-owned companion to TorchVault. 0 bytes of data. Used only during `vault_s
 | `reclaim_failed_token` | If bonding not complete and `last_activity_slot` is > 7 days old, anyone can reclaim. All curve SOL moves to protocol treasury (becomes epoch rewards). Marks token reclaimed. |
 | `contribute_revival` | Permissionless deposit toward bringing a reclaimed token back. Threshold: `3 * bonding_target / 8` (37.5 SOL Flame / 75 SOL Torch). When met, trading resumes. Contributors receive no tokens. |
 
-### Lending (3)
+### Lending (6)
 
 | Instruction | Description |
 |---|---|
 | `borrow` | Post token collateral, borrow SOL. Reads pool reserves from DeepPool. `effective_max_ltv = min(get_depth_max_ltv_bps(pool_sol), treasury.max_ltv_bps)`. Enforces utilization cap (80% of treasury) and per-user cap (`max_borrow = lendable * (collateral / TOTAL_SUPPLY) * 23`). |
+| `borrow_via_vault` | Same as `borrow`, collateral tokens from vault ATA, borrowed SOL to vault. |
 | `repay` | Interest-first repayment. Full repay returns all collateral. Partial repay leaves position open. |
+| `repay_via_vault` | Same as `repay`, repay SOL from vault, returned collateral to vault ATA. |
 | `liquidate` | Permissionless. Re-checks LTV > 65% via current pool reads. Liquidator pays up to 50% of total debt, receives collateral tokens at current pool price + 10% bonus. Bad-debt write-off correctly decrements `total_sol_lent`. |
+| `liquidate_via_vault` | Same as `liquidate`, liquidator funds + receives via vault. |
 
-### Shorts (4)
+### Shorts (7)
 
 | Instruction | Description |
 |---|---|
 | `enable_short_selling` | Admin (rare; auto-enabled at `create_token` for new mints). Creates ShortConfig, flips treasury flag. |
 | `open_short` | Post SOL collateral, borrow tokens from TreasuryLock. Same depth-band + per-user cap as lending (denominator is `treasury.sol_balance`, not TOTAL_SUPPLY, since collateral is SOL). |
+| `open_short_via_vault` | Same as `open_short`, SOL collateral from vault, borrowed tokens to vault ATA. |
 | `close_short` | Return tokens (+ interest in token terms). Interest-first. Full close releases SOL collateral. |
+| `close_short_via_vault` | Same as `close_short`, tokens sourced from vault, SOL returned to vault. |
 | `liquidate_short` | Permissionless. Same lifecycle as long liquidation, asset-inverted. Bad-debt write-off decrements `total_tokens_lent`. |
+| `liquidate_short_via_vault` | Same as `liquidate_short`, liquidator funds + receives via vault. |
 
 ### Vault (8)
 
