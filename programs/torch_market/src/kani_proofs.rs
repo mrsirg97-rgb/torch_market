@@ -2001,7 +2001,7 @@ fn verify_deep_pool_reserve_reading_safe() {
 
     kani::assume(pool_lamports <= 10_000_000_000_000); // Max 10K SOL
     kani::assume(rent_exempt > 0);
-    kani::assume(rent_exempt <= 10_000_000);           // ~0.01 SOL max rent
+    kani::assume(rent_exempt <= 10_000_000); // ~0.01 SOL max rent
     kani::assume(token_vault_balance <= TOTAL_SUPPLY);
 
     // saturating_sub: pool with less than rent shows 0 SOL (no underflow)
@@ -2126,7 +2126,7 @@ fn verify_migration_cost_reimbursement() {
 
     kani::assume(sol_amount > 0);
     kani::assume(sol_amount <= BONDING_TARGET_LAMPORTS);
-    kani::assume(rent_cost <= 50_000_000);            // Max ~0.05 SOL rent
+    kani::assume(rent_cost <= 50_000_000); // Max ~0.05 SOL rent
     kani::assume(payer_original <= 10_000_000_000_000); // Max 10K SOL
     kani::assume(payer_original >= sol_amount + rent_cost); // Payer can afford it
 
@@ -2180,3 +2180,63 @@ fn verify_vault_swap_sell_accounting() {
     let new_balance = new_balance.unwrap();
     assert!(new_balance == vault_sol_balance + sol_received);
 }
+
+// ============================================================================
+// 71. INTEREST ACCRUAL: Slot Always Advances (Long)
+//     Proves: when `apply_interest_accrual` returns Some, the returned
+//     last_update_slot equals current_slot — regardless of which branch was
+//     taken (zero debt, zero slots elapsed, or normal accrual).
+//     This is the post-condition that prevents the stale-slot re-borrow bug:
+//     a position fully repaid at slot S but not closed must have its
+//     last_update_slot advanced to S so a future re-borrow doesn't accrue
+//     phantom interest for the dormant period.
+// ============================================================================
+
+#[kani::proof]
+fn verify_interest_accrual_slot_advance() {
+    let borrowed: u64 = kani::any();
+    let accrued: u64 = kani::any();
+    let last_slot: u64 = kani::any();
+    let current_slot: u64 = kani::any();
+    let rate: u16 = kani::any();
+
+    kani::assume(borrowed <= 1_000_000_000_000); // up to 1000 SOL
+    kani::assume(accrued <= 1_000_000_000_000);
+    kani::assume(current_slot >= last_slot);
+    kani::assume(current_slot - last_slot <= EPOCH_DURATION_SLOTS);
+    kani::assume(rate <= DEFAULT_INTEREST_RATE_BPS);
+
+    if let Some((_, new_slot)) =
+        apply_interest_accrual(borrowed, accrued, last_slot, current_slot, rate)
+    {
+        assert!(new_slot == current_slot);
+    }
+}
+
+// ============================================================================
+// 72. SHORT INTEREST ACCRUAL: Slot Always Advances
+//     Mirror of harness 71 for short positions (token debt via
+//     `apply_short_interest_accrual` and `calc_short_interest`).
+// ============================================================================
+
+#[kani::proof]
+fn verify_short_interest_accrual_slot_advance() {
+    let borrowed: u64 = kani::any();
+    let accrued: u64 = kani::any();
+    let last_slot: u64 = kani::any();
+    let current_slot: u64 = kani::any();
+    let rate: u16 = kani::any();
+
+    kani::assume(borrowed <= TOTAL_SUPPLY);
+    kani::assume(accrued <= TOTAL_SUPPLY);
+    kani::assume(current_slot >= last_slot);
+    kani::assume(current_slot - last_slot <= EPOCH_DURATION_SLOTS);
+    kani::assume(rate <= DEFAULT_INTEREST_RATE_BPS);
+
+    if let Some((_, new_slot)) =
+        apply_short_interest_accrual(borrowed, accrued, last_slot, current_slot, rate)
+    {
+        assert!(new_slot == current_slot);
+    }
+}
+

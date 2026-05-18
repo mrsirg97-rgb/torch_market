@@ -6,7 +6,7 @@ ProgramID: 8hbUkonssSEEtkqzwM7ZcZrD9evacM92TcWSooVF4BeT
 
 - read the [whitepaper](./docs/whitepaper.md).
 - read how the engine handles [risk](./docs/risk.md).
-- 73/73 passing kani proofs in [verification](./docs/verification.md).
+- 75/75 passing kani proofs in [verification](./docs/verification.md).
 - internal [audit](./docs/audit.md).
 - develop on torch and use the test suite with the [sdk](./docs/sdk.md).
 - deep_pool [integration](./docs/deeppool_integration.md).

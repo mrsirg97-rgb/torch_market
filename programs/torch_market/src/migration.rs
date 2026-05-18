@@ -1,8 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{
-    transfer_checked, burn, set_authority,
-    TransferChecked, Burn, SetAuthority,
-    spl_token_2022::instruction::AuthorityType,
+    burn, set_authority, spl_token_2022::instruction::AuthorityType, transfer_checked, Burn,
+    SetAuthority, TransferChecked,
 };
 
 use crate::constants::*;
@@ -144,6 +143,8 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
         token_program: ctx.accounts.token_2022_program.to_account_info(),
         associated_token_program: ctx.accounts.associated_token_program.to_account_info(),
         system_program: ctx.accounts.system_program.to_account_info(),
+        event_authority: ctx.accounts.deep_pool_event_authority.to_account_info(),
+        program: ctx.accounts.deep_pool_program.to_account_info(),
     };
 
     deep_pool::cpi::create_pool(

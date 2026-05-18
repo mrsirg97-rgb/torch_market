@@ -6,9 +6,9 @@ We used [Kani](https://model-checking.github.io/kani/), a formal verification to
 
 This is **not** a security audit. It proves the arithmetic is correct, but does not cover access control, account validation, or economic attacks. See [What Is NOT Verified](#what-is-not-verified) for full scope limitations.
 
-**73 proof harnesses. All passing. Zero failures.**
+**75 proof harnesses. All passing. Zero failures.**
 
-Complemented by 31 [proptest properties](./properties.md) × 5,000 cases each — ~155,000 random-input checks per test run — covering the same math surface with broad empirical coverage.
+Complemented by 33 [proptest properties](./properties.md) × 5,000 cases each — ~165,000 random-input checks per test run — covering the same math surface with broad empirical coverage.
 
 ---
 
@@ -18,7 +18,7 @@ torch_market's core arithmetic has been formally verified using [Kani](https://m
 
 **Tool:** Kani Rust Verifier 0.67.0 / CBMC 6.8.0
 **Target:** `torch_market` v20.0.0 (torch_next)
-**Harnesses:** 73 proof harnesses, all passing
+**Harnesses:** 75 proof harnesses, all passing
 **Source:** `programs/torch_market/src/kani_proofs.rs`
 **Companion:** [properties.md](./properties.md) — proptest fuzz properties for broader random coverage
 
@@ -215,6 +215,17 @@ These harnesses verify the post-migration treasury sell mechanism: fee subtracti
 |---------|----------|-------------|
 | `verify_ratio_gate_fee_subtraction_safe` | After subtracting swap fees from vault balances: ratio computation succeeds when `pool_tokens > 0`; fees never inflate balances | Up to 10K SOL vault, fees bounded by vault balance |
 | `verify_treasury_sell_amount_bounded` | Sell amount never exceeds balance; 100% below 1M token threshold; exactly 15% above; non-zero for positive amounts | 0 to TOTAL_SUPPLY tokens |
+
+### Interest Accrual State Transition (Harnesses 74-75) — interest re-borrow fix
+
+Pure state-transition functions extracted from the long and short `accrue_interest` handlers. The lifecycle-relevant invariant: `last_update_slot` always advances to `current_slot` regardless of which branch was taken (zero-debt early return, zero-slots-elapsed early return, or normal interest accrual). Prevents the phantom-interest bug on positions that are fully repaid/closed and later re-borrowed/re-opened without closing the account.
+
+| Harness | Property | Input Range |
+|---|---|---|
+| `verify_interest_accrual_slot_advance` | `apply_interest_accrual(...)` returns `last_update_slot == current_slot` for ALL inputs (including `borrowed == 0`, the bug-fix path) | borrowed/accrued up to 1000 SOL, slot delta up to one epoch, rate up to default |
+| `verify_short_interest_accrual_slot_advance` | Same invariant for `apply_short_interest_accrual` (token-debt arithmetic via `calc_short_interest`) | tokens_borrowed up to TOTAL_SUPPLY, same slot/rate bounds |
+
+Companion proptests in [properties.md](./properties.md) (`apply_interest_accrual_re_borrow_no_phantom_interest`, `apply_short_interest_accrual_re_open_no_phantom_interest`) exercise the multi-call lifecycle (open → repay → wait → re-borrow → wait → accrue) across 5,000 random combinations — verifying that composed across calls, the final accrued interest depends only on the slot window since re-borrow, not on any earlier slot.
 
 ### DeepPool Integration (Harnesses 69, 72, 73) — V20
 

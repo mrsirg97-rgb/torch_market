@@ -8,9 +8,9 @@ Proptest complements the Kani harnesses ([verification.md](./verification.md)): 
 
 **Tool:** proptest 1.x
 **Target:** `torch_market` v20.0.0 (torch_next)
-**Properties:** 31 properties across 7 modules, all passing
+**Properties:** 33 properties across 8 modules, all passing
 **Cases per property:** 5,000
-**Total assertions per run:** ~155,000
+**Total assertions per run:** ~165,000
 **Source:** `programs/torch_market/tests/math_proptests.rs`
 **Run with:** `cargo test -p torch_market --test math_proptests`
 
@@ -85,6 +85,17 @@ Rate curves are tested for both `BONDING_TARGET_FLAME` and `BONDING_TARGET_TORCH
 | `short_debt_value_bounded_when_debt_le_reserve` | When token debt ≤ pool tokens, valued-in-SOL debt ≤ pool SOL (can't value debt above pool liquidity) |
 | `short_interest_monotonic_in_tokens` | Short interest accrues monotonically in token debt at fixed rate/slots |
 | `short_sol_to_seize_grossed_up_by_bonus` | Liquidation seize amount is between `debt × 1.0` and `debt × (1 + bonus_bps)` — bonus is applied as a ceiling, not a floor |
+
+### Interest Accrual Lifecycle (Properties 32-33)
+
+Companion to Kani harnesses 74-75. Kani exhaustively verifies the slot-advance post-condition on the pure functions `apply_interest_accrual` and `apply_short_interest_accrual`. These proptests exercise the full call-sequence lifecycle that Kani choked on as a SAT problem: open → fully repaid/closed → wait dormant period → re-borrow/re-open → wait → accrue. Asserts that the final accrued interest depends only on the window since re-borrow, NOT on the dormant period.
+
+| Property | Description |
+|----------|-------------|
+| `apply_interest_accrual_re_borrow_no_phantom_interest` | Lending lifecycle: after open → repay at R → wait → re-borrow at B → accrue at L, final accrued interest equals `calc_interest(new_borrow, rate, L - B)` — the dormant period (R, B) contributes zero |
+| `apply_short_interest_accrual_re_open_no_phantom_interest` | Same invariant for short positions (token-debt arithmetic). Mirror of the lending property. |
+
+Regression insurance: any future change to `apply_interest_accrual` that breaks the slot-advance invariant on the zero-debt path fails these immediately with a shrunk counterexample.
 
 ## Why Proptest Alongside Kani
 

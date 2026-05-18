@@ -5,30 +5,31 @@ use crate::constants::*;
 use crate::contexts::*;
 use crate::errors::TorchMarketError;
 use crate::math;
-use crate::pool_validation::{read_deep_pool_reserves, require_min_pool_liquidity, get_depth_max_ltv_bps};
+use crate::pool_validation::{
+    get_depth_max_ltv_bps, read_deep_pool_reserves, require_min_pool_liquidity,
+};
 use crate::state::LoanPosition;
 
-// Accrue interest on a loan position. Updates accrued_interest and last_update_slot.
+// Accrue interest on a loan position.
+//
+// Delegates the state transition to `math::apply_interest_accrual` — a pure
+// function whose post-condition (last_update_slot always advances on every
+// call, including the zero-debt early return) is Kani-verified by
+// `verify_interest_accrual_slot_advance`. That harness symbolically covers
+// `borrowed: u64 = kani::any()` so both the zero-debt and active-debt paths
+// are checked. Prevents the re-borrow phantom-interest bug.
 fn accrue_interest(loan: &mut Account<LoanPosition>, interest_rate_bps: u16) -> Result<()> {
-    if loan.borrowed_amount == 0 {
-        return Ok(());
-    }
-
     let current_slot = Clock::get()?.slot;
-    let slots_elapsed = current_slot.saturating_sub(loan.last_update_slot);
-    if slots_elapsed == 0 {
-        return Ok(());
-    }
-
-    let interest = math::calc_interest(loan.borrowed_amount, interest_rate_bps, slots_elapsed)
-        .ok_or(TorchMarketError::MathOverflow)?;
-
-    loan.accrued_interest = loan
-        .accrued_interest
-        .checked_add(interest)
-        .ok_or(TorchMarketError::MathOverflow)?;
-    loan.last_update_slot = current_slot;
-
+    let (new_accrued, new_last_slot) = math::apply_interest_accrual(
+        loan.borrowed_amount,
+        loan.accrued_interest,
+        loan.last_update_slot,
+        current_slot,
+        interest_rate_bps,
+    )
+    .ok_or(TorchMarketError::MathOverflow)?;
+    loan.accrued_interest = new_accrued;
+    loan.last_update_slot = new_last_slot;
     Ok(())
 }
 
@@ -131,11 +132,12 @@ pub fn borrow(ctx: Context<Borrow>, args: BorrowArgs) -> Result<()> {
         .checked_add(net_deposited)
         .ok_or(TorchMarketError::MathOverflow)?;
 
-    let (pool_sol, pool_tokens) = read_deep_pool_reserves(
-        &ctx.accounts.deep_pool,
-        &ctx.accounts.deep_pool_token_vault,
-    )?;
-    require!(pool_sol > 0 && pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
+    let (pool_sol, pool_tokens) =
+        read_deep_pool_reserves(&ctx.accounts.deep_pool, &ctx.accounts.deep_pool_token_vault)?;
+    require!(
+        pool_sol > 0 && pool_tokens > 0,
+        TorchMarketError::ZeroPoolReserves
+    );
 
     let depth_max_ltv = get_depth_max_ltv_bps(pool_sol);
     require!(depth_max_ltv > 0, TorchMarketError::PoolTooThin);
@@ -455,11 +457,12 @@ pub fn liquidate(ctx: Context<Liquidate>) -> Result<()> {
 
     accrue_interest(loan, treasury.interest_rate_bps)?;
 
-    let (pool_sol, pool_tokens) = read_deep_pool_reserves(
-        &ctx.accounts.deep_pool,
-        &ctx.accounts.deep_pool_token_vault,
-    )?;
-    require!(pool_sol > 0 && pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
+    let (pool_sol, pool_tokens) =
+        read_deep_pool_reserves(&ctx.accounts.deep_pool, &ctx.accounts.deep_pool_token_vault)?;
+    require!(
+        pool_sol > 0 && pool_tokens > 0,
+        TorchMarketError::ZeroPoolReserves
+    );
 
     require_min_pool_liquidity(pool_sol)?;
 

@@ -70,6 +70,8 @@ pub fn vault_swap(
             token_program: ctx.accounts.token_2022_program.to_account_info(),
             associated_token_program: ctx.accounts.associated_token_program.to_account_info(),
             system_program: ctx.accounts.system_program.to_account_info(),
+            event_authority: ctx.accounts.deep_pool_event_authority.to_account_info(),
+            program: ctx.accounts.deep_pool_program.to_account_info(),
         };
 
         deep_pool::cpi::swap(
@@ -114,6 +116,8 @@ pub fn vault_swap(
             token_program: ctx.accounts.token_2022_program.to_account_info(),
             associated_token_program: ctx.accounts.associated_token_program.to_account_info(),
             system_program: ctx.accounts.system_program.to_account_info(),
+            event_authority: ctx.accounts.deep_pool_event_authority.to_account_info(),
+            program: ctx.accounts.deep_pool_program.to_account_info(),
         };
 
         deep_pool::cpi::swap(

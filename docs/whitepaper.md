@@ -194,7 +194,7 @@ Every parameter is readable on-chain. Every outcome is calculable before executi
 
 ## Verification
 
-73 Kani proof harnesses. 31 proptest properties (5,000 random cases each). 53 end-to-end tests. All passing. Cross-validated by independent audit (OpenAI o3).
+75 Kani proof harnesses. 33 proptest properties (5,000 random cases each). 53 end-to-end tests. All passing. Cross-validated by independent audit (Claude Opus 4.7).
 
 Core arithmetic is formally verified with [Kani](https://model-checking.github.io/kani/) covering every possible input in constrained ranges: fee calculations, bonding curve pricing, lending formulas, liquidation lifecycle, short selling, bad debt accounting, depth-based risk band boundaries, circuit breaker band math, reward distribution, migration conservation, token distribution, and DeepPool integration. Kani proves exact correctness at representative values; proptest sweeps the full u64 input space with thousands of randomly-drawn cases per property. No SOL created from nothing. No tokens minted from thin air. No fees exceeding stated rates.
 

@@ -43,7 +43,7 @@ pub const MIGRATION_SEED: &[u8] = b"migration";
 pub const STAR_RECORD_SEED: &[u8] = b"star_record";
 pub const CREATOR_REWARD_THRESHOLD: u64 = 2000;
 pub const MIN_MIGRATION_SOL: u64 = 1_500_000_000; // 1.5 SOL
-// DeepPool Program ID: CcwF61GW14AcxCS4E2zedHXdFXy8x8GQPvfxZrs2x2eT
+                                                  // DeepPool Program ID: CcwF61GW14AcxCS4E2zedHXdFXy8x8GQPvfxZrs2x2eT
 pub const DEEP_POOL_PROGRAM_ID: anchor_lang::prelude::Pubkey = deep_pool::ID;
 pub const DEEP_POOL_POOL_SEED: &[u8] = b"deep_pool";
 pub const DEEP_POOL_VAULT_SEED: &[u8] = b"pool_vault";

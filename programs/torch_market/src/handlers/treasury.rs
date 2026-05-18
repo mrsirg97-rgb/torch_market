@@ -1,10 +1,10 @@
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::program::invoke_signed;
 use crate::constants::*;
 use crate::contexts::*;
 use crate::errors::TorchMarketError;
 use crate::pool_validation::read_deep_pool_reserves;
 use crate::token_2022_utils::*;
+use anchor_lang::prelude::*;
+use anchor_lang::solana_program::program::invoke_signed;
 
 // Harvest accumulated transfer fees.
 // This collects transfer fees that have been withheld from transfers
@@ -80,10 +80,8 @@ pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) ->
             return Ok(());
         }
 
-        let (pool_sol, pool_tokens) = read_deep_pool_reserves(
-            &ctx.accounts.deep_pool,
-            &ctx.accounts.deep_pool_token_vault,
-        )?;
+        let (pool_sol, pool_tokens) =
+            read_deep_pool_reserves(&ctx.accounts.deep_pool, &ctx.accounts.deep_pool_token_vault)?;
         require!(pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
 
         let current_ratio = (pool_sol as u128)
@@ -145,6 +143,8 @@ pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) ->
         token_program: ctx.accounts.token_2022_program.to_account_info(),
         associated_token_program: ctx.accounts.associated_token_program.to_account_info(),
         system_program: ctx.accounts.system_program.to_account_info(),
+        event_authority: ctx.accounts.deep_pool_event_authority.to_account_info(),
+        program: ctx.accounts.deep_pool_program.to_account_info(),
     };
 
     deep_pool::cpi::swap(

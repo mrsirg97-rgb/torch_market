@@ -1,9 +1,9 @@
 use anchor_lang::prelude::*;
 
 use crate::constants::{
-    DEEP_POOL_PROGRAM_ID, DEEP_POOL_POOL_SEED, DEEP_POOL_VAULT_SEED, DEEP_POOL_LP_MINT_SEED,
-    MIN_POOL_SOL_LENDING, MAX_PRICE_DEVIATION_BPS, RATIO_PRECISION,
-    DEPTH_TIER_1, DEPTH_TIER_2, DEPTH_TIER_3, DEPTH_LTV_0, DEPTH_LTV_1, DEPTH_LTV_2, DEPTH_LTV_3,
+    DEEP_POOL_LP_MINT_SEED, DEEP_POOL_POOL_SEED, DEEP_POOL_PROGRAM_ID, DEEP_POOL_VAULT_SEED,
+    DEPTH_LTV_0, DEPTH_LTV_1, DEPTH_LTV_2, DEPTH_LTV_3, DEPTH_TIER_1, DEPTH_TIER_2, DEPTH_TIER_3,
+    MAX_PRICE_DEVIATION_BPS, MIN_POOL_SOL_LENDING, RATIO_PRECISION,
 };
 use crate::errors::TorchMarketError;
 
@@ -19,11 +19,7 @@ pub fn derive_deep_pool(config: &Pubkey, mint: &Pubkey) -> Pubkey {
 // Derive Torch config PDA (used as namespace for DeepPool pools)
 pub fn derive_torch_config() -> Pubkey {
     use crate::constants::TORCH_CONFIG_SEED;
-    Pubkey::find_program_address(
-        &[TORCH_CONFIG_SEED],
-        &crate::ID,
-    )
-    .0
+    Pubkey::find_program_address(&[TORCH_CONFIG_SEED], &crate::ID).0
 }
 
 // Derive the DeepPool token vault PDA for a given pool.
@@ -44,6 +40,12 @@ pub fn derive_deep_pool_lp_mint(pool: &Pubkey) -> Pubkey {
     .0
 }
 
+// DeepPool's Anchor `#[event_cpi]` authority PDA. Required as a CPI account on
+// every deep_pool instruction since v4.x — it signs the inner emit_cpi! ix.
+pub fn derive_deep_pool_event_authority() -> Pubkey {
+    Pubkey::find_program_address(&[b"__event_authority"], &DEEP_POOL_PROGRAM_ID).0
+}
+
 // Validate a DeepPool pool account: owned by DeepPool program, token_mint matches.
 // Pool layout: discriminator(8) + creator(32) + token_mint(32) + ...
 // token_mint is at byte offset 40.
@@ -54,8 +56,8 @@ pub fn validate_deep_pool(pool_info: &AccountInfo, expected_mint: &Pubkey) -> Re
     );
     let data = pool_info.try_borrow_data()?;
     require!(data.len() >= 72, TorchMarketError::InvalidPoolAccount);
-    let pool_mint = Pubkey::try_from(&data[40..72])
-        .map_err(|_| TorchMarketError::InvalidPoolAccount)?;
+    let pool_mint =
+        Pubkey::try_from(&data[40..72]).map_err(|_| TorchMarketError::InvalidPoolAccount)?;
     require!(
         pool_mint == *expected_mint,
         TorchMarketError::InvalidPoolAccount
@@ -100,7 +102,10 @@ pub fn require_price_in_band(
     baseline_sol: u64,
     baseline_tokens: u64,
 ) -> Result<()> {
-    require!(baseline_sol > 0 && baseline_tokens > 0, TorchMarketError::BaselineNotInitialized);
+    require!(
+        baseline_sol > 0 && baseline_tokens > 0,
+        TorchMarketError::BaselineNotInitialized
+    );
 
     let current_ratio = (pool_sol as u128)
         .checked_mul(RATIO_PRECISION)

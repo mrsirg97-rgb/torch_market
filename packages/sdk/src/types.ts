@@ -1,0 +1,646 @@
+/**
+ * Torch Market SDK Types
+ */
+
+import { PublicKey, VersionedTransaction, Keypair } from '@solana/web3.js'
+
+// ============================================================================
+// Token Types
+// ============================================================================
+
+export type TokenStatus = 'bonding' | 'complete' | 'migrated' | 'reclaimed'
+
+export interface TokenSummary {
+  mint: string
+  name: string
+  symbol: string
+  status: TokenStatus
+  price_sol: number
+  market_cap_sol: number
+  progress_percent: number
+  holders: number | null
+  created_at: number
+  last_activity_at: number
+}
+
+export interface TokenDetail {
+  mint: string
+  name: string
+  symbol: string
+  description?: string
+  image?: string
+  status: TokenStatus
+  price_sol: number
+  price_usd?: number
+  market_cap_sol: number
+  market_cap_usd?: number
+  progress_percent: number
+  sol_raised: number
+  sol_target: number
+  total_supply: number
+  circulating_supply: number
+  tokens_in_curve: number
+  tokens_burned: number
+  treasury_sol_balance: number
+  treasury_token_balance: number
+  creator: string
+  holders: number | null
+  stars: number
+  created_at: number
+  last_activity_at: number
+  twitter?: string
+  telegram?: string
+  website?: string
+  creator_verified?: boolean
+  creator_trust_tier?: 'high' | 'medium' | 'low' | null
+  creator_said_name?: string
+  creator_badge_url?: string
+  warnings?: string[]
+}
+
+// ============================================================================
+// List Params
+// ============================================================================
+
+export type TokenSortOption = 'newest' | 'volume' | 'marketcap'
+export type TokenStatusFilter = 'bonding' | 'complete' | 'migrated' | 'reclaimed' | 'all'
+
+export interface TokenListParams {
+  limit?: number
+  offset?: number
+  status?: TokenStatusFilter
+  sort?: TokenSortOption
+}
+
+export interface TokenListResult {
+  tokens: TokenSummary[]
+  total: number
+  limit: number
+  offset: number
+}
+
+// Pagination params for getTokensPage (uses RPC getProgramAccountsV2).
+// limit: RPC page size 1-10000 (default 10000).
+// paginationKey: opaque cursor from previous response; null/undefined for first page.
+// changedSinceSlot: only return accounts modified at or after this slot (for delta polling).
+export interface TokenPageParams {
+  limit?: number
+  paginationKey?: string | null
+  changedSinceSlot?: number
+}
+
+// One page of tokens from getTokensPage.
+// paginationKey: cursor for next page, or null when done.
+// currentSlot: slot this response is current at — pass as changedSinceSlot on next poll.
+export interface TokenPageResult {
+  tokens: TokenSummary[]
+  paginationKey: string | null
+  currentSlot: number
+}
+
+// ============================================================================
+// Holders
+// ============================================================================
+
+export interface Holder {
+  address: string
+  balance: number
+  percentage: number
+}
+
+export interface HoldersResult {
+  holders: Holder[]
+  total_holders: number
+}
+
+// ============================================================================
+// Quotes
+// ============================================================================
+
+export interface BuyQuoteResult {
+  input_sol: number
+  output_tokens: number
+  tokens_to_user: number
+  protocol_fee_sol: number
+  price_per_token_sol: number
+  price_impact_percent: number
+  min_output_tokens: number
+  /** Where this quote came from: bonding curve or DeepPool */
+  source: 'bonding' | 'dex'
+}
+
+export interface SellQuoteResult {
+  input_tokens: number
+  output_sol: number
+  protocol_fee_sol: number
+  price_per_token_sol: number
+  price_impact_percent: number
+  min_output_sol: number
+  /** Where this quote came from: bonding curve or DeepPool */
+  source: 'bonding' | 'dex'
+}
+
+export interface BorrowQuoteResult {
+  max_borrow_sol: number
+  collateral_value_sol: number
+  ltv_max_sol: number
+  pool_available_sol: number
+  per_user_cap_sol: number
+  interest_rate_bps: number
+  liquidation_threshold_bps: number
+}
+
+// ============================================================================
+// Vault Types (V2.0)
+// ============================================================================
+
+export interface VaultInfo {
+  address: string
+  creator: string
+  authority: string
+  sol_balance: number
+  total_deposited: number
+  total_withdrawn: number
+  total_spent: number
+  total_received: number
+  linked_wallets: number
+  created_at: number
+}
+
+export interface VaultWalletLinkInfo {
+  address: string
+  vault: string
+  wallet: string
+  linked_at: number
+}
+
+export interface UserStatsInfo {
+  address: string
+  user: string
+  /** Lifetime trading volume in SOL */
+  total_volume_sol: number
+  /** Volume attributed to the current epoch (SOL) */
+  volume_current_epoch_sol: number
+  /** Volume attributed to the previous epoch — claim eligibility is against this (SOL) */
+  volume_previous_epoch_sol: number
+  /** Epoch number that was most recently claimed *for* (not *when*). The on-chain
+   *  claim instruction settles the prior epoch's volume, so this is typically
+   *  `ProtocolTreasury.current_epoch - 1` at the time of the claim. */
+  last_epoch_claimed: number
+  /** Lifetime rewards claimed (SOL) */
+  total_rewards_claimed_sol: number
+  /** Epoch number at which volume was last recorded */
+  last_volume_epoch: number
+}
+
+export interface TreasuryInfo {
+  address: string
+  /** The bonding curve PDA this treasury is associated with */
+  bonding_curve: string
+  mint: string
+  /** Current treasury SOL balance (SOL) */
+  sol_balance_sol: number
+  /** True if this token was created as a community token (0% creator fees) */
+  is_community_token: boolean
+  /** SOL reserved as collateral by active short positions (lamports) */
+  short_collateral_reserved: number
+  /** Harvested Token-2022 transfer fees swapped to SOL — cumulative (SOL) */
+  harvested_fees_sol: number
+  /** Baseline pool SOL reserves captured at migration (lamports) */
+  baseline_sol_reserves: number
+  /** Baseline pool token reserves captured at migration (token base units) */
+  baseline_token_reserves: number
+  baseline_initialized: boolean
+  /** Whether short selling is enabled for this token */
+  short_selling_enabled: boolean
+  /** Slot of the last treasury fee-to-SOL swap */
+  last_buyback_slot: number
+  /** Total stars received (sybil-resistant, 0.02 SOL each) */
+  total_stars: number
+  /** Accumulated SOL from stars (SOL) */
+  star_sol_balance_sol: number
+  creator_paid_out: boolean
+}
+
+export interface ProtocolTreasuryInfo {
+  address: string
+  authority: string
+  /** Current SOL balance in the protocol treasury */
+  current_balance_sol: number
+  /** Reserve floor kept across epochs (SOL) */
+  reserve_floor_sol: number
+  /** Lifetime fees received (SOL) */
+  total_fees_received_sol: number
+  /** Lifetime SOL distributed to claimers */
+  total_distributed_sol: number
+  current_epoch: number
+  /** Unix timestamp of the last epoch rollover */
+  last_epoch_ts: number
+  /** Aggregate trading volume across all users in the current epoch (SOL) */
+  total_volume_current_epoch_sol: number
+  /** Aggregate volume in the previous epoch — denominator for reward shares (SOL) */
+  total_volume_previous_epoch_sol: number
+  /** Amount currently available to distribute this epoch (SOL) */
+  distributable_amount_sol: number
+}
+
+// ============================================================================
+// Vault Params (V2.0)
+// ============================================================================
+
+export interface CreateVaultParams {
+  creator: string
+}
+
+export interface DepositVaultParams {
+  depositor: string
+  vault_creator: string
+  amount_sol: number
+}
+
+export interface WithdrawVaultParams {
+  authority: string
+  vault_creator: string
+  amount_sol: number
+}
+
+export interface LinkWalletParams {
+  authority: string
+  vault_creator: string
+  wallet_to_link: string
+}
+
+export interface UnlinkWalletParams {
+  authority: string
+  vault_creator: string
+  wallet_to_unlink: string
+}
+
+export interface TransferAuthorityParams {
+  authority: string
+  vault_creator: string
+  new_authority: string
+}
+
+export interface WithdrawTokensParams {
+  authority: string
+  vault_creator: string
+  mint: string
+  destination: string
+  amount: number
+}
+
+// ============================================================================
+// Transaction Params
+// ============================================================================
+
+export interface BuyParams {
+  mint: string
+  buyer: string
+  amount_sol: number
+  slippage_bps?: number
+  message?: string
+  vault: string // vault creator pubkey; vault pays for the buy
+  quote?: BuyQuoteResult // pre-fetched quote; if provided, skips internal fetch and routes bonding vs DEX by quote.source
+}
+
+export interface DirectBuyParams {
+  mint: string
+  buyer: string
+  amount_sol: number
+  slippage_bps?: number
+  message?: string
+  quote?: BuyQuoteResult // pre-fetched quote; if provided, skips internal fetch
+}
+
+export interface SellParams {
+  mint: string
+  seller: string
+  amount_tokens: number
+  slippage_bps?: number
+  message?: string
+  /** Vault creator pubkey. SOL goes to vault, tokens sold from vault ATA. */
+  vault?: string
+  /** Pre-fetched quote from getSellQuote. If provided, skips internal quote fetch
+   *  and uses quote.source to route bonding vs DEX. */
+  quote?: SellQuoteResult
+}
+
+export interface CreateTokenParams {
+  creator: string
+  name: string
+  symbol: string
+  metadata_uri: string
+  /** [V23] Bonding target in lamports. 0 or omitted = default 200 SOL. */
+  sol_target?: number
+  /** [V35] Community token: 0% creator fees, all to treasury. Default true. */
+  community_token?: boolean
+}
+
+export interface StarParams {
+  mint: string
+  user: string
+  /** Vault creator pubkey. Vault pays the 0.02 SOL star cost. */
+  vault?: string
+}
+
+// ============================================================================
+// Migration Params (V26)
+// ============================================================================
+
+export interface MigrateParams {
+  /** Token mint address */
+  mint: string
+  /** Wallet signing the transaction. Fronts ~0.003 SOL for account rent,
+   *  reimbursed by treasury in the same transaction. */
+  payer: string
+}
+
+// ============================================================================
+// Vault Swap Params (V19)
+// ============================================================================
+
+export interface VaultSwapParams {
+  /** Token mint address */
+  mint: string
+  /** Controller wallet (linked to vault, signs the tx) */
+  signer: string
+  /** Vault creator pubkey (for PDA derivation) */
+  vault_creator: string
+  /** Input amount (lamports for buy, token base units for sell) */
+  amount_in: number
+  /** Minimum output for slippage protection */
+  minimum_amount_out: number
+  /** true = SOL→Token (buy), false = Token→SOL (sell) */
+  is_buy: boolean
+  /** Optional message bundled as SPL Memo instruction (max 500 chars) */
+  message?: string
+}
+
+// ============================================================================
+// Treasury Crank Params
+// ============================================================================
+
+export interface HarvestFeesParams {
+  /** Token mint address */
+  mint: string
+  /** Payer wallet (permissionless — anyone can trigger) */
+  payer: string
+  /** Optional list of token account addresses to harvest from.
+   *  If omitted, the SDK auto-discovers accounts with withheld fees. */
+  sources?: string[]
+}
+
+export interface AdvanceProtocolEpochParams {
+  /** Payer wallet (permissionless — anyone can trigger) */
+  payer: string
+}
+
+export interface SwapFeesToSolParams {
+  /** Token mint address */
+  mint: string
+  /** Payer wallet (permissionless — anyone can trigger) */
+  payer: string
+  /** Minimum SOL out from the swap (slippage protection, default 1) */
+  minimum_amount_out?: number
+  /** Bundle harvest_fees in the same transaction (default true) */
+  harvest?: boolean
+  /** Optional list of token account addresses to harvest from.
+   *  Only used when harvest=true. If omitted, auto-discovers. */
+  sources?: string[]
+}
+
+// ============================================================================
+// V29: Token Metadata
+// ============================================================================
+
+export interface TokenMetadataResult {
+  /** Token name from on-chain metadata */
+  name: string
+  /** Token symbol from on-chain metadata */
+  symbol: string
+  /** Token metadata URI */
+  uri: string
+  /** Mint address */
+  mint: string
+}
+
+// ============================================================================
+// Wallet Adapter
+// ============================================================================
+
+/**
+ * Minimal wallet interface for signAndSendTransaction flows.
+ * Compatible with Phantom, Backpack, and other Solana wallets that
+ * support atomic sign-and-send.
+ */
+export interface WalletAdapter {
+  publicKey: PublicKey
+  signAndSendTransaction: (tx: VersionedTransaction) => Promise<{ signature: string }>
+}
+
+// ============================================================================
+// Transaction Results
+// ============================================================================
+
+export interface TransactionResult {
+  transaction: VersionedTransaction
+  /** Additional transactions when a single tx exceeds the size limit.
+   *  When present, send all transactions in order: transaction first, then these. */
+  additionalTransactions?: VersionedTransaction[]
+  message: string
+}
+
+export interface BuyTransactionResult extends TransactionResult {
+  /** [V28] Follow-up migration transaction. Present when this buy completes
+   *  bonding. Send immediately after the buy tx succeeds. The payer fronts
+   *  ~0.003 SOL for account rent, reimbursed by treasury in the same tx.
+   *  If the caller can't afford it or it fails, anyone can trigger migration
+   *  later via buildMigrateTransaction. */
+  migrationTransaction?: VersionedTransaction
+}
+
+export interface CreateTokenResult extends TransactionResult {
+  mint: PublicKey
+  mintKeypair: Keypair
+}
+
+// ============================================================================
+// Lending Params (V2.4)
+// ============================================================================
+
+export interface BorrowParams {
+  mint: string
+  borrower: string
+  collateral_amount: number
+  sol_to_borrow: number
+  /** Vault creator pubkey. Collateral from vault ATA, SOL to vault. */
+  vault?: string
+}
+
+export interface RepayParams {
+  mint: string
+  borrower: string
+  sol_amount: number
+  /** Vault creator pubkey. SOL repaid from vault, collateral returns to vault ATA. */
+  vault?: string
+}
+
+export interface LiquidateParams {
+  mint: string
+  liquidator: string
+  borrower: string
+  /** Vault creator pubkey. SOL paid from vault, collateral received to vault ATA. */
+  vault?: string
+}
+
+export interface ClaimProtocolRewardsParams {
+  user: string
+  /** Vault creator pubkey. Claimed SOL goes to vault instead of user. */
+  vault?: string
+}
+
+export interface ReclaimParams {
+  /** Payer/caller wallet (permissionless — anyone can call) */
+  payer: string
+  /** Token mint to reclaim */
+  mint: string
+}
+
+// ============================================================================
+// Short Selling Params (V5)
+// ============================================================================
+
+export interface OpenShortParams {
+  mint: string
+  shorter: string
+  sol_collateral: number
+  tokens_to_borrow: number
+  /** Vault creator pubkey. SOL from vault, tokens to vault ATA. */
+  vault?: string
+}
+
+export interface CloseShortParams {
+  mint: string
+  shorter: string
+  token_amount: number
+  /** Vault creator pubkey. Tokens from vault ATA, SOL to vault. */
+  vault?: string
+}
+
+export interface LiquidateShortParams {
+  mint: string
+  liquidator: string
+  borrower: string
+  /** Vault creator pubkey. Tokens from vault ATA, SOL to vault. */
+  vault?: string
+}
+
+export interface EnableShortSellingParams {
+  /** Protocol authority wallet */
+  authority: string
+  /** Token mint to enable shorts for */
+  mint: string
+}
+
+// ============================================================================
+// Lending Results (V2.4)
+// ============================================================================
+
+export interface LendingInfo {
+  interest_rate_bps: number
+  max_ltv_bps: number
+  liquidation_threshold_bps: number
+  liquidation_bonus_bps: number
+  utilization_cap_bps: number
+  borrow_share_multiplier: number
+  total_sol_lent: number | null
+  active_loans: number | null
+  treasury_sol_available: number
+  warnings?: string[]
+}
+
+export interface LoanPositionInfo {
+  collateral_amount: number
+  borrowed_amount: number
+  /** Accrued interest projected to the current slot using the on-chain simple-linear formula.
+   *  Interest is only actually written on-chain when an instruction touches the loan; this value
+   *  matches what the program will compute at the next touch. Use `accrued_interest_stored` for
+   *  the raw on-chain value as of `last_update_slot`. */
+  accrued_interest: number
+  /** Raw stored accrued_interest from the LoanPosition account (as of last_update_slot). */
+  accrued_interest_stored: number
+  /** Slot at which `accrued_interest_stored` was last written. */
+  last_update_slot: number
+  total_owed: number
+  collateral_value_sol: number | null
+  current_ltv_bps: number | null
+  health: 'healthy' | 'at_risk' | 'liquidatable' | 'none'
+  warnings?: string[]
+}
+
+export interface LoanPositionWithKey extends LoanPositionInfo {
+  borrower: string
+}
+
+export interface AllLoanPositionsResult {
+  positions: LoanPositionWithKey[]
+  pool_price_sol: number | null
+}
+
+// ============================================================================
+// Short Position Results (V5)
+// ============================================================================
+
+export interface ShortPositionInfo {
+  sol_collateral: number
+  tokens_borrowed: number
+  /** Accrued interest (in tokens) projected to the current slot. See `LoanPositionInfo.accrued_interest`. */
+  accrued_interest: number
+  /** Raw stored accrued_interest from the ShortPosition account (as of last_update_slot). */
+  accrued_interest_stored: number
+  /** Slot at which `accrued_interest_stored` was last written. */
+  last_update_slot: number
+  total_owed_tokens: number
+  /** SOL value of the token debt (null if pool price unavailable) */
+  debt_value_sol: number | null
+  /** Current LTV in basis points: debt_value_sol / sol_collateral (null if price unavailable) */
+  current_ltv_bps: number | null
+  health: 'healthy' | 'at_risk' | 'liquidatable' | 'none'
+  warnings?: string[]
+}
+
+// ============================================================================
+// Messages
+// ============================================================================
+
+export interface TokenMessage {
+  signature: string
+  memo: string
+  sender: string
+  timestamp: number
+  sender_verified?: boolean
+  sender_trust_tier?: 'high' | 'medium' | 'low' | null
+  sender_said_name?: string
+  sender_badge_url?: string
+}
+
+export interface MessagesResult {
+  messages: TokenMessage[]
+  total: number
+}
+
+// ============================================================================
+// SAID
+// ============================================================================
+
+export interface SaidVerification {
+  verified: boolean
+  trustTier: 'high' | 'medium' | 'low' | null
+  name?: string
+}
+
+export interface ConfirmResult {
+  confirmed: boolean
+  event_type: 'token_launch' | 'trade_complete' | 'unknown'
+}

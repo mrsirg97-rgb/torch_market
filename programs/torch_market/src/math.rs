@@ -95,7 +95,11 @@ pub fn calc_creator_fee_share(sol_received: u64) -> Option<u64> {
 // below the declared rate, capped at MAX_TRANSFER_FEE.
 pub fn calc_transfer_fee(amount: u64) -> Option<u64> {
     let num = (amount as u128).checked_mul(TRANSFER_FEE_BPS as u128)?;
-    let fee: u64 = num.checked_add(9_999)?.checked_div(10_000)?.try_into().ok()?;
+    let fee: u64 = num
+        .checked_add(9_999)?
+        .checked_div(10_000)?
+        .try_into()
+        .ok()?;
     Some(fee.min(MAX_TRANSFER_FEE))
 }
 
@@ -217,4 +221,60 @@ pub fn calc_short_sol_to_seize(debt_value: u64, bonus_bps: u16) -> Option<u64> {
         .checked_div(10_000)?
         .try_into()
         .ok()
+}
+
+// ============================================================================
+// Interest accrual state transition
+// ============================================================================
+//
+// Pure state-transition for `accrue_interest`. Returns the new
+// `(accrued_interest, last_update_slot)` pair. Extracted from the handlers so
+// the post-condition is Kani-verifiable: see `verify_interest_accrual_*`.
+//
+// Post-condition: when `Some(_)` is returned, the second element equals
+// `current_slot` — regardless of whether interest was accrued. This is the
+// invariant that prevents stale-slot bugs on re-borrow of a position that was
+// fully repaid but not closed.
+//
+// Returns `None` on arithmetic overflow.
+
+pub fn apply_interest_accrual(
+    borrowed: u64,
+    accrued: u64,
+    last_slot: u64,
+    current_slot: u64,
+    rate_bps: u16,
+) -> Option<(u64, u64)> {
+    if borrowed == 0 {
+        // No active debt — advance the slot anyway so a future re-borrow on
+        // this same account doesn't pick up the dormant period as interest.
+        return Some((accrued, current_slot));
+    }
+    let slots_elapsed = current_slot.saturating_sub(last_slot);
+    if slots_elapsed == 0 {
+        return Some((accrued, current_slot));
+    }
+    let interest = calc_interest(borrowed, rate_bps, slots_elapsed)?;
+    let new_accrued = accrued.checked_add(interest)?;
+    Some((new_accrued, current_slot))
+}
+
+// Same shape, token-debt arithmetic (uses `calc_short_interest`).
+pub fn apply_short_interest_accrual(
+    tokens_borrowed: u64,
+    accrued: u64,
+    last_slot: u64,
+    current_slot: u64,
+    rate_bps: u16,
+) -> Option<(u64, u64)> {
+    if tokens_borrowed == 0 {
+        return Some((accrued, current_slot));
+    }
+    let slots_elapsed = current_slot.saturating_sub(last_slot);
+    if slots_elapsed == 0 {
+        return Some((accrued, current_slot));
+    }
+    let interest = calc_short_interest(tokens_borrowed, rate_bps, slots_elapsed)?;
+    let new_accrued = accrued.checked_add(interest)?;
+    Some((new_accrued, current_slot))
 }

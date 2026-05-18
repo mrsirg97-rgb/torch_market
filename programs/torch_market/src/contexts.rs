@@ -8,7 +8,10 @@ use anchor_spl::{
 
 use crate::constants::*;
 use crate::errors::TorchMarketError;
-use crate::pool_validation::{derive_deep_pool, derive_deep_pool_vault, derive_deep_pool_lp_mint, derive_torch_config};
+use crate::pool_validation::{
+    derive_deep_pool, derive_deep_pool_event_authority, derive_deep_pool_lp_mint,
+    derive_deep_pool_vault, derive_torch_config,
+};
 use crate::state::*;
 use crate::token_2022_utils::TOKEN_2022_PROGRAM_ID;
 
@@ -372,6 +375,9 @@ pub struct SwapFeesToSol<'info> {
     /// CHECK: DeepPool token vault - validated by address constraint
     #[account(mut, address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
     pub deep_pool_token_vault: AccountInfo<'info>,
+    /// CHECK: DeepPool event_authority PDA — required by deep_pool's #[event_cpi]
+    #[account(address = derive_deep_pool_event_authority() @ TorchMarketError::InvalidPoolAccount)]
+    pub deep_pool_event_authority: AccountInfo<'info>,
     /// CHECK: Token-2022 program for project tokens
     #[account(address = TOKEN_2022_PROGRAM_ID)]
     pub token_2022_program: AccountInfo<'info>,
@@ -613,6 +619,9 @@ pub struct MigrateToDex<'info> {
     /// CHECK: DeepPool pool PDA's LP ATA — receives locked LP from create_pool
     #[account(mut)]
     pub deep_pool_lp_account: AccountInfo<'info>,
+    /// CHECK: DeepPool event_authority PDA — required by deep_pool's #[event_cpi]
+    #[account(address = derive_deep_pool_event_authority() @ TorchMarketError::InvalidPoolAccount)]
+    pub deep_pool_event_authority: AccountInfo<'info>,
     pub token_program: Interface<'info, TokenInterface>,
     /// CHECK: Token-2022 program for project tokens
     #[account(address = TOKEN_2022_PROGRAM_ID)]
@@ -1000,6 +1009,9 @@ pub struct VaultSwap<'info> {
     /// CHECK: DeepPool token vault - validated by address constraint
     #[account(mut, address = derive_deep_pool_vault(&deep_pool.key()) @ TorchMarketError::InvalidPoolVault)]
     pub deep_pool_token_vault: AccountInfo<'info>,
+    /// CHECK: DeepPool event_authority PDA — required by deep_pool's #[event_cpi]
+    #[account(address = derive_deep_pool_event_authority() @ TorchMarketError::InvalidPoolAccount)]
+    pub deep_pool_event_authority: AccountInfo<'info>,
     /// CHECK: Validated by address constraint
     #[account(address = TOKEN_2022_PROGRAM_ID)]
     pub token_2022_program: AccountInfo<'info>,

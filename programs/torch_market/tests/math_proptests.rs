@@ -382,3 +382,93 @@ proptest! {
         prop_assert!(seized as u128 <= expected_max);
     }
 }
+
+// ============================================================================
+// Interest accrual lifecycle (re-borrow / re-open no-phantom-interest)
+// ============================================================================
+//
+// Companion to Kani harnesses 71 + 72. The Kani harnesses prove the
+// slot-advance post-condition for `apply_interest_accrual` and
+// `apply_short_interest_accrual` exhaustively. These proptests validate the
+// full call-sequence lifecycle that Kani choked on as a SAT problem:
+//
+//   open at S0 → fully repaid/closed at R → wait → re-borrow/re-open at B
+//   → wait `dormant_window` → accrue at L = B + dormant_window
+//
+// Property: final accrued interest depends only on `dormant_window`, NOT on
+// any earlier slot. The dormant period between R and B (which can be orders
+// of magnitude larger than `dormant_window`) must not leak in.
+//
+// Regression insurance: if a future change to `apply_interest_accrual` or
+// `apply_short_interest_accrual` breaks the slot-advance invariant on the
+// zero-debt path, these tests fail immediately with a shrunk counterexample.
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(CASES))]
+
+    #[test]
+    fn apply_interest_accrual_re_borrow_no_phantom_interest(
+        original_slot in 0u64..1_000_000,
+        repay_offset in 1u64..1_000_000,
+        reborrow_offset in 1u64..10_000_000,
+        dormant_window in 1u64..EPOCH_DURATION_SLOTS,
+        new_borrow in MIN_BORROW_AMOUNT..1_000_000_000_000u64,
+        rate in 1u16..=DEFAULT_INTEREST_RATE_BPS,
+    ) {
+        let repay_slot = original_slot + repay_offset;
+        let reborrow_slot = repay_slot + reborrow_offset;
+        let later_slot = reborrow_slot + dormant_window;
+
+        // Step 1: zero-debt accrue at repay.
+        let (acc1, slot1) =
+            apply_interest_accrual(0, 0, original_slot, repay_slot, rate).unwrap();
+        prop_assert_eq!(slot1, repay_slot);
+        prop_assert_eq!(acc1, 0);
+
+        // Step 2: zero-debt accrue at reborrow (after a long dormant gap).
+        let (acc2, slot2) =
+            apply_interest_accrual(0, 0, slot1, reborrow_slot, rate).unwrap();
+        prop_assert_eq!(slot2, reborrow_slot);
+        prop_assert_eq!(acc2, 0);
+
+        // Step 3: active-debt accrue at later_slot.
+        let (acc3, slot3) =
+            apply_interest_accrual(new_borrow, 0, slot2, later_slot, rate).unwrap();
+        prop_assert_eq!(slot3, later_slot);
+
+        // Interest must be over `dormant_window`, not (later - original).
+        let expected = calc_interest(new_borrow, rate, dormant_window).unwrap();
+        prop_assert_eq!(acc3, expected);
+    }
+
+    #[test]
+    fn apply_short_interest_accrual_re_open_no_phantom_interest(
+        original_slot in 0u64..1_000_000,
+        close_offset in 1u64..1_000_000,
+        reopen_offset in 1u64..10_000_000,
+        dormant_window in 1u64..EPOCH_DURATION_SLOTS,
+        new_borrow in MIN_SHORT_TOKENS..1_000_000_000_000u64,
+        rate in 1u16..=DEFAULT_INTEREST_RATE_BPS,
+    ) {
+        let close_slot = original_slot + close_offset;
+        let reopen_slot = close_slot + reopen_offset;
+        let later_slot = reopen_slot + dormant_window;
+
+        let (acc1, slot1) =
+            apply_short_interest_accrual(0, 0, original_slot, close_slot, rate).unwrap();
+        prop_assert_eq!(slot1, close_slot);
+        prop_assert_eq!(acc1, 0);
+
+        let (acc2, slot2) =
+            apply_short_interest_accrual(0, 0, slot1, reopen_slot, rate).unwrap();
+        prop_assert_eq!(slot2, reopen_slot);
+        prop_assert_eq!(acc2, 0);
+
+        let (acc3, slot3) =
+            apply_short_interest_accrual(new_borrow, 0, slot2, later_slot, rate).unwrap();
+        prop_assert_eq!(slot3, later_slot);
+
+        let expected = calc_short_interest(new_borrow, rate, dormant_window).unwrap();
+        prop_assert_eq!(acc3, expected);
+    }
+}
