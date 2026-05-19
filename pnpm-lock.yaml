@@ -45,8 +45,8 @@ importers:
         specifier: ^0.4.0
         version: 0.4.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
       torchsdk:
-        specifier: file:/Users/mrbrightside/Projects/torchsdk
-        version: file:../torchsdk(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6)
+        specifier: workspace:*
+        version: link:packages/sdk
       ts-mocha:
         specifier: ^10.0.0
         version: 10.1.0(mocha@10.8.2)
@@ -71,9 +71,6 @@ importers:
       bs58:
         specifier: ^6.0.0
         version: 6.0.0
-      deeppoolsdk:
-        specifier: 4.3.1
-        version: 4.3.1(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@6.0.3)(utf-8-validate@6.0.6)
     devDependencies:
       '@types/node':
         specifier: ^25.6.0
@@ -479,9 +476,6 @@ packages:
   deep-extend@0.6.0:
     resolution: {integrity: sha512-LOHxIOaPYdHlJRtCQfDIVZtfw/ufM8+rVj649RIHzcm/vGwQRXFt6OPqIFWsm2XEMrNIEtWR64sY1LEKD2vAOA==}
     engines: {node: '>=4.0.0'}
-
-  deeppoolsdk@4.3.1:
-    resolution: {integrity: sha512-VYifMB4uGgwW66e79k3sldvbV77Uqyxkh0YoHikmc+oiWh7W1I+JSRquOwYc60vSCPEuIgaV9kYL4501g7vz8A==}
 
   delay@5.0.0:
     resolution: {integrity: sha512-ReEBKkIfe4ya47wlPYf/gu5ib6yUG0/Aez0JQZQz94kiWtRQvZIQbTiehsnwHvLSWJnQdhVeqYue7Id1dKr0qw==}
@@ -929,11 +923,6 @@ packages:
 
   toml@3.0.0:
     resolution: {integrity: sha512-y/mWCZinnvxjTKYhJ+pYxwD0mRLVvOtdS2Awbgxln6iEnt4rk0yBxeSBHkGJcPucRiG0e55mwWp+g/05rsrd6w==}
-
-  torchsdk@file:../torchsdk:
-    resolution: {directory: ../torchsdk, type: directory}
-    peerDependencies:
-      '@solana/web3.js': ^1.98.0
 
   tr46@0.0.3:
     resolution: {integrity: sha512-N3WMsuqV66lT30CrXNbEjx4GEwlow3v6rr4mCcv6prnfwhS01rkgyFdjPNBYd9br7LpXV1+Emh01fHnq2Gdgrw==}
@@ -1722,19 +1711,6 @@ snapshots:
 
   deep-extend@0.6.0: {}
 
-  deeppoolsdk@4.3.1(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@6.0.3)(utf-8-validate@6.0.6):
-    dependencies:
-      '@coral-xyz/anchor': 0.32.1(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)
-      '@solana/spl-token': 0.4.14(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@6.0.3)(utf-8-validate@6.0.6)
-      '@solana/web3.js': 1.98.4(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)
-      bs58: 6.0.0
-    transitivePeerDependencies:
-      - bufferutil
-      - encoding
-      - fastestsmallesttextencoderdecoder
-      - typescript
-      - utf-8-validate
-
   delay@5.0.0: {}
 
   detect-libc@2.1.2: {}
@@ -2162,19 +2138,6 @@ snapshots:
       is-number: 7.0.0
 
   toml@3.0.0: {}
-
-  torchsdk@file:../torchsdk(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6):
-    dependencies:
-      '@coral-xyz/anchor': 0.32.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
-      '@solana/spl-token': 0.4.14(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6)
-      '@solana/web3.js': 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
-      bs58: 6.0.0
-    transitivePeerDependencies:
-      - bufferutil
-      - encoding
-      - fastestsmallesttextencoderdecoder
-      - typescript
-      - utf-8-validate
 
   tr46@0.0.3: {}
 

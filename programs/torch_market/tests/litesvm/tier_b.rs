@@ -31,7 +31,6 @@ fn migrated_token() -> (Env, TokenCtx, solana_sdk::signature::Keypair) {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "dpi removed liquidate's pool-depth gate; main still rejects with PoolTooThin. Port pending."]
 fn liquidation_proceeds_when_pool_thin() {
     let (mut env, t, borrower) = migrated_token();
 
@@ -58,7 +57,6 @@ fn liquidation_proceeds_when_pool_thin() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "dpi closes loan PDA on full repay; main keeps it open. Port pending."]
 fn loan_position_closes_on_full_repay() {
     let (mut env, t, borrower) = migrated_token();
 
@@ -103,7 +101,6 @@ fn loan_position_closes_on_full_repay() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "dpi closes short PDA on full close; main keeps it open. Port pending."]
 fn short_position_closes_on_full_close() {
     // Tier B fix: short_position PDA is closed on full close, rent returned
     // to shorter. Use a bonding-buyer (first_buyer) so they have spare tokens

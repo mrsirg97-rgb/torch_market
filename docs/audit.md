@@ -1,6 +1,43 @@
 # Torch Market Security Audit Summary
 
-**Date:** April 4, 2026 | **Auditor:** Claude Opus 4.6 (Anthropic) + OpenAI o3 (independent review) | **Version:** V10.2.6 Production
+**Date:** May 19, 2026 | **Auditor:** Claude Opus 4.7 (Anthropic) + OpenAI o3 (independent review) + Claude Opus 4.7 (V11.1.0 delta audit) | **Version:** V11.1.0 Production
+
+---
+
+## V11.1.0 Delta Audit (Opus 4.7, May 19 2026)
+
+Audit of the changes between V11.0.0 (production) and V11.1.0 (current head). Three focused agent passes plus cross-cutting review.
+
+**Scope:**
+- `programs/torch_market/src/migration.rs` — `calculate_transfer_fee` now reads the active fee from the mint's `TransferFeeConfig` extension at the current epoch (was constant `TRANSFER_FEE_BPS`); freeze-authority byte read scoped to an inner block so the mint data borrow drops before the `SetAuthority` CPI.
+- `programs/torch_market/src/handlers/admin.rs` + `contexts.rs` + `lib.rs` + `errors.rs` — new `resolve_legacy_vote` admin instruction (`has_one = authority`; constraints `bonding_complete && !vote_finalized && !migrated`). Flips `vote_finalized = true` and `vote_result_return = result` for the single pre-V36 stranded token (used once for TORCHY, retained for completeness).
+- `programs/torch_market/src/contexts.rs::Buy` and `::Sell` — added `constraint = !bonding_curve.reclaimed @ AlreadyReclaimed`. Symmetric: reclaimed tokens are uniformly inaccessible to buy/sell; revival is the only re-funding path.
+- `programs/torch_market/src/handlers/lending.rs` — new `close_account_to(account, destination)` helper. Drains lamports to destination, `resize(0)`, reassigns to system_program. Called from `repay` when `is_full_repay = sol_amount >= total_owed`. The loan_position PDA is now rent-refunded on full payoff (previously zeroed and retained).
+- `programs/torch_market/src/handlers/short.rs::close_short` — same helper reused; short_position PDA rent-refunded on `is_full_close`.
+- `programs/torch_market/src/handlers/lending.rs::liquidate` and `short.rs::liquidate_short` — `require_min_pool_liquidity` call removed. New positions (`borrow`, `open_short`) still gate via `get_depth_max_ltv_bps`. Liquidations now proceed under thin pool conditions; bad debt is the alternative.
+
+**Findings:**
+
+| Severity | Count | Details |
+|----------|-------|---------|
+| Critical | 0 | One initial agent finding (Anchor `Account::exit` re-serialization racing `close_account_to`) ruled out empirically and against source: Anchor 0.32.1 `exit_with_expected_owner` short-circuits when `is_closed(info) = owner == System::id && data.is_empty()`. Our helper sets both before handler return. Litesvm tests confirm. |
+| High | 1 (fixed) | `Buy` was missing the `!reclaimed` constraint. With `Sell !reclaimed` added, the asymmetry let buyers fund a reclaimed (effectively dead) token while sellers were blocked — one-way trap. Closed: matching constraint added to `Buy` context. |
+| Medium | 1 (defensively fixed) | `calculate_transfer_fee` would error `MathOverflow` if a mint lacks the `TransferFeeConfig` extension. Not exploitable in practice (every protocol-created mint has it by construction), but `migration.rs` now treats the missing-extension case as fee=0 rather than aborting. |
+| Low | 5 | (a) `TRANSFER_FEE_BPS = 7` still hard-coded in `math.rs`, `handlers/token.rs`, `kani_proofs.rs` — migration self-heals but other paths drift if the constant ever changes; (b) three failure modes in `calculate_transfer_fee` all map to `MathOverflow` — bad for triage; (c) `resolve_legacy_vote` emits no event — indexer-unfriendly; (d) `require_min_pool_liquidity` (`pool_validation.rs:126`) is dead code post-port; (e) `second_transfer_fee` variable in `migration.rs` is cryptically named, future refactors at risk of breaking the invariant. |
+
+**Behavioral changes worth a paragraph:**
+
+1. **PDA close on full repay/close.** When `repay` zeros out `borrowed_amount + accrued_interest`, the `loan_position` account is closed and rent (~0.0019 SOL) refunded to the borrower. Same for `short_position` on full `close_short`. Anchor's exit hook is a no-op for closed accounts; verified against `account.rs::exit_with_expected_owner` + `common.rs::is_closed`. Litesvm tests (`repay_full_returns_collateral`, `close_short_full`) check the post-close invariant (`get_loan()` / `get_short()` return `None`).
+
+2. **Liquidations bypass the depth gate.** `require_min_pool_liquidity` was previously called on both new positions and liquidations. Now liquidations skip it — if LTV says a position is unhealthy, clearing it is correct even at thin pool (bad debt absorption is bounded; deadlocked positions are worse). New positions still gate via `get_depth_max_ltv_bps` which returns 0 below `MIN_POOL_SOL_LENDING` → `PoolTooThin`. Tested in `tier_b::liquidation_proceeds_when_pool_thin`.
+
+3. **Migration-time fee read from mint.** `calculate_transfer_fee(mint_info, amount)` unpacks the mint's `TransferFeeConfig` and applies `calculate_epoch_fee(current_epoch, amount)`. Result agrees exactly with what Token-2022's `TransferChecked` will charge in the same transaction, fixing the silent fee-mismatch class for legacy mints whose stored fee bps differ from the current constant. Required to unstick TORCHY (10 bps mint, 7 bps constant). Defensive fall-through to 0 for mints without the extension.
+
+4. **Freeze-authority borrow scoped.** Pre-V11.1.0, the freeze-authority byte check held `mint.try_borrow_data()` across the `SetAuthority(FreezeAccount, None)` CPI — `AccountBorrowFailed` for mints with `freeze_authority = Some`. Inner block now drops the borrow before the CPI. Pre-existing latent bug, dormant for V36+ tokens (no freeze authority) and triggered only for legacy mints. Tested via the full TORCHY migration on devnet/mainnet.
+
+5. **New test suite:** Rust litesvm integration tests under `programs/torch_market/tests/litesvm/` — 97 tests across sanity, buy, sell, vault, lending, short, migration, treasury, reclaim, revival, rewards, protocol_treasury, tier_b. Loads Raydium CPMM SBF + mainnet amm_config / fee_receiver / WSOL fixtures. End-to-end migration through Raydium CPI verified. Complements the Python sim, 31 math proptests, and the surfpool e2e suite (62 tests). 3 ignored: 1 dpi-era coverage gate (21 untested error variants), 1 via-vault Anchor constraint in harness code (not program), 1 pool_state offset discrepancy in `swap_fees_to_sol` (litesvm fixture quirk vs mainnet).
+
+**Rating: EXCELLENT — Ready for Mainnet.** The V11.1.0 delta is purely additive (1 new ix) + correctness fixes (PDA close, mint fee read, asymmetric reclaim, liquidate deadlock). No new attack surface. Migrate-handler fix is already deployed (validated by TORCHY clearing). Worth bundling Buy `!reclaimed` + migration defensive fall-through into a V11.1.1 deploy or coordinating with the next planned upgrade.
 
 ---
 
@@ -1070,4 +1107,4 @@ SDK: [github.com/mrsirg97-rgb/torchsdk](https://github.com/mrsirg97-rgb/torchsdk
 
 ---
 
-*Audited by Claude Opus 4.6 (Anthropic). This audit is provided for informational purposes and does not constitute financial or legal advice. Security audits cannot guarantee the absence of all vulnerabilities.*
+*Audited by Claude Opus 4.7 (Anthropic). This audit is provided for informational purposes and does not constitute financial or legal advice. Security audits cannot guarantee the absence of all vulnerabilities.*

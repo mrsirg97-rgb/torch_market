@@ -242,7 +242,6 @@ fn repay_partial() {
 }
 
 #[test]
-#[ignore = "dpi closes loan PDA on full repay; main keeps it. Re-enable when ported."]
 fn repay_full_returns_collateral() {
     let (mut env, t, borrower) = migrated();
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);

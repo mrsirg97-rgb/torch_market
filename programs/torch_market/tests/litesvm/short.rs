@@ -187,18 +187,19 @@ fn close_short_partial() {
 
 #[test]
 fn close_short_full() {
-    // Main's close_short zeroes tokens_borrowed on full close but does NOT
-    // close the position PDA (dpi did — possible future port). Test the
-    // observable invariant instead: full payoff drains debt and returns all
-    // collateral.
+    // Full close refunds collateral and closes the short_position PDA (rent
+    // back to shorter). Uses first_buyer who has spare tokens to cover the
+    // Token-2022 fee on the close-side transfer.
     let (mut env, t, shorter) = migrated();
     env.open_short(&shorter, &t, LAMPORTS_PER_SOL, MIN_SHORT_TOKENS)
         .expect("open");
 
     env.close_short(&shorter, &t, MIN_SHORT_TOKENS * 2)
         .expect("full close");
-    let pos = env.get_short(&t, &shorter.pubkey()).expect("pos still exists on main");
-    assert_eq!(pos.tokens_borrowed, 0);
+    assert!(
+        env.get_short(&t, &shorter.pubkey()).is_none(),
+        "short PDA closed after full close"
+    );
 }
 
 #[test]
@@ -357,10 +358,10 @@ fn liquidate_short_bad_debt() {
 
 #[test]
 fn liquidate_short_proceeds_when_pool_thin() {
-    // dpi removed the pool-depth gate from liquidate_short; main still has it
-    // (rejects with PoolTooThin before reaching the LTV check). When dpi's
-    // depth-gate-removal is ported back, this test should assert
-    // ShortNotLiquidatable like the original.
+    // Depth gate removed from liquidate_short; runs past it and reaches the
+    // LTV check. Draining pool SOL makes the token CHEAPER, which makes the
+    // short MORE healthy → not liquidatable. That's the correct outcome (and
+    // proves we don't reject on PoolTooThin first).
     let (mut env, t, liquidator) = migrated();
     let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
     env.open_short(&shorter, &t, LAMPORTS_PER_SOL, MIN_SHORT_TOKENS)
@@ -368,7 +369,7 @@ fn liquidate_short_proceeds_when_pool_thin() {
     env.poke_pool_sol(&t, 4 * LAMPORTS_PER_SOL);
     expect_err!(
         env.liquidate_short(&liquidator, shorter.pubkey(), &t),
-        TorchMarketError::PoolTooThin
+        TorchMarketError::ShortNotLiquidatable
     );
 }
 

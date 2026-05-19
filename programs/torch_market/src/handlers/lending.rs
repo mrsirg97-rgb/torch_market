@@ -6,10 +6,27 @@ use crate::contexts::*;
 use crate::errors::TorchMarketError;
 use crate::math;
 use crate::pool_validation::{
-    get_depth_max_ltv_bps, is_wsol_vault_0, read_token_account_balance, require_min_pool_liquidity,
-    validate_pool_accounts,
+    get_depth_max_ltv_bps, is_wsol_vault_0, read_token_account_balance, validate_pool_accounts,
 };
 use crate::state::LoanPosition;
+
+// Close a program-owned account: refund its lamports to `destination`, zero
+// out data, reassign to system program. Used to refund rent to borrowers/
+// shorters when their loan/short position is fully settled.
+pub(crate) fn close_account_to<'info>(
+    account: &AccountInfo<'info>,
+    destination: &AccountInfo<'info>,
+) -> Result<()> {
+    let rent = account.lamports();
+    **destination.try_borrow_mut_lamports()? = destination
+        .lamports()
+        .checked_add(rent)
+        .ok_or(TorchMarketError::MathOverflow)?;
+    **account.try_borrow_mut_lamports()? = 0;
+    account.assign(&anchor_lang::solana_program::system_program::ID);
+    account.resize(0)?;
+    Ok(())
+}
 
 // Accrue interest on a loan position. Updates accrued_interest and last_update_slot.
 fn accrue_interest(loan: &mut Account<LoanPosition>, interest_rate_bps: u16) -> Result<()> {
@@ -448,6 +465,13 @@ pub fn repay(ctx: Context<Repay>, sol_amount: u64) -> Result<()> {
         fully_repaid: is_full_repay,
     });
 
+    if is_full_repay {
+        close_account_to(
+            &ctx.accounts.loan_position.to_account_info(),
+            &ctx.accounts.borrower.to_account_info(),
+        )?;
+    }
+
     Ok(())
 }
 
@@ -491,7 +515,9 @@ pub fn liquidate(ctx: Context<Liquidate>) -> Result<()> {
         TorchMarketError::ZeroPoolReserves
     );
 
-    require_min_pool_liquidity(pool_sol)?;
+    // No pool-depth gate on liquidate. If LTV says the position is unhealthy,
+    // liquidating is correct even at thin pool — bad debt is the alternative.
+    // New positions (borrow / open_short) still gate via get_depth_max_ltv_bps.
 
     let collateral_value =
         math::calc_collateral_value(loan.collateral_amount, pool_sol, pool_tokens)

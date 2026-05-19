@@ -446,7 +446,27 @@ The fundamental difference: traditional DeFi lending maximizes capital efficienc
 
 ---
 
-## 11. Conclusion
+## 11. Cascade Survivability (v11.1.0)
+
+Section 9 covers single-position liquidations. The v11.1.0 sim sweep models concurrent failure of N borrowers under a 50% pool crash (`scenario_cascade_survivability` in `sim/torch_sim.py`).
+
+| N requested | Loans opened | Cap-rejected | Total borrowed | Bad debt | Treasury survival |
+|---|---|---|---|---|---|
+| 3 | 3 | 0 | 36.9 SOL | 18.5 SOL | 93.9% |
+| 6 | 6 | 0 | 73.8 SOL | 37.1 SOL | 87.8% |
+| 10 | 10 | 0 | 123.0 SOL | 61.8 SOL | 79.6% |
+| 15 | 11 | 4 | 135.3 SOL | 68.0 SOL | 77.6% |
+| 25 | 11 | 14 | 135.3 SOL | 68.0 SOL | 77.6% |
+
+Reference treasury: 300 SOL. Adding borrowers beyond ~11 has no effect: `DEFAULT_LENDING_UTILIZATION_CAP_BPS = 8000` ⇒ max_lendable = 240 SOL, and the `BORROW_SHARE_MULTIPLIER = 23` per-user cap bounds total exposure at ~135 SOL = 45% of treasury. Even at this saturation point, bad debt is capped at ~68 SOL = 22.7% of treasury.
+
+**Asymptote:** treasury_survival ≥ 77.6% under one worst-case event (50% crash, 100% bad-debt ratio). Total-collapse insolvency (`treasury.sol_balance < treasury.total_sol_lent`) never triggers in single-event scenarios because positions clear cleanly — `total_sol_lent` is decremented by both repaid principal AND written-off bad debt.
+
+**Open economic question (not a protocol bug):** repeated cascades compound. With ~1 SOL of protocol revenue per cycle and ~68 SOL of bad debt in a worst-case cycle, treasury recovery is ~68× slower than degradation. Three consecutive worst-case days drop treasury to ~52% of initial. The protocol's existing protections (depth band + per-user cap + util cap) defend single-event survival; cross-event resilience is a parameter conversation (revenue/loss balance, depth-band tightening).
+
+The v11.1.0 liquidate handler changes (`require_min_pool_liquidity` removed from `liquidate` and `liquidate_short`) **enable** these scenarios — without them, liquidations would deadlock under thin-pool conditions and the same positions would accumulate worse bad debt over time as interest compounds. New-position depth gating remains intact via `get_depth_max_ltv_bps`.
+
+## 12. Conclusion
 
 The depth-anchored risk model creates a lending system where:
 

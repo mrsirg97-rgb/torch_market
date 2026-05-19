@@ -6,7 +6,7 @@ use crate::contexts::*;
 use crate::errors::TorchMarketError;
 use crate::math;
 use crate::pool_validation::{
-    get_depth_max_ltv_bps, is_wsol_vault_0, read_token_account_balance, require_min_pool_liquidity,
+    get_depth_max_ltv_bps, is_wsol_vault_0, read_token_account_balance,
     validate_pool_accounts,
 };
 use crate::state::ShortPosition;
@@ -480,6 +480,13 @@ pub fn close_short(ctx: Context<CloseShort>, token_amount: u64) -> Result<()> {
         fully_closed: is_full_close,
     });
 
+    if is_full_close {
+        crate::handlers::lending::close_account_to(
+            &ctx.accounts.short_position.to_account_info(),
+            &ctx.accounts.shorter.to_account_info(),
+        )?;
+    }
+
     Ok(())
 }
 
@@ -523,7 +530,9 @@ pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
         TorchMarketError::ZeroPoolReserves
     );
 
-    require_min_pool_liquidity(pool_sol)?;
+    // No pool-depth gate on liquidate_short. Liquidation must proceed at thin
+    // pool — see liquidate() in lending.rs for the same reasoning. New shorts
+    // (open_short) still gate via get_depth_max_ltv_bps.
 
     let total_token_debt = position
         .tokens_borrowed

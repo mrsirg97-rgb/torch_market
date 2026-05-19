@@ -1439,6 +1439,195 @@ def scenario_cascade_stress(seed=123):
     return sim
 
 
+def scenario_cascade_survivability(seed=456, n_borrowers=10, treasury_target_sol=300):
+    """Cascade-vs-treasury stress test.
+
+    Opens N borrowers all near the depth-band LTV ceiling, crashes the pool 50%,
+    runs liquidations to completion, and reports the treasury's survival ratio.
+    Goal: find at what cascade size the protocol crosses into insolvency.
+
+    Insolvency definition here: treasury.sol_balance < treasury.total_sol_lent
+    after the cascade — i.e., paper claims exceed liquid SOL.
+    """
+    sim = TorchSim(seed=seed)
+    print("\n" + "=" * 60)
+    print(f"  SCENARIO: Cascade Survivability (N={n_borrowers} borrowers)")
+    print("=" * 60)
+
+    # Bond + migrate via concentrated whales. Bonding alone caps a single buyer
+    # at ~2% wallet, so we rotate buyers until bonding completes, then split the
+    # resulting token pool evenly across all N borrowers so each has collateral.
+    for i in range(n_borrowers + 20):
+        sim.sol_balances[i] = 200 * LAMPORTS_PER_SOL
+    buyer_idx = 0
+    iters = 0
+    while not sim.curve.bonding_complete and iters < 200:
+        iters += 1
+        buyer = buyer_idx % (n_borrowers + 20)
+        if sim._get_sol(buyer) < 10 * LAMPORTS_PER_SOL:
+            buyer_idx += 1
+            continue
+        r = sim.buy(buyer, 10 * LAMPORTS_PER_SOL)
+        if "error" in r:
+            buyer_idx += 1
+        sim.advance(2)
+    sim.migrate()
+
+    # Redistribute ALL bonded tokens evenly across the N borrowers, so each
+    # has collateral. Take from every holder (including the rotating buyers
+    # used during bonding) and split equally.
+    pooled = sum(sim.balances.values())
+    for uid in list(sim.balances.keys()):
+        sim.balances[uid] = 0
+    per_borrower = pooled // n_borrowers
+    for i in range(n_borrowers):
+        sim.balances[i] = per_borrower
+
+    # Grow treasury via organic trading + harvests until target reached.
+    target = treasury_target_sol * LAMPORTS_PER_SOL
+    while sim.treasury.sol_balance < target:
+        if sim.rng.random() < 0.3:
+            lucky = sim.rng.randint(n_borrowers, n_borrowers + 19)
+            sim.sol_balances[lucky] += 2 * LAMPORTS_PER_SOL
+        for _ in range(40):
+            user = sim.rng.randint(n_borrowers, n_borrowers + 19)
+            if sim.rng.random() < 0.5:
+                amt = sim.rng.randint(1, 10) * LAMPORTS_PER_SOL // 10
+                if sim._get_sol(user) >= amt:
+                    sim.pool_buy(user, amt)
+            else:
+                bal = sim._get_balance(user)
+                if bal > 10**TOKEN_DECIMALS:
+                    sim.pool_sell(user, max(10**TOKEN_DECIMALS, bal * sim.rng.randint(1, 5) // 100))
+            sim.advance(30)
+        if sim.transfer_fee_accrued > 0:
+            sim.harvest_and_swap()
+
+    # Snapshot before opening loans
+    treasury_pre_loans = sim.treasury.sol_balance
+    pool_sol_pre = sim.pool.sol_reserves
+    pool_price_pre = sim.pool.price
+
+    # Open max-leverage loans for all N borrowers
+    depth_ltv = get_depth_max_ltv_bps(sim.pool.sol_reserves)
+    print(f"\n  Pre-cascade state:")
+    print(f"    Pool: {pool_sol_pre / LAMPORTS_PER_SOL:.0f} SOL, "
+          f"price {pool_price_pre * 10**TOKEN_DECIMALS:.4f}, "
+          f"depth-LTV {depth_ltv / 100:.0f}%")
+    print(f"    Treasury: {treasury_pre_loans / LAMPORTS_PER_SOL:.2f} SOL")
+
+    loan_count = 0
+    total_borrowed = 0
+    rejected_lending_cap = 0
+    for i in range(n_borrowers):
+        tokens = sim._get_balance(i)
+        if tokens < 1000 * 10**TOKEN_DECIMALS:
+            continue
+        collateral = min(tokens, 5_000_000 * 10**TOKEN_DECIMALS)
+        collateral_value = (collateral * sim.pool.sol_reserves) // sim.pool.token_reserves
+        target_ltv = (depth_ltv * 9500) // 10000
+        borrow_amt = (collateral_value * target_ltv) // 10000
+        net_collateral = collateral - (collateral * TRANSFER_FEE_BPS) // 10000
+        available_sol = max(0, sim.treasury.sol_balance - sim.treasury.short_collateral_sol)
+        max_lendable = (available_sol * LENDING_UTIL_CAP_BPS) // 10000
+        user_cap = (max_lendable * net_collateral * BORROW_SHARE_MULTIPLIER) // TOTAL_SUPPLY
+        borrow_amt = max(MIN_BORROW_AMOUNT, min(borrow_amt, user_cap))
+        result = sim.borrow(i, collateral, borrow_amt)
+        if "error" not in result:
+            loan_count += 1
+            total_borrowed += result["borrowed"]
+        elif "lending cap" in result["error"]:
+            rejected_lending_cap += 1
+
+    treasury_post_loans = sim.treasury.sol_balance
+    print(f"    Loans opened: {loan_count} / {n_borrowers}, "
+          f"total borrowed: {total_borrowed / LAMPORTS_PER_SOL:.2f} SOL")
+    print(f"    Treasury after lending: {treasury_post_loans / LAMPORTS_PER_SOL:.2f} SOL "
+          f"(lent: {sim.treasury.total_sol_lent / LAMPORTS_PER_SOL:.2f}, "
+          f"util: {sim.treasury.total_sol_lent / max(1, treasury_pre_loans) * 100:.1f}%)")
+
+    # Crash: 50% pool token dump
+    crasher = n_borrowers + 100
+    sim.sol_balances[crasher] = 0
+    sim.balances[crasher] = (sim.pool.token_reserves * 50) // 100
+    chunk = sim._get_balance(crasher) // 10
+    for _ in range(10):
+        bal = sim._get_balance(crasher)
+        if bal >= chunk:
+            sim.pool_sell(crasher, chunk)
+        sim.advance(5)
+    sim.advance(EPOCH_DURATION_SLOTS // 4)
+    print(f"    Post-crash price: {sim.pool.price * 10**TOKEN_DECIMALS:.4f} "
+          f"({(1 - sim.pool.price / pool_price_pre) * 100:.1f}% drop)")
+
+    # Cascade liquidate
+    liquidator = n_borrowers + 200
+    sim.sol_balances[liquidator] = 1000 * LAMPORTS_PER_SOL
+    total_bad_debt = 0
+    total_debt_covered = 0
+    total_liquidations = 0
+    rounds = 0
+    while True:
+        rounds += 1
+        liquidated = 0
+        for borrower_id in list(sim.loans.keys()):
+            loan = sim.loans[borrower_id]
+            sim._accrue_loan_interest(loan)
+            if sim._loan_ltv_bps(loan) > DEFAULT_LIQ_THRESHOLD:
+                try:
+                    r = sim.liquidate_long(liquidator, borrower_id)
+                    if "error" not in r:
+                        liquidated += 1
+                        total_liquidations += 1
+                        total_bad_debt += r["bad_debt"]
+                        total_debt_covered += r["debt_covered"]
+                        seized = sim._get_balance(liquidator)
+                        if seized > 100 * 10**TOKEN_DECIMALS:
+                            sim.pool_sell(liquidator, seized)
+                except Exception:
+                    pass
+            sim.advance(1)
+        if liquidated == 0 or rounds > 20:
+            break
+
+    treasury_after = sim.treasury.sol_balance
+    lent_after = sim.treasury.total_sol_lent
+    survival_ratio = treasury_after / treasury_pre_loans if treasury_pre_loans else 0
+    insolvent = treasury_after < lent_after
+    remaining_loans = len(sim.loans)
+    stuck_debt = sum(l.borrowed_sol + l.accrued_interest for l in sim.loans.values())
+
+    print(f"\n  Cascade results:")
+    print(f"    Rounds: {rounds}, liquidations: {total_liquidations}")
+    print(f"    Debt covered: {total_debt_covered / LAMPORTS_PER_SOL:.2f} SOL")
+    print(f"    Bad debt: {total_bad_debt / LAMPORTS_PER_SOL:.4f} SOL "
+          f"({total_bad_debt / max(1, total_debt_covered) * 100:.1f}% of covered)")
+    print(f"    Treasury: {treasury_pre_loans / LAMPORTS_PER_SOL:.2f} → "
+          f"{treasury_after / LAMPORTS_PER_SOL:.2f} SOL "
+          f"({(treasury_after - treasury_pre_loans) / LAMPORTS_PER_SOL:+.2f}, "
+          f"survival {survival_ratio * 100:.1f}%)")
+    print(f"    Paper claims (total_sol_lent): {lent_after / LAMPORTS_PER_SOL:.4f} SOL")
+    print(f"    Stuck underwater loans: {remaining_loans} "
+          f"(debt: {stuck_debt / LAMPORTS_PER_SOL:.4f} SOL)")
+    print(f"    Insolvent (balance < lent): {'YES' if insolvent else 'no'}")
+    if rejected_lending_cap > 0:
+        print(f"    [protocol defense] {rejected_lending_cap} additional borrows "
+              f"rejected by lending cap before crash")
+
+    return {
+        "n_requested": n_borrowers,
+        "loans_opened": loan_count,
+        "rejected_by_cap": rejected_lending_cap,
+        "treasury_pre": treasury_pre_loans,
+        "treasury_post": treasury_after,
+        "total_borrowed": total_borrowed,
+        "bad_debt": total_bad_debt,
+        "survival_pct": survival_ratio * 100,
+        "insolvent": insolvent,
+        "sim": sim,
+    }
+
+
 def scenario_sandwich_attack(seed=777):
     """Simulate sandwich attack on a large borrow."""
     sim = TorchSim(seed=seed)
@@ -1532,6 +1721,22 @@ if __name__ == "__main__":
     sim1 = scenario_full_lifecycle()
     sim2 = scenario_cascade_stress()
     sim3 = scenario_sandwich_attack()
+    # Sweep cascade size — does the depth band protect treasury at scale?
+    print("\n" + "=" * 60)
+    print("  Cascade Survivability Sweep")
+    print("=" * 60)
+    results = [scenario_cascade_survivability(n_borrowers=n) for n in [3, 6, 10, 15, 25]]
+
+    print("\n" + "=" * 60)
+    print("  SURVIVABILITY SUMMARY")
+    print("=" * 60)
+    print(f"  {'N':>4}  {'opened':>7}  {'cap-reject':>11}  {'borrowed':>10}  {'bad debt':>10}  {'survival':>9}")
+    for r in results:
+        print(f"  {r['n_requested']:>4}  {r['loans_opened']:>7}  "
+              f"{r['rejected_by_cap']:>11}  "
+              f"{r['total_borrowed'] / LAMPORTS_PER_SOL:>9.1f}S  "
+              f"{r['bad_debt'] / LAMPORTS_PER_SOL:>9.1f}S  "
+              f"{r['survival_pct']:>8.1f}%")
 
     print("\n\n" + "=" * 60)
     print("  ALL SCENARIOS COMPLETE")

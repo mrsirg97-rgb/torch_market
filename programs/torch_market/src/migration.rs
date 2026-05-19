@@ -38,13 +38,17 @@ pub fn order_tokens_for_raydium(wsol_mint: &Pubkey, token_mint: &Pubkey) -> (Pub
 // different values (10 → 4 → 7), so the on-chain rate per mint can drift from
 // the current constant. Reading from the mint keeps the math agreeing with
 // what Token-2022 will actually charge at TransferChecked time.
+//
+// Tokens minted via this protocol always have the extension, but a mint
+// without one is harmless to migrate — treat it as fee=0 rather than aborting.
 fn calculate_transfer_fee(mint_info: &AccountInfo, amount: u64) -> Result<u64> {
     let data = mint_info.try_borrow_data()?;
-    let state = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&data)
-        .map_err(|_| TorchMarketError::MathOverflow)?;
-    let fee_config = state
-        .get_extension::<TransferFeeConfig>()
-        .map_err(|_| TorchMarketError::MathOverflow)?;
+    let Ok(state) = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&data) else {
+        return Ok(0);
+    };
+    let Ok(fee_config) = state.get_extension::<TransferFeeConfig>() else {
+        return Ok(0);
+    };
     let epoch = Clock::get()?.epoch;
     fee_config
         .calculate_epoch_fee(epoch, amount)

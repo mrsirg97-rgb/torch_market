@@ -178,7 +178,8 @@ pub struct Buy<'info> {
         mut,
         seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
         bump = bonding_curve.bump,
-        constraint = !bonding_curve.bonding_complete @ TorchMarketError::BondingComplete
+        constraint = !bonding_curve.bonding_complete @ TorchMarketError::BondingComplete,
+        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
     )]
     pub bonding_curve: Box<Account<'info, BondingCurve>>,
     #[account(

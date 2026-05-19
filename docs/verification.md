@@ -15,9 +15,15 @@ This is **not** a security audit. It proves the arithmetic is correct, but does 
 torch_market's core arithmetic has been formally verified using [Kani](https://model-checking.github.io/kani/), a Rust model checker backed by the CBMC bounded model checker. Kani exhaustively proves properties hold for **all** valid inputs within constrained ranges -- not just sampled test cases.
 
 **Tool:** Kani Rust Verifier 0.67.0 / CBMC 6.8.0
-**Target:** `torch_market` v10.2.6
-**Harnesses:** 71 proof harnesses, all passing
+**Target:** `torch_market` v11.1.0
+**Harnesses:** 71 proof harnesses, all passing (count unchanged from v11.0.1 — v11.1.0 changes are in handler glue and account constraints, not `math.rs`)
 **Source:** `programs/torch_market/src/kani_proofs.rs`
+
+**Complementary suites:**
+- 97 LiteSVM integration tests (`programs/torch_market/tests/litesvm/`) — loads Raydium CPMM SBF + mainnet amm_config / fee_receiver / WSOL fixtures, exercises end-to-end migration + lending + shorts + liquidations
+- 31 property-based tests via `proptest` (`programs/torch_market/tests/math_proptests.rs`)
+- 62 surfpool e2e tests (`packages/sdk/tests/test_e2e.ts`) — mainnet-forked, simulates real RPC + Raydium pool init
+- 1538-line Python economic sim (`sim/torch_sim.py`) — cascade survivability, sandwich attacks, full lifecycle
 
 ## What Is Formally Verified
 

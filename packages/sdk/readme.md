@@ -20,12 +20,7 @@ Peer dependency: `@solana/web3.js ^1.98.0`
 3. Sign and send   →  your wallet / keypair
 ```
 
-The SDK is VersionedTransaction-native. All transaction builders return v0 transactions compressed with Address Lookup Tables for smaller tx sizes and more headroom.
-
-| Network | ALT Address |
-|---------|-------------|
-| Mainnet | `GQzbU32oN3znZa3uWFKGc9cBukpQbYYJSirKstMuFF3i` |
-| Devnet | `3umSStZSLJNk5QstxeQB12a2MSDh4o8RgSzT76gigJ8P` |
+All transaction builders return VersionedTransactions (v0 message format).
 
 Quotes work across both bonding curve and DEX — the `source` field tells you which. Pass the quote into the transaction builder and the SDK handles routing and slippage protection automatically.
 
@@ -47,7 +42,7 @@ const { transaction } = await buildBuyTransaction(connection, {
   vault: vaultCreator,
   quote, // drives routing + slippage protection
 });
-// sign and send — VersionedTransaction, ALT-compressed
+// sign and send
 ```
 
 ## Torch Vault
@@ -84,6 +79,9 @@ Seven guarantees: full custody, closed economic loop, authority separation, one 
 | `getVault(connection, creator)` | Vault state |
 | `getVaultForWallet(connection, wallet)` | Reverse lookup — find vault by linked wallet |
 | `getVaultWalletLink(connection, wallet)` | Link state for a wallet |
+| `getUserStats(connection, wallet)` | Per-user trading volume + rewards-claimed history |
+| `getProtocolTreasuryState(connection)` | Protocol treasury epoch state + aggregate volumes + distributable amount |
+| `getTreasuryState(connection, mint)` | Per-token treasury state — SOL balance, tokens held, baseline pool reserves at migration, stars |
 
 ### Quotes
 
@@ -123,7 +121,9 @@ All builders return `{ transaction: VersionedTransaction, message: string }`.
 
 ### Lending (post-migration)
 
-Treasury-backed margin lending. Borrow SOL against token collateral. Depth-adaptive max LTV (25-50% based on pool SOL depth), 65% liquidation threshold, 2% interest per epoch. Deeper pools permit higher leverage — the pool itself is the risk engine. No oracles, no stored baseline.
+Treasury-backed margin lending. Borrow SOL against token collateral. Depth-adaptive max LTV (25-50% based on pool SOL depth), 65% liquidation threshold, 2% interest per epoch (simple-linear accrual). Deeper pools permit higher leverage — the pool itself is the risk engine. No oracles, no stored baseline.
+
+Interest is only written on-chain when an instruction touches the position, but off-chain readers (`getLoanPosition`, `getShortPosition`, `getAllLoanPositions`) project it forward to the current slot using the exact on-chain formula. That means liquidation scanners see accurate `health` / `current_ltv_bps` immediately — no need to poke the loan first. Raw stored values are preserved in `accrued_interest_stored` and `last_update_slot` for callers who need the instant-of-signing amount.
 
 | Function | Description |
 |----------|-------------|
@@ -147,8 +147,9 @@ Borrow real tokens from the 300M treasury lock, sell on the market, buy back to 
 
 | Function | Description |
 |----------|-------------|
-| `buildHarvestFeesTransaction(connection, params)` | Harvest Token-2022 transfer fees (0.04%) into treasury |
+| `buildHarvestFeesTransaction(connection, params)` | Harvest Token-2022 transfer fees (0.07%) into treasury |
 | `buildSwapFeesToSolTransaction(connection, params)` | Swap harvested tokens to SOL via Raydium |
+| `buildAdvanceProtocolEpochTransaction(connection, params)` | Advance protocol epoch so previous-epoch trading rewards become claimable |
 | `buildReclaimFailedTokenTransaction(connection, params)` | Reclaim tokens inactive 7+ days |
 
 ### SAID Protocol
@@ -157,18 +158,6 @@ Borrow real tokens from the 300M treasury lock, sell on the market, buy back to 
 |----------|-------------|
 | `verifySaid(wallet)` | Check verification status and trust tier |
 | `confirmTransaction(connection, sig, wallet)` | Report tx for reputation tracking |
-
-### Anchor Events (v11.1.0)
-
-`repay` and `close_short` now close the position PDA and refund rent on full payoff. Surface the close to the UI by parsing the emitted Anchor event after the tx confirms.
-
-| Function | Description |
-|----------|-------------|
-| `parseLoanRepaidEvents(tx)` | `LoanRepaidEvent[]` — read `fully_repaid: boolean` to detect full close + rent refund |
-| `parseShortClosedEvents(tx)` | `ShortClosedEvent[]` — read `fully_closed: boolean` for the same on shorts |
-| `parseEvents<T>(tx, eventName)` | Generic parser for any Anchor event in the IDL (`LoanLiquidated`, `ShortLiquidated`, `VaultSwapExecuted`, etc.) |
-
-When `fully_repaid` / `fully_closed` is `true`, drop the position from the UI entirely (`getLoanPosition` / `getShortPosition` will return `None`). The event payload also carries `sol_repaid` / `collateral_returned` / `tokens_returned` for the receipt view.
 
 ## Network Configuration
 
