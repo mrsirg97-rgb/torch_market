@@ -1,6 +1,6 @@
 # torch.market
 
-ProgramID: 8hbUkonssSEEtkqzwM7ZcZrD9evacM92TcWSooVF4BeT
+ProgramID: 4nwTCWyR6vapTQRkV39f32xJ3uQztdjBqfhubnR6wQQC
 
 **NOTE - this is torch.market 20.0.0 next, not live in production, utilizing deep_pool**
 
@@ -32,9 +32,3 @@ python3 sim/torch_sim.py
 ```
 
 Brightside Solutions, 2026
-
-solana program deploy ./target/deploy/torch_market.so --program-id ./keys/program.json --keypair ./keys/mainnet-deploy-wallet.json --url http://localhost:8899
-
-PAYER_KEYPAIR=/Users/mrbrightside/Projects/torch_market/keys/mainnet-deploy-wallet.json npx tsx scripts/bootstrap_global_config.ts 
-
-solana program deploy ./target/deploy/torch_market.so --program-id ./keys/program.json --url devnet
