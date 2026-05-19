@@ -162,10 +162,6 @@ pub mod torch_market {
         handlers::swap::vault_swap(ctx, amount_in, minimum_amount_out, is_buy)
     }
 
-    pub fn enable_short_selling(ctx: Context<EnableShortSelling>) -> Result<()> {
-        handlers::short::enable_short_selling(ctx)
-    }
-
     pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
         handlers::short::open_short(ctx, args)
     }

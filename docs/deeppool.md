@@ -39,7 +39,7 @@ Replace Raydium CPMM as Torch's liquidity layer with DeepPool. This removes the 
 | `migration.rs` | 400+ lines: WSOL wrap, Raydium pool create CPI, LP mint, LP burn, authority revoke, baseline capture | ~100 lines: DeepPool `create_pool` CPI, burn LP tokens, revoke authorities, record baseline |
 | `handlers/treasury.rs` (`swap_fees_to_sol`) | Raydium swap CPI with WSOL unwrap, fee subtraction, ratio gating | DeepPool `swap` CPI (sell tokens for SOL), ratio gating |
 | `handlers/swap.rs` (vault swap) | Raydium swap CPI with WSOL wrap/unwrap | DeepPool `swap` CPI — native SOL, no wrapping |
-| `pool_validation.rs` | 210 lines: Raydium PDA derivation, raw byte parsing, pool validation | ~40 lines: DeepPool PDA derivation, `get_depth_max_ltv_bps`, `require_min_pool_liquidity` |
+| `pool_validation.rs` | 210 lines: Raydium PDA derivation, raw byte parsing, pool validation | ~30 lines: DeepPool PDA derivation + `get_depth_max_ltv_bps` |
 | `contexts.rs` | Raydium accounts in 6+ contexts (migrate, swap, borrow, liquidate, short, treasury) | DeepPool pool PDA + vault in same contexts, far fewer accounts |
 
 ### Simplified

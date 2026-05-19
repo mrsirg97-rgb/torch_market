@@ -122,6 +122,7 @@ pub fn unlink_wallet(ctx: Context<UnlinkWallet>) -> Result<()> {
 pub fn transfer_authority(ctx: Context<TransferVaultAuthority>) -> Result<()> {
     let vault = &mut ctx.accounts.vault;
     vault.authority = ctx.accounts.new_authority.key();
+
     Ok(())
 }
 

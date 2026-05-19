@@ -5,9 +5,8 @@ use crate::constants::*;
 use crate::contexts::*;
 use crate::errors::TorchMarketError;
 use crate::math;
-use crate::pool_validation::{
-    get_depth_max_ltv_bps, read_deep_pool_reserves, require_min_pool_liquidity,
-};
+use crate::handlers::lending::close_account_to;
+use crate::pool_validation::{get_depth_max_ltv_bps, read_deep_pool_reserves};
 use crate::state::{ShortConfig, ShortPosition, Treasury};
 
 // ============================================================================
@@ -200,29 +199,6 @@ fn apply_interest_first_close(
         position.tokens_borrowed = 0;
     }
     Ok((interest_paid, principal_paid))
-}
-
-// ============================================================================
-// enable_short_selling (admin, no vault variant)
-// ============================================================================
-
-pub fn enable_short_selling(ctx: Context<EnableShortSelling>) -> Result<()> {
-    let treasury = &mut ctx.accounts.treasury;
-    treasury.short_collateral_reserved = 0;
-    treasury.short_selling_enabled = true;
-
-    let short_config = &mut ctx.accounts.short_config;
-    short_config.mint = ctx.accounts.mint.key();
-    short_config.total_tokens_lent = 0;
-    short_config.active_positions = 0;
-    short_config.total_interest_collected = 0;
-    short_config.bump = ctx.bumps.short_config;
-
-    emit!(ShortSellingEnabled {
-        mint: ctx.accounts.mint.key(),
-        authority: ctx.accounts.authority.key(),
-    });
-    Ok(())
 }
 
 // ============================================================================
@@ -493,16 +469,23 @@ pub fn close_short(ctx: Context<CloseShort>, token_amount: u64) -> Result<()> {
             .ok_or(TorchMarketError::MathOverflow)?;
         treasury.short_collateral_reserved = treasury
             .short_collateral_reserved
-            .saturating_sub(sol_returned);
+            .checked_sub(sol_returned)
+            .ok_or(TorchMarketError::MathOverflow)?;
     }
     let short_config = &mut ctx.accounts.short_config;
-    short_config.total_tokens_lent = short_config.total_tokens_lent.saturating_sub(principal_paid);
+    short_config.total_tokens_lent = short_config
+        .total_tokens_lent
+        .checked_sub(principal_paid)
+        .ok_or(TorchMarketError::MathOverflow)?;
     short_config.total_interest_collected = short_config
         .total_interest_collected
         .checked_add(interest_paid)
         .ok_or(TorchMarketError::MathOverflow)?;
     if is_full_close {
-        short_config.active_positions = short_config.active_positions.saturating_sub(1);
+        short_config.active_positions = short_config
+            .active_positions
+            .checked_sub(1)
+            .ok_or(TorchMarketError::MathOverflow)?;
     }
 
     emit!(ShortClosed {
@@ -513,6 +496,12 @@ pub fn close_short(ctx: Context<CloseShort>, token_amount: u64) -> Result<()> {
         sol_returned,
         fully_closed: is_full_close,
     });
+    if is_full_close {
+        close_account_to(
+            &ctx.accounts.short_position.to_account_info(),
+            &ctx.accounts.shorter.to_account_info(),
+        )?;
+    }
     Ok(())
 }
 
@@ -588,16 +577,23 @@ pub fn close_short_via_vault(
             .ok_or(TorchMarketError::MathOverflow)?;
         treasury.short_collateral_reserved = treasury
             .short_collateral_reserved
-            .saturating_sub(sol_returned);
+            .checked_sub(sol_returned)
+            .ok_or(TorchMarketError::MathOverflow)?;
     }
     let short_config = &mut ctx.accounts.short_config;
-    short_config.total_tokens_lent = short_config.total_tokens_lent.saturating_sub(principal_paid);
+    short_config.total_tokens_lent = short_config
+        .total_tokens_lent
+        .checked_sub(principal_paid)
+        .ok_or(TorchMarketError::MathOverflow)?;
     short_config.total_interest_collected = short_config
         .total_interest_collected
         .checked_add(interest_paid)
         .ok_or(TorchMarketError::MathOverflow)?;
     if is_full_close {
-        short_config.active_positions = short_config.active_positions.saturating_sub(1);
+        short_config.active_positions = short_config
+            .active_positions
+            .checked_sub(1)
+            .ok_or(TorchMarketError::MathOverflow)?;
     }
 
     emit!(ShortClosed {
@@ -608,6 +604,12 @@ pub fn close_short_via_vault(
         sol_returned,
         fully_closed: is_full_close,
     });
+    if is_full_close {
+        close_account_to(
+            &ctx.accounts.short_position.to_account_info(),
+            &ctx.accounts.shorter.to_account_info(),
+        )?;
+    }
     Ok(())
 }
 
@@ -661,11 +663,17 @@ fn compute_short_liquidation(
     } else {
         tokens_to_cover
     };
-    let bad_debt_tokens = total_token_debt.saturating_sub(
-        actual_tokens_covered
-            .checked_add(total_token_debt.saturating_sub(tokens_to_cover))
-            .ok_or(TorchMarketError::MathOverflow)?,
-    );
+    let bad_debt_tokens = total_token_debt
+        .checked_sub(
+            actual_tokens_covered
+                .checked_add(
+                    total_token_debt
+                        .checked_sub(tokens_to_cover)
+                        .ok_or(TorchMarketError::MathOverflow)?,
+                )
+                .ok_or(TorchMarketError::MathOverflow)?,
+        )
+        .ok_or(TorchMarketError::MathOverflow)?;
     Ok(ShortLiquidationComputed {
         actual_tokens_covered,
         actual_sol_seized,
@@ -681,7 +689,8 @@ fn apply_short_liquidation_position_updates(
     let interest_paid = if tokens_paid <= position.accrued_interest {
         position.accrued_interest = position
             .accrued_interest
-            .saturating_sub(tokens_paid);
+            .checked_sub(tokens_paid)
+            .ok_or(TorchMarketError::MathOverflow)?;
         tokens_paid
     } else {
         let ip = position.accrued_interest;
@@ -689,16 +698,19 @@ fn apply_short_liquidation_position_updates(
         position.accrued_interest = 0;
         position.tokens_borrowed = position
             .tokens_borrowed
-            .saturating_sub(principal_paid);
+            .checked_sub(principal_paid)
+            .ok_or(TorchMarketError::MathOverflow)?;
         ip
     };
     position.sol_collateral = position
         .sol_collateral
-        .saturating_sub(computed.actual_sol_seized);
+        .checked_sub(computed.actual_sol_seized)
+        .ok_or(TorchMarketError::MathOverflow)?;
     if computed.bad_debt_tokens > 0 {
         position.tokens_borrowed = position
             .tokens_borrowed
-            .saturating_sub(computed.bad_debt_tokens);
+            .checked_sub(computed.bad_debt_tokens)
+            .ok_or(TorchMarketError::MathOverflow)?;
         position.accrued_interest = 0;
     }
     Ok(interest_paid)
@@ -712,20 +724,29 @@ fn apply_short_liquidation_aggregate_updates(
     interest_paid: u64,
     fully_liquidated: bool,
 ) -> Result<()> {
-    treasury.sol_balance = treasury.sol_balance.saturating_sub(computed.actual_sol_seized);
+    treasury.sol_balance = treasury
+        .sol_balance
+        .checked_sub(computed.actual_sol_seized)
+        .ok_or(TorchMarketError::MathOverflow)?;
     treasury.short_collateral_reserved = treasury
         .short_collateral_reserved
-        .saturating_sub(computed.actual_sol_seized);
+        .checked_sub(computed.actual_sol_seized)
+        .ok_or(TorchMarketError::MathOverflow)?;
     short_config.total_tokens_lent = short_config
         .total_tokens_lent
-        .saturating_sub(computed.actual_tokens_covered)
-        .saturating_sub(computed.bad_debt_tokens);
+        .checked_sub(computed.actual_tokens_covered)
+        .ok_or(TorchMarketError::MathOverflow)?
+        .checked_sub(computed.bad_debt_tokens)
+        .ok_or(TorchMarketError::MathOverflow)?;
     short_config.total_interest_collected = short_config
         .total_interest_collected
         .checked_add(interest_paid)
         .ok_or(TorchMarketError::MathOverflow)?;
     if fully_liquidated {
-        short_config.active_positions = short_config.active_positions.saturating_sub(1);
+        short_config.active_positions = short_config
+            .active_positions
+            .checked_sub(1)
+            .ok_or(TorchMarketError::MathOverflow)?;
     }
     Ok(())
 }
@@ -742,7 +763,7 @@ pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
         pool_sol > 0 && pool_tokens > 0,
         TorchMarketError::ZeroPoolReserves
     );
-    require_min_pool_liquidity(pool_sol)?;
+    // No depth gate on liquidation. See lending::liquidate for rationale.
 
     let computed = compute_short_liquidation(
         &ctx.accounts.short_position,
@@ -797,6 +818,12 @@ pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
         sol_seized: computed.actual_sol_seized,
         bad_debt_tokens: computed.bad_debt_tokens,
     });
+    if fully_liquidated {
+        close_account_to(
+            &ctx.accounts.short_position.to_account_info(),
+            &ctx.accounts.borrower.to_account_info(),
+        )?;
+    }
     Ok(())
 }
 
@@ -812,7 +839,7 @@ pub fn liquidate_short_via_vault(ctx: Context<LiquidateShortViaVault>) -> Result
         pool_sol > 0 && pool_tokens > 0,
         TorchMarketError::ZeroPoolReserves
     );
-    require_min_pool_liquidity(pool_sol)?;
+    // No depth gate on liquidation. See lending::liquidate for rationale.
 
     let computed = compute_short_liquidation(
         &ctx.accounts.short_position,
@@ -881,18 +908,18 @@ pub fn liquidate_short_via_vault(ctx: Context<LiquidateShortViaVault>) -> Result
         sol_seized: computed.actual_sol_seized,
         bad_debt_tokens: computed.bad_debt_tokens,
     });
+    if fully_liquidated {
+        close_account_to(
+            &ctx.accounts.short_position.to_account_info(),
+            &ctx.accounts.borrower.to_account_info(),
+        )?;
+    }
     Ok(())
 }
 
 // ============================================================================
 // Events
 // ============================================================================
-
-#[event]
-pub struct ShortSellingEnabled {
-    pub mint: Pubkey,
-    pub authority: Pubkey,
-}
 
 #[event]
 pub struct ShortOpened {

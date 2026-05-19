@@ -13,7 +13,7 @@ use crate::pool_validation::{
     derive_deep_pool_vault, derive_torch_config,
 };
 use crate::state::*;
-use crate::token_2022_utils::TOKEN_2022_PROGRAM_ID;
+use crate::token_2022_utils::{get_associated_token_address_2022, TOKEN_2022_PROGRAM_ID};
 
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct CreateTokenArgs {
@@ -89,7 +89,6 @@ pub struct CreateToken2022<'info> {
     #[account(
         seeds = [GLOBAL_CONFIG_SEED],
         bump = global_config.bump,
-        constraint = !global_config.paused @ TorchMarketError::ProtocolPaused
     )]
     pub global_config: Account<'info, GlobalConfig>,
     /// CHECK: Token-2022 mint - initialized manually
@@ -145,7 +144,6 @@ pub struct Buy<'info> {
     #[account(
         seeds = [GLOBAL_CONFIG_SEED],
         bump = global_config.bump,
-        constraint = !global_config.paused @ TorchMarketError::ProtocolPaused,
         constraint = args.sol_amount >= MIN_SOL_AMOUNT @ TorchMarketError::AmountTooSmall,
     )]
     pub global_config: Box<Account<'info, GlobalConfig>>,
@@ -236,7 +234,6 @@ pub struct BuyViaVault<'info> {
     #[account(
         seeds = [GLOBAL_CONFIG_SEED],
         bump = global_config.bump,
-        constraint = !global_config.paused @ TorchMarketError::ProtocolPaused,
         constraint = args.sol_amount >= MIN_SOL_AMOUNT @ TorchMarketError::AmountTooSmall,
     )]
     pub global_config: Box<Account<'info, GlobalConfig>>,
@@ -339,6 +336,7 @@ pub struct Sell<'info> {
         seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
         bump = bonding_curve.bump,
         constraint = !bonding_curve.bonding_complete @ TorchMarketError::BondingComplete,
+        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
         constraint = args.token_amount > 0 @ TorchMarketError::ZeroAmount,
     )]
     pub bonding_curve: Box<Account<'info, BondingCurve>>,
@@ -396,6 +394,7 @@ pub struct SellViaVault<'info> {
         seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
         bump = bonding_curve.bump,
         constraint = !bonding_curve.bonding_complete @ TorchMarketError::BondingComplete,
+        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
         constraint = args.token_amount > 0 @ TorchMarketError::ZeroAmount,
     )]
     pub bonding_curve: Box<Account<'info, BondingCurve>>,
@@ -822,11 +821,20 @@ pub struct MigrateToDex<'info> {
     /// CHECK: DeepPool LP mint PDA — will be initialized by create_pool CPI
     #[account(mut, address = derive_deep_pool_lp_mint(&deep_pool.key()) @ TorchMarketError::InvalidPoolAccount)]
     pub deep_pool_lp_mint: AccountInfo<'info>,
-    /// CHECK: Payer's LP ATA — receives LP tokens from create_pool, then burned
-    #[account(mut)]
+    /// CHECK: Payer's LP ATA — receives LP tokens from create_pool, then burned.
+    /// Address-constrained to the canonical Token-2022 ATA(payer, deep_pool_lp_mint)
+    /// so a malformed account fails at constraint time instead of inside the CPI.
+    #[account(
+        mut,
+        address = get_associated_token_address_2022(&payer.key(), &deep_pool_lp_mint.key()) @ TorchMarketError::InvalidPoolAccount,
+    )]
     pub payer_lp_account: AccountInfo<'info>,
-    /// CHECK: DeepPool pool PDA's LP ATA — receives locked LP from create_pool
-    #[account(mut)]
+    /// CHECK: DeepPool pool PDA's LP ATA — receives locked LP from create_pool.
+    /// Address-constrained to the canonical Token-2022 ATA(deep_pool, deep_pool_lp_mint).
+    #[account(
+        mut,
+        address = get_associated_token_address_2022(&deep_pool.key(), &deep_pool_lp_mint.key()) @ TorchMarketError::InvalidPoolAccount,
+    )]
     pub deep_pool_lp_account: AccountInfo<'info>,
     /// CHECK: DeepPool event_authority PDA — required by deep_pool's #[event_cpi]
     #[account(address = derive_deep_pool_event_authority() @ TorchMarketError::InvalidPoolAccount)]
@@ -1377,43 +1385,6 @@ pub struct VaultSwap<'info> {
     #[account(address = TOKEN_2022_PROGRAM_ID)]
     pub token_2022_program: AccountInfo<'info>,
     pub associated_token_program: Program<'info, AssociatedToken>,
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct EnableShortSelling<'info> {
-    #[account(mut)]
-    pub authority: Signer<'info>,
-    #[account(
-        seeds = [GLOBAL_CONFIG_SEED],
-        bump = global_config.bump,
-        constraint = global_config.authority == authority.key() @ TorchMarketError::Unauthorized,
-    )]
-    pub global_config: Box<Account<'info, GlobalConfig>>,
-    /// CHECK: Mint account for PDA derivation
-    pub mint: AccountInfo<'info>,
-    #[account(
-        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
-        bump = bonding_curve.bump,
-        constraint = bonding_curve.migrated @ TorchMarketError::NotMigrated,
-    )]
-    pub bonding_curve: Box<Account<'info, BondingCurve>>,
-    #[account(
-        mut,
-        seeds = [TREASURY_SEED, mint.key().as_ref()],
-        bump = treasury.bump,
-        constraint = treasury.lending_enabled @ TorchMarketError::LendingNotEnabled,
-        constraint = !treasury.short_selling_enabled @ TorchMarketError::ShortAlreadyEnabled,
-    )]
-    pub treasury: Box<Account<'info, Treasury>>,
-    #[account(
-        init,
-        payer = authority,
-        space = ShortConfig::LEN,
-        seeds = [SHORT_CONFIG_SEED, mint.key().as_ref()],
-        bump,
-    )]
-    pub short_config: Box<Account<'info, ShortConfig>>,
     pub system_program: Program<'info, System>,
 }
 

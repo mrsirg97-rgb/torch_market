@@ -5,9 +5,7 @@ use crate::constants::*;
 use crate::contexts::*;
 use crate::errors::TorchMarketError;
 use crate::math;
-use crate::pool_validation::{
-    get_depth_max_ltv_bps, read_deep_pool_reserves, require_min_pool_liquidity,
-};
+use crate::pool_validation::{get_depth_max_ltv_bps, read_deep_pool_reserves};
 use crate::state::{LoanPosition, Treasury};
 
 // ============================================================================
@@ -80,7 +78,10 @@ fn check_borrow_caps(
     } else {
         0
     };
-    let available_sol = treasury.sol_balance.saturating_sub(short_reserved);
+    let available_sol = treasury
+        .sol_balance
+        .checked_sub(short_reserved)
+        .ok_or(TorchMarketError::MathOverflow)?;
     let max_lendable = (available_sol as u128)
         .checked_mul(treasury.lending_utilization_cap_bps as u128)
         .ok_or(TorchMarketError::MathOverflow)?
@@ -104,6 +105,24 @@ fn check_borrow_caps(
         user_total_borrowed <= max_user_borrow,
         TorchMarketError::UserBorrowCapExceeded
     );
+    Ok(())
+}
+
+// Close a program-owned account: refund its lamports to `destination`, zero
+// out data, reassign to system program. Used to refund rent to borrowers/
+// shorters when their loan/short position is fully settled.
+pub(crate) fn close_account_to<'info>(
+    account: &AccountInfo<'info>,
+    destination: &AccountInfo<'info>,
+) -> Result<()> {
+    let rent = account.lamports();
+    **destination.try_borrow_mut_lamports()? = destination
+        .lamports()
+        .checked_add(rent)
+        .ok_or(TorchMarketError::MathOverflow)?;
+    **account.try_borrow_mut_lamports()? = 0;
+    account.assign(&anchor_lang::solana_program::system_program::ID);
+    account.resize(0)?;
     Ok(())
 }
 
@@ -463,7 +482,10 @@ pub fn repay(ctx: Context<Repay>, sol_amount: u64) -> Result<()> {
         apply_interest_first_repay(&mut ctx.accounts.loan_position, actual_repay, is_full_repay)?;
 
     let treasury = &mut ctx.accounts.treasury;
-    treasury.total_sol_lent = treasury.total_sol_lent.saturating_sub(principal_paid);
+    treasury.total_sol_lent = treasury
+        .total_sol_lent
+        .checked_sub(principal_paid)
+        .ok_or(TorchMarketError::MathOverflow)?;
     treasury.sol_balance = treasury
         .sol_balance
         .checked_add(actual_repay)
@@ -473,10 +495,14 @@ pub fn repay(ctx: Context<Repay>, sol_amount: u64) -> Result<()> {
         .checked_add(interest_paid)
         .ok_or(TorchMarketError::MathOverflow)?;
     if is_full_repay {
-        treasury.active_loans = treasury.active_loans.saturating_sub(1);
+        treasury.active_loans = treasury
+            .active_loans
+            .checked_sub(1)
+            .ok_or(TorchMarketError::MathOverflow)?;
         treasury.total_collateral_locked = treasury
             .total_collateral_locked
-            .saturating_sub(collateral_returned);
+            .checked_sub(collateral_returned)
+            .ok_or(TorchMarketError::MathOverflow)?;
     }
 
     emit!(LoanRepaid {
@@ -487,6 +513,12 @@ pub fn repay(ctx: Context<Repay>, sol_amount: u64) -> Result<()> {
         collateral_returned,
         fully_repaid: is_full_repay,
     });
+    if is_full_repay {
+        close_account_to(
+            &ctx.accounts.loan_position.to_account_info(),
+            &ctx.accounts.borrower.to_account_info(),
+        )?;
+    }
     Ok(())
 }
 
@@ -554,7 +586,10 @@ pub fn repay_via_vault(ctx: Context<RepayViaVault>, sol_amount: u64) -> Result<(
         apply_interest_first_repay(&mut ctx.accounts.loan_position, actual_repay, is_full_repay)?;
 
     let treasury = &mut ctx.accounts.treasury;
-    treasury.total_sol_lent = treasury.total_sol_lent.saturating_sub(principal_paid);
+    treasury.total_sol_lent = treasury
+        .total_sol_lent
+        .checked_sub(principal_paid)
+        .ok_or(TorchMarketError::MathOverflow)?;
     treasury.sol_balance = treasury
         .sol_balance
         .checked_add(actual_repay)
@@ -564,10 +599,14 @@ pub fn repay_via_vault(ctx: Context<RepayViaVault>, sol_amount: u64) -> Result<(
         .checked_add(interest_paid)
         .ok_or(TorchMarketError::MathOverflow)?;
     if is_full_repay {
-        treasury.active_loans = treasury.active_loans.saturating_sub(1);
+        treasury.active_loans = treasury
+            .active_loans
+            .checked_sub(1)
+            .ok_or(TorchMarketError::MathOverflow)?;
         treasury.total_collateral_locked = treasury
             .total_collateral_locked
-            .saturating_sub(collateral_returned);
+            .checked_sub(collateral_returned)
+            .ok_or(TorchMarketError::MathOverflow)?;
     }
 
     emit!(LoanRepaid {
@@ -578,6 +617,12 @@ pub fn repay_via_vault(ctx: Context<RepayViaVault>, sol_amount: u64) -> Result<(
         collateral_returned,
         fully_repaid: is_full_repay,
     });
+    if is_full_repay {
+        close_account_to(
+            &ctx.accounts.loan_position.to_account_info(),
+            &ctx.accounts.borrower.to_account_info(),
+        )?;
+    }
     Ok(())
 }
 
@@ -629,11 +674,20 @@ fn compute_liquidation(
     } else {
         debt_to_cover
     };
-    let bad_debt = total_debt.saturating_sub(
-        actual_debt_covered
-            .checked_add(total_debt.saturating_sub(debt_to_cover))
-            .ok_or(TorchMarketError::MathOverflow)?,
-    );
+    // total_debt - (covered + (total_debt - debt_to_cover)) = debt_to_cover - covered.
+    // Both inner subtractions are invariant-safe: debt_to_cover <= total_debt and
+    // actual_debt_covered <= debt_to_cover by construction. checked_sub for loud-fail.
+    let bad_debt = total_debt
+        .checked_sub(
+            actual_debt_covered
+                .checked_add(
+                    total_debt
+                        .checked_sub(debt_to_cover)
+                        .ok_or(TorchMarketError::MathOverflow)?,
+                )
+                .ok_or(TorchMarketError::MathOverflow)?,
+        )
+        .ok_or(TorchMarketError::MathOverflow)?;
     Ok(LiquidationComputed {
         actual_collateral_seized,
         actual_debt_covered,
@@ -648,19 +702,31 @@ fn apply_liquidation_loan_updates(
     let mut remaining_paid = computed.actual_debt_covered;
     let interest_paid = if remaining_paid <= loan.accrued_interest {
         let ip = remaining_paid;
-        loan.accrued_interest = loan.accrued_interest.saturating_sub(remaining_paid);
+        loan.accrued_interest = loan
+            .accrued_interest
+            .checked_sub(remaining_paid)
+            .ok_or(TorchMarketError::MathOverflow)?;
         remaining_paid = 0;
         ip
     } else {
         let ip = loan.accrued_interest;
         remaining_paid -= loan.accrued_interest;
         loan.accrued_interest = 0;
-        loan.borrowed_amount = loan.borrowed_amount.saturating_sub(remaining_paid);
+        loan.borrowed_amount = loan
+            .borrowed_amount
+            .checked_sub(remaining_paid)
+            .ok_or(TorchMarketError::MathOverflow)?;
         ip
     };
-    loan.collateral_amount = loan.collateral_amount.saturating_sub(computed.actual_collateral_seized);
+    loan.collateral_amount = loan
+        .collateral_amount
+        .checked_sub(computed.actual_collateral_seized)
+        .ok_or(TorchMarketError::MathOverflow)?;
     if computed.bad_debt > 0 {
-        loan.borrowed_amount = loan.borrowed_amount.saturating_sub(computed.bad_debt);
+        loan.borrowed_amount = loan
+            .borrowed_amount
+            .checked_sub(computed.bad_debt)
+            .ok_or(TorchMarketError::MathOverflow)?;
         loan.accrued_interest = 0;
     }
     Ok((interest_paid, remaining_paid))
@@ -675,8 +741,10 @@ fn apply_liquidation_treasury_updates(
 ) -> Result<()> {
     treasury.total_sol_lent = treasury
         .total_sol_lent
-        .saturating_sub(remaining_paid)
-        .saturating_sub(computed.bad_debt);
+        .checked_sub(remaining_paid)
+        .ok_or(TorchMarketError::MathOverflow)?
+        .checked_sub(computed.bad_debt)
+        .ok_or(TorchMarketError::MathOverflow)?;
     treasury.sol_balance = treasury
         .sol_balance
         .checked_add(computed.actual_debt_covered)
@@ -687,9 +755,13 @@ fn apply_liquidation_treasury_updates(
         .ok_or(TorchMarketError::MathOverflow)?;
     treasury.total_collateral_locked = treasury
         .total_collateral_locked
-        .saturating_sub(computed.actual_collateral_seized);
+        .checked_sub(computed.actual_collateral_seized)
+        .ok_or(TorchMarketError::MathOverflow)?;
     if fully_liquidated {
-        treasury.active_loans = treasury.active_loans.saturating_sub(1);
+        treasury.active_loans = treasury
+            .active_loans
+            .checked_sub(1)
+            .ok_or(TorchMarketError::MathOverflow)?;
     }
     Ok(())
 }
@@ -710,7 +782,9 @@ pub fn liquidate(ctx: Context<Liquidate>) -> Result<()> {
         pool_sol > 0 && pool_tokens > 0,
         TorchMarketError::ZeroPoolReserves
     );
-    require_min_pool_liquidity(pool_sol)?;
+    // No depth gate on liquidation. New positions are gated via the depth-tier
+    // LTV (see `check_borrow_ltv`); existing positions must be liquidatable
+    // even when pool depth has collapsed, otherwise bad debt is stranded.
 
     let computed = compute_liquidation(
         &ctx.accounts.loan_position,
@@ -775,6 +849,12 @@ pub fn liquidate(ctx: Context<Liquidate>) -> Result<()> {
         collateral_seized: computed.actual_collateral_seized,
         bad_debt: computed.bad_debt,
     });
+    if fully_liquidated {
+        close_account_to(
+            &ctx.accounts.loan_position.to_account_info(),
+            &ctx.accounts.borrower.to_account_info(),
+        )?;
+    }
     Ok(())
 }
 
@@ -790,7 +870,9 @@ pub fn liquidate_via_vault(ctx: Context<LiquidateViaVault>) -> Result<()> {
         pool_sol > 0 && pool_tokens > 0,
         TorchMarketError::ZeroPoolReserves
     );
-    require_min_pool_liquidity(pool_sol)?;
+    // No depth gate on liquidation. New positions are gated via the depth-tier
+    // LTV (see `check_borrow_ltv`); existing positions must be liquidatable
+    // even when pool depth has collapsed, otherwise bad debt is stranded.
 
     let computed = compute_liquidation(
         &ctx.accounts.loan_position,
@@ -864,6 +946,12 @@ pub fn liquidate_via_vault(ctx: Context<LiquidateViaVault>) -> Result<()> {
         collateral_seized: computed.actual_collateral_seized,
         bad_debt: computed.bad_debt,
     });
+    if fully_liquidated {
+        close_account_to(
+            &ctx.accounts.loan_position.to_account_info(),
+            &ctx.accounts.borrower.to_account_info(),
+        )?;
+    }
     Ok(())
 }
 

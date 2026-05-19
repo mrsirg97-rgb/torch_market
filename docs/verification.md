@@ -6,7 +6,7 @@ We used [Kani](https://model-checking.github.io/kani/), a formal verification to
 
 This is **not** a security audit. It proves the arithmetic is correct, but does not cover access control, account validation, or economic attacks. See [What Is NOT Verified](#what-is-not-verified) for full scope limitations.
 
-**75 proof harnesses. All passing. Zero failures.**
+**72 proof harnesses. All passing. Zero failures.**
 
 Complemented by 33 [proptest properties](./properties.md) × 5,000 cases each — ~165,000 random-input checks per test run — covering the same math surface with broad empirical coverage.
 
@@ -18,7 +18,7 @@ torch_market's core arithmetic has been formally verified using [Kani](https://m
 
 **Tool:** Kani Rust Verifier 0.67.0 / CBMC 6.8.0
 **Target:** `torch_market` v20.0.0 (torch_next)
-**Harnesses:** 75 proof harnesses, all passing
+**Harnesses:** 72 proof harnesses, all passing
 **Source:** `programs/torch_market/src/kani_proofs.rs`
 **Companion:** [properties.md](./properties.md) — proptest fuzz properties for broader random coverage
 
@@ -179,15 +179,12 @@ These harnesses verify that the `pool_sol > 0 && pool_tokens > 0` guards prevent
 | `verify_pool_reserve_guards_prevent_div_zero` | With both-side reserve guards: `calculate_collateral_value` and `calculate_ltv_bps` always succeed | Symbolic pool reserves (> 0), collateral up to MAX_WALLET_TOKENS |
 | `verify_short_pool_reserve_guards` | With both-side reserve guards: `calculate_debt_value` always succeeds for short positions | Symbolic pool reserves (> 0), token debt up to TOTAL_SUPPLY |
 
-### Circuit Breakers (Harnesses 59-62) — V6
+### Pool Liquidity Floor (Harness 62) — V6
 
-These harnesses verify the V6 pool health circuit breakers. Note: the baseline deviation band (`require_price_in_band`) is retained for `swap_fees_to_sol` ratio gating but is no longer used for margin operations (replaced by depth-based risk bands in V7).
+Verifies the minimum pool SOL floor used by margin operations. The V6 baseline-deviation band (`require_price_in_band`) was deleted in v20 — it was unused in handlers, and the depth-based risk bands (V7) replaced it for margin operations. `swap_fees_to_sol` uses its own inline asymmetric gate (`current >= baseline * 1.2`).
 
 | Harness | Property | Input Range |
 |---------|----------|-------------|
-| `verify_circuit_breaker_baseline_passes` | Baseline price always passes its own deviation band check | 100 SOL / 50T pool at baseline |
-| `verify_circuit_breaker_rejects_doubled_price` | 2x price (100% increase) rejected by 50% deviation band | 200 SOL pool vs 100 SOL baseline |
-| `verify_circuit_breaker_band_edges` | +/-49% passes, +/-51% fails (symmetric band correctness) | 100 SOL / 100T baseline, four edge cases |
 | `verify_min_pool_liquidity_threshold` | Pool SOL >= 5 SOL passes, below fails; exact threshold = 5 SOL | 0-10 SOL symbolic |
 
 ### Depth-Based Risk Bands (Harness 71) — V7
@@ -363,7 +360,6 @@ All 73 harnesses pass. Most complete in under 1 second; the slowest (`verify_tra
 | `SHORT_ENABLED_SENTINEL` | u16::MAX | [V5] Sentinel in Treasury.buyback_percent_bps — short selling enabled |
 | `MIN_SHORT_TOKENS` | 1,000,000,000 | [V5] 1,000 tokens minimum short position (6 decimals) |
 | `MIN_POOL_SOL_LENDING` | 5,000,000,000 | [V6] 5 SOL minimum pool depth for lending/short operations |
-| `MAX_PRICE_DEVIATION_BPS` | 5,000 | [V6] 50% max price deviation from baseline for swap_fees_to_sol ratio gating |
 | `DEPTH_TIER_1` | 50,000,000,000 | [V7] 50 SOL — depth band tier 1 threshold |
 | `DEPTH_TIER_2` | 200,000,000,000 | [V7] 200 SOL — depth band tier 2 threshold |
 | `DEPTH_TIER_3` | 500,000,000,000 | [V7] 500 SOL — depth band tier 3 threshold |

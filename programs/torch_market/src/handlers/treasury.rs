@@ -69,51 +69,49 @@ pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) ->
     require!(token_amount > 0, TorchMarketError::AmountTooSmall);
     require!(minimum_amount_out > 0, TorchMarketError::AmountTooSmall);
 
-    let sell_amount = if ctx.accounts.treasury.baseline_initialized {
-        let next_slot = ctx
-            .accounts
-            .treasury
-            .last_buyback_slot
-            .checked_add(ctx.accounts.treasury.min_buyback_interval_slots)
-            .ok_or(TorchMarketError::MathOverflow)?;
-        if ctx.accounts.treasury.last_buyback_slot > 0 && current_slot < next_slot {
-            return Ok(());
-        }
+    // baseline_initialized is enforced true by the SwapFeesToSol context constraint,
+    // so the gated path always runs (no else branch needed).
+    let next_slot = ctx
+        .accounts
+        .treasury
+        .last_buyback_slot
+        .checked_add(ctx.accounts.treasury.min_buyback_interval_slots)
+        .ok_or(TorchMarketError::MathOverflow)?;
+    if ctx.accounts.treasury.last_buyback_slot > 0 && current_slot < next_slot {
+        return Ok(());
+    }
 
-        let (pool_sol, pool_tokens) =
-            read_deep_pool_reserves(&ctx.accounts.deep_pool, &ctx.accounts.deep_pool_token_vault)?;
-        require!(pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
+    let (pool_sol, pool_tokens) =
+        read_deep_pool_reserves(&ctx.accounts.deep_pool, &ctx.accounts.deep_pool_token_vault)?;
+    require!(pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
 
-        let current_ratio = (pool_sol as u128)
-            .checked_mul(RATIO_PRECISION)
-            .ok_or(TorchMarketError::MathOverflow)?
-            .checked_div(pool_tokens as u128)
-            .ok_or(TorchMarketError::MathOverflow)? as u64;
-        let baseline_ratio = (ctx.accounts.treasury.baseline_sol_reserves as u128)
-            .checked_mul(RATIO_PRECISION)
-            .ok_or(TorchMarketError::MathOverflow)?
-            .checked_div(ctx.accounts.treasury.baseline_token_reserves as u128)
-            .ok_or(TorchMarketError::MathOverflow)? as u64;
-        let sell_threshold = (baseline_ratio as u128)
-            .checked_mul(DEFAULT_SELL_THRESHOLD_BPS as u128)
+    let current_ratio = (pool_sol as u128)
+        .checked_mul(RATIO_PRECISION)
+        .ok_or(TorchMarketError::MathOverflow)?
+        .checked_div(pool_tokens as u128)
+        .ok_or(TorchMarketError::MathOverflow)? as u64;
+    let baseline_ratio = (ctx.accounts.treasury.baseline_sol_reserves as u128)
+        .checked_mul(RATIO_PRECISION)
+        .ok_or(TorchMarketError::MathOverflow)?
+        .checked_div(ctx.accounts.treasury.baseline_token_reserves as u128)
+        .ok_or(TorchMarketError::MathOverflow)? as u64;
+    let sell_threshold = (baseline_ratio as u128)
+        .checked_mul(DEFAULT_SELL_THRESHOLD_BPS as u128)
+        .ok_or(TorchMarketError::MathOverflow)?
+        .checked_div(10000)
+        .ok_or(TorchMarketError::MathOverflow)? as u64;
+    if current_ratio < sell_threshold {
+        return Ok(());
+    }
+
+    let sell_amount = if token_amount <= SELL_ALL_TOKEN_THRESHOLD {
+        token_amount
+    } else {
+        (token_amount as u128)
+            .checked_mul(DEFAULT_SELL_PERCENT_BPS as u128)
             .ok_or(TorchMarketError::MathOverflow)?
             .checked_div(10000)
-            .ok_or(TorchMarketError::MathOverflow)? as u64;
-        if current_ratio < sell_threshold {
-            return Ok(());
-        }
-
-        if token_amount <= SELL_ALL_TOKEN_THRESHOLD {
-            token_amount
-        } else {
-            (token_amount as u128)
-                .checked_mul(DEFAULT_SELL_PERCENT_BPS as u128)
-                .ok_or(TorchMarketError::MathOverflow)?
-                .checked_div(10000)
-                .ok_or(TorchMarketError::MathOverflow)? as u64
-        }
-    } else {
-        token_amount
+            .ok_or(TorchMarketError::MathOverflow)? as u64
     };
 
     if sell_amount == 0 {

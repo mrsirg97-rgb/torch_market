@@ -135,18 +135,17 @@ pub fn claim_protocol_rewards(ctx: Context<ClaimProtocolRewards>) -> Result<()> 
         &ctx.accounts.protocol_treasury,
     )?;
 
-    if claim_amount > 0 {
-        **ctx
-            .accounts
-            .protocol_treasury
-            .to_account_info()
-            .try_borrow_mut_lamports()? -= claim_amount;
-        **ctx
-            .accounts
-            .user
-            .to_account_info()
-            .try_borrow_mut_lamports()? += claim_amount;
-    }
+    // compute_claim requires claim_amount >= MIN_CLAIM_AMOUNT (> 0), so no `> 0` gate.
+    let treasury_info = ctx.accounts.protocol_treasury.to_account_info();
+    let user_info = ctx.accounts.user.to_account_info();
+    **treasury_info.try_borrow_mut_lamports()? = treasury_info
+        .lamports()
+        .checked_sub(claim_amount)
+        .ok_or(TorchMarketError::MathOverflow)?;
+    **user_info.try_borrow_mut_lamports()? = user_info
+        .lamports()
+        .checked_add(claim_amount)
+        .ok_or(TorchMarketError::MathOverflow)?;
 
     finalize_claim(
         &mut ctx.accounts.user_stats,
@@ -163,27 +162,25 @@ pub fn claim_protocol_rewards_via_vault(
         &ctx.accounts.protocol_treasury,
     )?;
 
-    if claim_amount > 0 {
-        let vault_info = ctx.accounts.torch_vault.to_account_info();
-        let treasury_info = ctx.accounts.protocol_treasury.to_account_info();
-        **treasury_info.try_borrow_mut_lamports()? = treasury_info
-            .lamports()
-            .checked_sub(claim_amount)
-            .ok_or(TorchMarketError::MathOverflow)?;
-        **vault_info.try_borrow_mut_lamports()? = vault_info
-            .lamports()
-            .checked_add(claim_amount)
-            .ok_or(TorchMarketError::MathOverflow)?;
-        let vault = &mut ctx.accounts.torch_vault;
-        vault.sol_balance = vault
-            .sol_balance
-            .checked_add(claim_amount)
-            .ok_or(TorchMarketError::MathOverflow)?;
-        vault.total_received = vault
-            .total_received
-            .checked_add(claim_amount)
-            .ok_or(TorchMarketError::MathOverflow)?;
-    }
+    let vault_info = ctx.accounts.torch_vault.to_account_info();
+    let treasury_info = ctx.accounts.protocol_treasury.to_account_info();
+    **treasury_info.try_borrow_mut_lamports()? = treasury_info
+        .lamports()
+        .checked_sub(claim_amount)
+        .ok_or(TorchMarketError::MathOverflow)?;
+    **vault_info.try_borrow_mut_lamports()? = vault_info
+        .lamports()
+        .checked_add(claim_amount)
+        .ok_or(TorchMarketError::MathOverflow)?;
+    let vault = &mut ctx.accounts.torch_vault;
+    vault.sol_balance = vault
+        .sol_balance
+        .checked_add(claim_amount)
+        .ok_or(TorchMarketError::MathOverflow)?;
+    vault.total_received = vault
+        .total_received
+        .checked_add(claim_amount)
+        .ok_or(TorchMarketError::MathOverflow)?;
 
     finalize_claim(
         &mut ctx.accounts.user_stats,

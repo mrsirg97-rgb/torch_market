@@ -6,7 +6,6 @@ pub struct GlobalConfig {
     pub treasury: Pubkey,
     pub dev_wallet: Pubkey,
     pub protocol_fee_bps: u16,
-    pub paused: bool,
     pub total_tokens_launched: u64,
     pub total_volume_sol: u64,
     pub bump: u8,
@@ -18,7 +17,6 @@ impl GlobalConfig {
         + 32  // treasury
         + 32  // dev_wallet
         + 2   // protocol_fee_bps
-        + 1   // paused
         + 8   // total_tokens_launched
         + 8   // total_volume_sol
         + 1; // bump

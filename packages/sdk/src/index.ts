@@ -61,7 +61,6 @@ export {
   buildOpenShortTransaction,
   buildCloseShortTransaction,
   buildLiquidateShortTransaction,
-  buildEnableShortSellingTransaction,
 } from './transactions'
 
 // ephemeral Agent
@@ -130,7 +129,6 @@ export type {
   OpenShortParams,
   CloseShortParams,
   LiquidateShortParams,
-  EnableShortSellingParams,
 } from './types'
 
 // constants (for advanced usage)

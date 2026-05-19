@@ -459,4 +459,4 @@ The depth-anchored risk model creates a lending system where:
 
 The result is a permissionless, self-sustaining lending protocol with a natural lifecycle: tokens begin with near-zero liquidation risk (per-user cap dominance) and graduate into real margin markets as treasury depth proves sustained demand. Short positions remain liquidatable at any stage due to the asymmetric nature of upward price risk.
 
-The safety of the system is not a parameter choice — it is a mathematical consequence of the supply split ($y/S \approx 0.15$), the constant-product invariant, and the depth-based LTV ceiling. These properties are immutable post-deployment and hold for all valid inputs, as verified by 75 Kani proof harnesses and economic simulation under adversarial conditions.
+The safety of the system is not a parameter choice — it is a mathematical consequence of the supply split ($y/S \approx 0.15$), the constant-product invariant, and the depth-based LTV ceiling. These properties are immutable post-deployment and hold for all valid inputs, as verified by 72 Kani proof harnesses and economic simulation under adversarial conditions.

@@ -536,13 +536,6 @@ export interface LiquidateShortParams {
   vault?: string
 }
 
-export interface EnableShortSellingParams {
-  /** Protocol authority wallet */
-  authority: string
-  /** Token mint to enable shorts for */
-  mint: string
-}
-
 // ============================================================================
 // Lending Results (V2.4)
 // ============================================================================

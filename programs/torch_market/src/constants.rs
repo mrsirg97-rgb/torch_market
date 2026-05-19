@@ -53,6 +53,12 @@ pub const STAR_COST_LAMPORTS: u64 = 20_000_000;
 pub const CREATOR_FEE_SHARE_BPS: u16 = 1500;
 pub const CREATOR_SOL_MIN_BPS: u16 = 20;
 pub const CREATOR_SOL_MAX_BPS: u16 = 100;
+
+// `compute_buy_split` computes `sol_to_treasury_split = total_split - creator_sol`
+// via checked_sub. Both rates are linear and clamped in [MIN, MAX]; the subtraction
+// is underflow-free iff `creator_rate(x) <= treasury_rate(x)` at both endpoints.
+const _: () = assert!(CREATOR_SOL_MIN_BPS <= TREASURY_SOL_MAX_BPS);
+const _: () = assert!(CREATOR_SOL_MAX_BPS <= TREASURY_SOL_MIN_BPS);
 pub const DEX_BUYBACK_MIN_SLIPPAGE_BPS: u16 = 100;
 pub const DEFAULT_MIN_BUYBACK_INTERVAL_SLOTS: u64 = 2700;
 pub const RATIO_PRECISION: u128 = 1_000_000_000;
@@ -89,7 +95,6 @@ pub const SHORT_CONFIG_SEED: &[u8] = b"short_config";
 /// Prevents dust positions that cost more in rent than they're worth
 pub const MIN_SHORT_TOKENS: u64 = 1_000_000_000;
 pub const MIN_POOL_SOL_LENDING: u64 = 5_000_000_000;
-pub const MAX_PRICE_DEVIATION_BPS: u64 = 5000;
 // Depth-based risk bands: pool SOL thresholds and corresponding max LTV (bps).
 // More SOL in pool = harder to manipulate = higher LTV allowed.
 pub const DEPTH_TIER_1: u64 = 50_000_000_000; // 50 SOL

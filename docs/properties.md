@@ -88,7 +88,7 @@ Rate curves are tested for both `BONDING_TARGET_FLAME` and `BONDING_TARGET_TORCH
 
 ### Interest Accrual Lifecycle (Properties 32-33)
 
-Companion to Kani harnesses 74-75. Kani exhaustively verifies the slot-advance post-condition on the pure functions `apply_interest_accrual` and `apply_short_interest_accrual`. These proptests exercise the full call-sequence lifecycle that Kani choked on as a SAT problem: open → fully repaid/closed → wait dormant period → re-borrow/re-open → wait → accrue. Asserts that the final accrued interest depends only on the window since re-borrow, NOT on the dormant period.
+Companion to Kani sections 71-72 (`verify_interest_accrual_*`). Kani exhaustively verifies the slot-advance post-condition on the pure functions `apply_interest_accrual` and `apply_short_interest_accrual`. These proptests exercise the full call-sequence lifecycle that Kani choked on as a SAT problem: open → fully repaid/closed → wait dormant period → re-borrow/re-open → wait → accrue. Asserts that the final accrued interest depends only on the window since re-borrow, NOT on the dormant period.
 
 | Property | Description |
 |----------|-------------|

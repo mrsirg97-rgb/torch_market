@@ -91,7 +91,7 @@ V20 replaces the Raydium CPMM dependency with DeepPool (in-house, formally verif
 | **Bonding** | `create_token` | Constant-product curve: 700M tokens sellable, 300M locked, 100 SOL (Flame) or 200 SOL (Torch) graduation target |
 | **Migration** | `fund_migration_sol` + `migrate_to_dex` (permissionless after target reached) | DeepPool pool created with bonded SOL + remaining tokens. 100% of LP burned to pool PDA. Mint/freeze/transfer-fee authorities revoked. |
 | **Trading** | Post-migration | DeepPool swap as canonical price. 0.07% Token-2022 transfer fee on every transfer; permissionless `harvest_fees` + `swap_fees_to_sol` recycle into the treasury |
-| **Margin** | Auto-enabled at `create_token` (longs; shorts via `enable_short_selling` if needed) | Treasury SOL is lending pool. 300M `TreasuryLock` tokens are short pool. Depth-anchored LTV (25-50%), 65% liquidation threshold, 2%/epoch interest, no oracle |
+| **Margin** | Auto-enabled at `create_token` (both longs and shorts) | Treasury SOL is lending pool. 300M `TreasuryLock` tokens are short pool. Depth-anchored LTV (25-50%), 65% liquidation threshold, 2%/epoch interest, no oracle |
 
 ---
 
@@ -111,7 +111,7 @@ programs/torch_market/src/
 │   ├── revival.rs       # contribute_revival
 │   ├── protocol_treasury.rs  # initialize / advance_epoch / claim_protocol_rewards
 │   ├── lending.rs       # borrow, repay, liquidate
-│   ├── short.rs         # enable_short_selling, open_short, close_short, liquidate_short
+│   ├── short.rs         # open_short, close_short, liquidate_short (+ vault variants)
 │   ├── vault.rs         # create_vault, deposit, withdraw, link/unlink_wallet, transfer_authority, withdraw_tokens
 │   └── swap.rs          # vault_swap (vault-routed DeepPool buy/sell)
 ├── contexts.rs          # Anchor #[derive(Accounts)] for every instruction
@@ -122,7 +122,7 @@ programs/torch_market/src/
 ├── migration.rs         # Migration handler implementation (DeepPool CPI flow)
 ├── pool_validation.rs   # DeepPool PDA derivation + reserve reading + depth-band LTV helpers
 ├── token_2022_utils.rs  # Token-2022 transfer-fee + metadata extension helpers
-└── kani_proofs.rs       # 75 formal verification harnesses (cfg(kani))
+└── kani_proofs.rs       # 72 formal verification harnesses (cfg(kani))
 ```
 
 ---
@@ -137,11 +137,10 @@ Protocol-wide configuration. Singleton.
 
 | Field | Type | Description |
 |---|---|---|
-| authority | Pubkey | Admin (pause, update settings) |
+| authority | Pubkey | Admin (update_dev_wallet only — no pause; protocol is immutable post-launch) |
 | treasury | Pubkey | Legacy fee wallet reference |
 | dev_wallet | Pubkey | Receives 50% of protocol fee (`DEV_WALLET_SHARE_BPS = 5000`) |
 | protocol_fee_bps | u16 | `PROTOCOL_FEE_BPS = 50` (0.5%) |
-| paused | bool | Emergency pause flag |
 | total_tokens_launched | u64 | Counter |
 | total_volume_sol | u64 | Cumulative volume |
 | bump | u8 | |
@@ -193,7 +192,7 @@ Per-token treasury: SOL balance, lending state, shorts state, baseline for ratio
 | bump | u8 | |
 | baseline_sol_reserves | u64 | Pool SOL at migration (ratio-gate baseline) |
 | baseline_token_reserves | u64 | Pool tokens at migration |
-| short_selling_enabled | bool | Set true by `enable_short_selling` (or `create_token` for new mints) |
+| short_selling_enabled | bool | Set true by `create_token` at mint creation. Always on. |
 | min_buyback_interval_slots | u64 | Cooldown between swap_fees_to_sol calls |
 | baseline_initialized | bool | Set true at migration |
 | total_stars | u64 | Stars received |
@@ -478,8 +477,7 @@ System-owned companion to TorchVault. 0 bytes of data. Used only during `vault_s
 
 | Instruction | Description |
 |---|---|
-| `enable_short_selling` | Admin (rare; auto-enabled at `create_token` for new mints). Creates ShortConfig, flips treasury flag. |
-| `open_short` | Post SOL collateral, borrow tokens from TreasuryLock. Same depth-band + per-user cap as lending (denominator is `treasury.sol_balance`, not TOTAL_SUPPLY, since collateral is SOL). |
+| `open_short` | Post SOL collateral, borrow tokens from TreasuryLock. `ShortConfig` PDA is init-if-needed on first call. Same depth-band + per-user cap as lending (denominator is `treasury.sol_balance`, not TOTAL_SUPPLY, since collateral is SOL). |
 | `open_short_via_vault` | Same as `open_short`, SOL collateral from vault, borrowed tokens to vault ATA. |
 | `close_short` | Return tokens (+ interest in token terms). Interest-first. Full close releases SOL collateral. |
 | `close_short_via_vault` | Same as `close_short`, tokens sourced from vault, SOL returned to vault. |
@@ -620,15 +618,16 @@ Ratio-gated: only sells when `(pool_sol/pool_tokens) >= 1.2 * baseline_ratio`. S
 | Sign swaps as `user` from PDAs (`torch_vault`, `treasury`) via `invoke_signed` | Verifies `sol_source: Signer` constraint |
 | Burn 100% of LP at migration → pool PDA's own LP ATA → permanently locked | Mints LP per `create_pool`; doesn't enforce burn |
 
-DeepPool has its own audit and 16 separate Kani proofs covering swap math (K invariant, fee conservation, LP proportionality). Total verification across composed system: **91 proof harnesses** (75 torch + 16 deep_pool).
+DeepPool has its own audit and 16 separate Kani proofs covering swap math (K invariant, fee conservation, LP proportionality). Total verification across composed system: **88 proof harnesses** (72 torch + 16 deep_pool).
 
 ---
 
 ## Verification Surface
 
-- **75 Kani proof harnesses** (`kani_proofs.rs`, gated by `cfg(kani)`). Cover all fee calculations, bonding curve pricing, lending math, short math, depth-band boundaries, migration arithmetic, interest accrual state transitions, treasury ratio gating, DeepPool CPI accounting. Math harnesses import directly from `math.rs` — every property is proven against the exact code that runs on-chain, not a replica.
+- **72 Kani proof harnesses** (`kani_proofs.rs`, gated by `cfg(kani)`). Cover all fee calculations, bonding curve pricing, lending math, short math, depth-band boundaries, migration arithmetic, interest accrual state transitions, treasury ratio gating, DeepPool CPI accounting. Math harnesses import directly from `math.rs` — every property is proven against the exact code that runs on-chain, not a replica.
 - **33 proptest properties × 5,000 cases** (`tests/math_proptests.rs`). Random-input sweep across the full u64 space; complements Kani's bounded model checking.
-- **53 end-to-end tests** (`tests/`). Run with `anchor test` against a local validator.
+- **100 litesvm integration tests** (`programs/torch_market/tests/litesvm/`). In-process BPF execution against the real torch_market and deep_pool `.so` binaries; ~6s for the full suite. See [litesvm.md](./litesvm.md).
+- **SDK e2e tests** (`packages/sdk/tests/test_e2e.ts`, `test_devnet_e2e.ts`). Run against Surfpool mainnet fork or devnet for SDK roundtrip and mainnet-state coverage.
 - **Independent audit** (Claude Opus 4.7, see [audit.md](./audit.md)): 0 critical / 0 high / 0 medium / 0 low findings. 24 exploit classes covered in the adversarial redhat pass.
 
 ---
@@ -638,7 +637,7 @@ DeepPool has its own audit and 16 separate Kani proofs covering swap math (K inv
 Honest about what V20 does not do:
 
 - **Permissionless migration timing.** Anyone can call `migrate_to_dex` after bonding completes, but nobody is forced to. Economic incentive (treasury reimbursement) handles it in practice.
-- **Shorts on drained pools.** If pool depth drops below 5 SOL, short liquidation is blocked. Accepted trade-off — the alternative enables sandwich attacks on the liquidation path.
+- **Opening new positions on drained pools.** If pool depth drops below 5 SOL, `borrow` and `open_short` reject new positions (`PoolTooThin`). Existing positions can still be liquidated — the depth gate was removed from the liquidate paths in v20 so trapped positions aren't stranded.
 - **Upgrade authority revocation.** Live on mainnet during stabilization. Migrate to public timelock or multisig within the 30-90 day window post-launch via `solana program set-upgrade-authority --final`.
 - **Cross-token margin.** Each `(user, mint)` pair has its own isolated LoanPosition and ShortPosition. No portfolio margining. Failure of one position cannot affect another.
 - **Governance.** None. All parameters are immutable at deploy. No vote, no proposal, no token-gated controls.
@@ -664,7 +663,7 @@ Honest about what V20 does not do:
 - [whitepaper.md](./whitepaper.md) — protocol intent, parameters, economic design
 - [risk.md](./risk.md) — formal analysis of the depth-anchored risk model
 - [deeppool.md](./deeppool.md) — DeepPool integration detail
-- [verification.md](./verification.md) — Kani harness catalog (all 75)
+- [verification.md](./verification.md) — Kani harness catalog (all 72)
 - [properties.md](./properties.md) — proptest property catalog (all 33)
 - [audit.md](./audit.md) — V20.0.0 internal security audit + redhat findings
 - [sdk.md](./sdk.md) — TypeScript SDK reference

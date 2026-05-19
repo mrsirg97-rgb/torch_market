@@ -67,7 +67,6 @@ import {
   OpenShortParams,
   CloseShortParams,
   LiquidateShortParams,
-  EnableShortSellingParams,
   ClaimProtocolRewardsParams,
   VaultSwapParams,
   HarvestFeesParams,
@@ -2491,57 +2490,3 @@ export const buildLiquidateShortTransaction = async (
   }
 }
 
-// ============================================================================
-// Enable Short Selling (V5) — Admin / Pre-V5 Tokens
-// ============================================================================
-
-/**
- * Build an unsigned enable_short_selling transaction.
- *
- * Admin-only. For pre-V5 tokens that weren't created with the short selling
- * sentinel. New tokens (V5+) have shorts auto-enabled at creation.
- *
- * @param connection - Solana RPC connection
- * @param params - Enable short selling parameters (authority, mint)
- * @returns Unsigned transaction and descriptive message
- */
-export const buildEnableShortSellingTransaction = async (
-  connection: Connection,
-  params: EnableShortSellingParams,
-): Promise<TransactionResult> => {
-  const { authority: authorityStr, mint: mintStr } = params
-
-  const authority = new PublicKey(authorityStr)
-  const mint = new PublicKey(mintStr)
-
-  // Derive PDAs
-  const [globalConfigPda] = getGlobalConfigPda()
-  const [bondingCurvePda] = getBondingCurvePda(mint)
-  const [treasuryPda] = getTokenTreasuryPda(mint)
-  const [shortConfigPda] = getShortConfigPda(mint)
-
-  const provider = makeDummyProvider(connection, authority)
-  const program = new Program(idl as unknown, provider)
-
-  const enableIx = await program.methods
-    .enableShortSelling()
-    .accounts({
-      authority,
-      globalConfig: globalConfigPda,
-      mint,
-      bondingCurve: bondingCurvePda,
-      treasury: treasuryPda,
-      shortConfig: shortConfigPda,
-      systemProgram: SystemProgram.programId,
-    })
-    .instruction()
-
-  const tx = new Transaction()
-  tx.add(enableIx)
-  const versionedTx = await finalizeTransaction(connection, tx, authority)
-
-  return {
-    transaction: versionedTx,
-    message: `Enable short selling for ${mintStr.slice(0, 8)}...`,
-  }
-}

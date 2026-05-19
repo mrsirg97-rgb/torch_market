@@ -49,7 +49,6 @@ export interface GlobalConfig {
   treasury: PublicKey
   dev_wallet: PublicKey
   protocol_fee_bps: number
-  paused: boolean
   total_tokens_launched: BN
   total_volume_sol: BN
   bump: number

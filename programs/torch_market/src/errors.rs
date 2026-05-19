@@ -12,8 +12,6 @@ pub enum TorchMarketError {
     InsufficientTokens,
     #[msg("Insufficient SOL in pool")]
     InsufficientSol,
-    #[msg("Insufficient user balance")]
-    InsufficientUserBalance,
     #[msg("Bonding curve already complete")]
     BondingComplete,
     #[msg("Bonding curve not yet complete")]
@@ -24,8 +22,6 @@ pub enum TorchMarketError {
     InvalidAuthority,
     #[msg("Amount too small")]
     AmountTooSmall,
-    #[msg("Protocol paused")]
-    ProtocolPaused,
     #[msg("Zero amount not allowed")]
     ZeroAmount,
     #[msg("Name too long")]
@@ -34,8 +30,6 @@ pub enum TorchMarketError {
     SymbolTooLong,
     #[msg("URI too long")]
     UriTooLong,
-    #[msg("Buyback interval not elapsed")]
-    BuybackTooSoon,
     #[msg("Treasury has insufficient SOL")]
     InsufficientTreasury,
     #[msg("Token has already been reclaimed")]
@@ -54,8 +48,6 @@ pub enum TorchMarketError {
     NoVolumeInEpoch,
     #[msg("Token not migrated to DEX yet")]
     NotMigrated,
-    #[msg("DEX pool creation failed")]
-    PoolCreationFailed,
     #[msg("Insufficient treasury balance for migration fee")]
     InsufficientMigrationFee,
     #[msg("Cannot star yourself")]
@@ -68,16 +60,8 @@ pub enum TorchMarketError {
     BaselineNotInitialized,
     #[msg("Pool reserves cannot be zero")]
     ZeroPoolReserves,
-    #[msg("Price above threshold - no buyback needed")]
-    RatioAboveThreshold,
-    #[msg("Treasury at reserve floor - cannot execute buyback")]
-    AtReserveFloor,
     #[msg("Insufficient volume for protocol rewards (need >= 2 SOL/epoch)")]
     InsufficientVolumeForRewards,
-    #[msg("Protocol treasury below reserve floor")]
-    ProtocolTreasuryBelowFloor,
-    #[msg("Protocol treasury already initialized")]
-    ProtocolTreasuryAlreadyInitialized,
     #[msg("Token has not been reclaimed - cannot contribute to revival")]
     TokenNotReclaimed,
     #[msg("Lending is not enabled for this token")]
@@ -98,24 +82,18 @@ pub enum TorchMarketError {
     NotLiquidatable,
     #[msg("Must provide collateral or borrow amount")]
     EmptyBorrowRequest,
-    #[msg("Repay amount exceeds total owed")]
-    RepayExceedsDebt,
     #[msg("Invalid pool account")]
     InvalidPoolAccount,
     #[msg("Insufficient vault balance")]
     InsufficientVaultBalance,
     #[msg("Unauthorized - only vault authority can perform this action")]
     VaultUnauthorized,
-    #[msg("Wallet is not linked to any vault")]
-    WalletNotLinked,
     #[msg("Wallet link does not point to the provided vault")]
     VaultWalletLinkMismatch,
     #[msg("Invalid pool vault account")]
     InvalidPoolVault,
     #[msg("Invalid bonding target: must be 50, 100, or 200 SOL")]
     InvalidBondingTarget,
-    #[msg("Invalid token account - must be treasury lock's Token-2022 ATA")]
-    InvalidTokenAccount,
     #[msg("Claim amount below minimum (0.1 SOL)")]
     ClaimBelowMinimum,
     #[msg("Short selling is not enabled for this token")]
@@ -130,12 +108,6 @@ pub enum TorchMarketError {
     ShortNotLiquidatable,
     #[msg("No active short position")]
     NoActiveShort,
-    #[msg("Treasury has insufficient tokens for short lending")]
-    InsufficientTreasuryTokens,
-    #[msg("Short selling already enabled for this token")]
-    ShortAlreadyEnabled,
     #[msg("Pool depth below minimum for margin operations")]
     PoolTooThin,
-    #[msg("Pool price deviates too far from baseline")]
-    PriceDeviationTooHigh,
 }
