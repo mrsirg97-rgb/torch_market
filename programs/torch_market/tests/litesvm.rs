@@ -32,6 +32,26 @@ mod protocol_treasury;
 #[path = "litesvm/vault.rs"]
 mod vault;
 
-// short.rs requires migrated state — pending Phase 3 (Raydium migrate helper).
-// #[path = "litesvm/short.rs"]
-// mod short;
+#[path = "litesvm/migration.rs"]
+mod migration;
+
+#[path = "litesvm/short.rs"]
+mod short;
+
+#[path = "litesvm/lending.rs"]
+mod lending;
+
+#[path = "litesvm/treasury.rs"]
+mod treasury;
+
+#[path = "litesvm/coverage.rs"]
+mod coverage;
+
+#[path = "litesvm/tier_b.rs"]
+mod tier_b;
+
+// tx_size.rs is dpi-only — it builds raw migration txs against DeepPool's
+// account list to measure size. Would need a full Raydium-flavored rewrite;
+// deferring as it duplicates what scripts/migrate.ts already exercises.
+// #[path = "litesvm/tx_size.rs"]
+// mod tx_size;

@@ -52,14 +52,18 @@ fn open_short_happy() {
     assert_eq!(pos.sol_collateral, LAMPORTS_PER_SOL);
     assert_eq!(pos.tokens_borrowed, MIN_SHORT_TOKENS);
     let tr = env.get_treasury(&t);
-    assert_eq!(tr.short_collateral_reserved, LAMPORTS_PER_SOL);
+    // Main encodes short collateral in total_burned_from_buyback (repurposed
+    // field; see state.rs:122). Sentinel-style storage so layout stays stable.
+    assert_eq!(tr.total_burned_from_buyback, LAMPORTS_PER_SOL);
 }
 
 #[test]
 fn open_short_short_not_enabled() {
     let (mut env, t, _) = migrated();
     let mut tr = env.get_treasury(&t);
-    tr.short_selling_enabled = false;
+    // Main encodes "short selling enabled" as buyback_percent_bps == u16::MAX
+    // sentinel. Flip to 0 to disable.
+    tr.buyback_percent_bps = 0;
     env.poke_anchor(t.treasury, tr);
 
     let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
@@ -183,18 +187,18 @@ fn close_short_partial() {
 
 #[test]
 fn close_short_full() {
-    // Tier B: short PDA is closed on full close. Uses first_buyer who has
-    // spare tokens to cover the Token-2022 fee on the close-side transfer.
+    // Main's close_short zeroes tokens_borrowed on full close but does NOT
+    // close the position PDA (dpi did — possible future port). Test the
+    // observable invariant instead: full payoff drains debt and returns all
+    // collateral.
     let (mut env, t, shorter) = migrated();
     env.open_short(&shorter, &t, LAMPORTS_PER_SOL, MIN_SHORT_TOKENS)
         .expect("open");
 
     env.close_short(&shorter, &t, MIN_SHORT_TOKENS * 2)
         .expect("full close");
-    assert!(
-        env.get_short(&t, &shorter.pubkey()).is_none(),
-        "short PDA closed after full close"
-    );
+    let pos = env.get_short(&t, &shorter.pubkey()).expect("pos still exists on main");
+    assert_eq!(pos.tokens_borrowed, 0);
 }
 
 #[test]
@@ -353,21 +357,18 @@ fn liquidate_short_bad_debt() {
 
 #[test]
 fn liquidate_short_proceeds_when_pool_thin() {
-    // Tier B fix: depth gate removed from liquidate_short. Position is still
-    // not liquidatable at this LTV (token price implied by thin pool keeps
-    // debt_value tiny relative to collateral), so we use ShortNotLiquidatable
-    // as the assertion instead — the point is no longer "blocked by depth."
+    // dpi removed the pool-depth gate from liquidate_short; main still has it
+    // (rejects with PoolTooThin before reaching the LTV check). When dpi's
+    // depth-gate-removal is ported back, this test should assert
+    // ShortNotLiquidatable like the original.
     let (mut env, t, liquidator) = migrated();
     let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
     env.open_short(&shorter, &t, LAMPORTS_PER_SOL, MIN_SHORT_TOKENS)
         .expect("open");
     env.poke_pool_sol(&t, 4 * LAMPORTS_PER_SOL);
-    // Pool drain makes the token CHEAPER, which makes the short MORE healthy.
-    // The handler runs past the depth check (which we just removed) and reaches
-    // the LTV check, which says "not liquidatable." That's the correct outcome.
     expect_err!(
         env.liquidate_short(&liquidator, shorter.pubkey(), &t),
-        TorchMarketError::ShortNotLiquidatable
+        TorchMarketError::PoolTooThin
     );
 }
 
@@ -396,8 +397,7 @@ fn liquidate_short_via_vault_happy() {
     // To stage: first_buyer transfers some of their 16M tokens to vault ATA.
     use solana_sdk::instruction::{AccountMeta, Instruction};
     use torch_market::token_2022_utils::get_associated_token_address_2022;
-    env.ensure_token2022_ata(&first_buyer, &vault.vault, &t.mint)
-        .expect("create vault ATA");
+    env.ensure_token2022_ata(&first_buyer, &vault.vault, &t.mint);
     let vault_ata = get_associated_token_address_2022(&vault.vault, &t.mint);
     let fb_ata = get_associated_token_address_2022(&first_buyer.pubkey(), &t.mint);
     let mut data = vec![12u8]; // TransferChecked discriminator

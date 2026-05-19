@@ -5624,11 +5624,13 @@ version = "11.0.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
+ "base64 0.22.1",
  "bincode",
  "borsh 1.6.0",
  "litesvm",
  "proptest",
  "raydium-cpmm-cpi",
+ "serde_json",
  "solana-program",
  "solana-sdk",
 ]
