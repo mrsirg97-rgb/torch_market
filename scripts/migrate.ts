@@ -21,7 +21,7 @@ import {
   PublicKey,
   VersionedTransaction,
 } from "@solana/web3.js";
-import { buildMigrateTransaction } from "torchsdk";
+import { buildMigrateTransaction } from "../clawhub/lib/torchsdk";
 
 const PROGRAM_ID = new PublicKey("8hbUkonssSEEtkqzwM7ZcZrD9evacM92TcWSooVF4BeT");
 const BONDING_CURVE_SEED = Buffer.from("bonding_curve");
