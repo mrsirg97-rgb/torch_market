@@ -27,3 +27,15 @@ pub fn update_dev_wallet(ctx: Context<UpdateDevWallet>) -> Result<()> {
 
     Ok(())
 }
+
+// One-shot resolver for pre-V36 tokens whose vote round never finalized.
+// V36 removed the vote-casting / finalize-vote instructions, so any token
+// stuck with `vote_finalized = false` can no longer reach migration. Admin
+// picks the tiebreak per token: `result = true` → return-to-treasury-lock,
+// `result = false` → burn at migration.
+pub fn resolve_legacy_vote(ctx: Context<ResolveLegacyVote>, result: bool) -> Result<()> {
+    let bonding_curve = &mut ctx.accounts.bonding_curve;
+    bonding_curve.vote_finalized = true;
+    bonding_curve.vote_result_return = result;
+    Ok(())
+}

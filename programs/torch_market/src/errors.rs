@@ -148,4 +148,6 @@ pub enum TorchMarketError {
     PoolTooThin,
     #[msg("Pool price deviates too far from baseline")]
     PriceDeviationTooHigh,
+    #[msg("Vote already finalized")]
+    VoteAlreadyFinalized,
 }

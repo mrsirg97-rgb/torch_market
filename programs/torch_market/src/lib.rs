@@ -29,6 +29,10 @@ pub mod torch_market {
         handlers::admin::update_dev_wallet(ctx)
     }
 
+    pub fn resolve_legacy_vote(ctx: Context<ResolveLegacyVote>, result: bool) -> Result<()> {
+        handlers::admin::resolve_legacy_vote(ctx, result)
+    }
+
     pub fn create_token(ctx: Context<CreateToken2022>, args: CreateTokenArgs) -> Result<()> {
         handlers::token::create_token(ctx, args)
     }

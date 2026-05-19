@@ -2,7 +2,11 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::invoke;
 use anchor_spl::token::spl_token;
 use anchor_spl::token_interface::{
-    burn, close_account, set_authority, spl_token_2022::instruction::AuthorityType,
+    burn, close_account, set_authority, spl_token_2022,
+    spl_token_2022::extension::{
+        transfer_fee::TransferFeeConfig, BaseStateWithExtensions, StateWithExtensions,
+    },
+    spl_token_2022::instruction::AuthorityType,
     transfer_checked, Burn, CloseAccount, SetAuthority, TransferChecked,
 };
 
@@ -29,21 +33,22 @@ pub fn order_tokens_for_raydium(wsol_mint: &Pubkey, token_mint: &Pubkey) -> (Pub
     }
 }
 
-// Calculate transfer fee for our Token-2022 token
-// Uses known constants: TRANSFER_FEE_BPS (100 = 1%) and MAX_TRANSFER_FEE (u64::MAX)
-// Formula: fee = min(ceil(amount * bps / 10000), max_fee)
-// Token-2022 uses CEILING division, so we must match that
-fn calculate_transfer_fee(amount: u64) -> Result<u64> {
-    let numerator = (amount as u128)
-        .checked_mul(TRANSFER_FEE_BPS as u128)
-        .ok_or(TorchMarketError::MathOverflow)?;
-    let fee = numerator
-        .checked_add(9999) // Add (10000 - 1) for ceiling
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(10000)
-        .ok_or(TorchMarketError::MathOverflow)? as u64;
-
-    Ok(fee.min(MAX_TRANSFER_FEE))
+// Read the actual transfer fee from the mint's TransferFeeConfig extension
+// for the current epoch. Legacy tokens were created when TRANSFER_FEE_BPS held
+// different values (10 → 4 → 7), so the on-chain rate per mint can drift from
+// the current constant. Reading from the mint keeps the math agreeing with
+// what Token-2022 will actually charge at TransferChecked time.
+fn calculate_transfer_fee(mint_info: &AccountInfo, amount: u64) -> Result<u64> {
+    let data = mint_info.try_borrow_data()?;
+    let state = StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&data)
+        .map_err(|_| TorchMarketError::MathOverflow)?;
+    let fee_config = state
+        .get_extension::<TransferFeeConfig>()
+        .map_err(|_| TorchMarketError::MathOverflow)?;
+    let epoch = Clock::get()?.epoch;
+    fee_config
+        .calculate_epoch_fee(epoch, amount)
+        .ok_or(TorchMarketError::MathOverflow.into())
 }
 
 // Fund bonding curve's WSOL ATA with bonding curve SOL.
@@ -167,7 +172,8 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
         )?;
     }
 
-    let transfer_fee = calculate_transfer_fee(token_amount)?;
+    let mint_info = ctx.accounts.mint.to_account_info();
+    let transfer_fee = calculate_transfer_fee(&mint_info, token_amount)?;
     let tokens_payer_will_receive = token_amount
         .checked_sub(transfer_fee)
         .ok_or(TorchMarketError::MathOverflow)?;
@@ -283,24 +289,27 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
         None,
     )?;
 
-    {
+    // Drop the mint data borrow before the CPI — set_authority needs to write
+    // the mint account, and Token-2022 fails AccountBorrowFailed if we hold a
+    // read borrow into it. Inner scope around try_borrow_data does the trick.
+    let has_freeze_authority = {
         let mint_data = ctx.accounts.mint.to_account_info();
         let mint_bytes = mint_data.try_borrow_data()?;
-        let has_freeze_authority = mint_bytes.len() > 46 && mint_bytes[46] == 1;
-        if has_freeze_authority {
-            set_authority(
-                CpiContext::new_with_signer(
-                    ctx.accounts.token_2022_program.to_account_info(),
-                    SetAuthority {
-                        current_authority: ctx.accounts.bonding_curve.to_account_info(),
-                        account_or_mint: ctx.accounts.mint.to_account_info(),
-                    },
-                    bc_signer,
-                ),
-                AuthorityType::FreezeAccount,
-                None,
-            )?;
-        }
+        mint_bytes.len() > 46 && mint_bytes[46] == 1
+    };
+    if has_freeze_authority {
+        set_authority(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_2022_program.to_account_info(),
+                SetAuthority {
+                    current_authority: ctx.accounts.bonding_curve.to_account_info(),
+                    account_or_mint: ctx.accounts.mint.to_account_info(),
+                },
+                bc_signer,
+            ),
+            AuthorityType::FreezeAccount,
+            None,
+        )?;
     }
 
     set_authority(
@@ -345,7 +354,7 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
         .checked_sub(migration_cost)
         .ok_or(TorchMarketError::InsufficientMigrationFee)?;
 
-    let second_transfer_fee = calculate_transfer_fee(tokens_payer_will_receive)?;
+    let second_transfer_fee = calculate_transfer_fee(&mint_info, tokens_payer_will_receive)?;
     let tokens_in_pool = tokens_payer_will_receive
         .checked_sub(second_transfer_fee)
         .ok_or(TorchMarketError::MathOverflow)?;

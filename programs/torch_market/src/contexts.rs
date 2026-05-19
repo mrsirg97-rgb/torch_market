@@ -81,6 +81,27 @@ pub struct UpdateDevWallet<'info> {
 }
 
 #[derive(Accounts)]
+pub struct ResolveLegacyVote<'info> {
+    pub authority: Signer<'info>,
+    #[account(
+        seeds = [GLOBAL_CONFIG_SEED],
+        bump = global_config.bump,
+        has_one = authority @ TorchMarketError::Unauthorized
+    )]
+    pub global_config: Account<'info, GlobalConfig>,
+    pub mint: Box<InterfaceAccount<'info, MintInterface>>,
+    #[account(
+        mut,
+        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
+        bump = bonding_curve.bump,
+        constraint = bonding_curve.bonding_complete @ TorchMarketError::BondingNotComplete,
+        constraint = !bonding_curve.vote_finalized @ TorchMarketError::VoteAlreadyFinalized,
+        constraint = !bonding_curve.migrated @ TorchMarketError::AlreadyMigrated,
+    )]
+    pub bonding_curve: Box<Account<'info, BondingCurve>>,
+}
+
+#[derive(Accounts)]
 #[instruction(args: CreateTokenArgs)]
 pub struct CreateToken2022<'info> {
     #[account(mut)]
