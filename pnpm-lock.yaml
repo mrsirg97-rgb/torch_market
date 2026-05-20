@@ -21,8 +21,8 @@ importers:
         specifier: ^6.0.0
         version: 6.0.0
       deeppoolsdk:
-        specifier: 4.3.1
-        version: 4.3.1(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@6.0.3)(utf-8-validate@6.0.6)
+        specifier: 4.4.0
+        version: 4.4.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@6.0.3)(utf-8-validate@6.0.6)
     devDependencies:
       '@types/node':
         specifier: ^25.6.0
@@ -236,8 +236,8 @@ packages:
   cross-fetch@3.2.0:
     resolution: {integrity: sha512-Q+xVJLoGOeIMXZmbUK4HYk+69cQH6LudR0Vu/pRm2YlU/hDV9CiS0gKUMaWY5f2NeUH9C1nV3bsTlCo0FsTV1Q==}
 
-  deeppoolsdk@4.3.1:
-    resolution: {integrity: sha512-VYifMB4uGgwW66e79k3sldvbV77Uqyxkh0YoHikmc+oiWh7W1I+JSRquOwYc60vSCPEuIgaV9kYL4501g7vz8A==}
+  deeppoolsdk@4.4.0:
+    resolution: {integrity: sha512-LOtpI5RHiD+KAPp3wlcWxrYWxfwgiwDb12KAY0ZQLbYYAHePRIQd5P+vup12L5gjqwN05CgU0LkJO36GdG7HhA==}
 
   delay@5.0.0:
     resolution: {integrity: sha512-ReEBKkIfe4ya47wlPYf/gu5ib6yUG0/Aez0JQZQz94kiWtRQvZIQbTiehsnwHvLSWJnQdhVeqYue7Id1dKr0qw==}
@@ -663,7 +663,7 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  deeppoolsdk@4.3.1(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@6.0.3)(utf-8-validate@6.0.6):
+  deeppoolsdk@4.4.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@6.0.3)(utf-8-validate@6.0.6):
     dependencies:
       '@coral-xyz/anchor': 0.32.1(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)
       '@solana/spl-token': 0.4.14(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@6.0.3)(utf-8-validate@6.0.6)
