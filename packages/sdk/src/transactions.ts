@@ -27,6 +27,7 @@ import {
   getTransferFeeAmount,
 } from '@solana/spl-token'
 import { BN, Program, AnchorProvider, Wallet } from '@coral-xyz/anchor'
+import { buildSwapTransaction as buildDeepPoolSwapTransaction } from 'deeppoolsdk'
 import {
   getBondingCurvePda,
   getTokenTreasuryPda,
@@ -46,6 +47,7 @@ import {
   getShortPositionPda,
   getShortConfigPda,
   getDeepPoolAccounts,
+  getTorchConfigPda,
   calculateTokensOut,
   calculateSolOut,
   GlobalConfig,
@@ -171,6 +173,41 @@ const finalizeTransaction = async (
   return new VersionedTransaction(message)
 }
 
+// Direct (no-vault) swap against the DeepPool pool for a migrated market.
+// Routes through deeppoolsdk and wraps the resulting Transaction in a v0
+// VersionedTransaction so the return shape matches every other SDK builder.
+const buildDirectDexSwapTransaction = async (
+  connection: Connection,
+  mintStr: string,
+  userStr: string,
+  amountIn: number,
+  minimumOut: number,
+  isBuy: boolean,
+  message: string | undefined,
+): Promise<TransactionResult> => {
+  const [torchConfigPda] = getTorchConfigPda()
+
+  const { transaction: legacyTx } = await buildDeepPoolSwapTransaction(connection, {
+    user: userStr,
+    config: torchConfigPda.toString(),
+    tokenMint: mintStr,
+    amountIn,
+    minimumOut,
+    buy: isBuy,
+  })
+
+  const user = new PublicKey(userStr)
+  addMemoIx(legacyTx, user, message, 280)
+  const versionedTx = await finalizeTransaction(connection, legacyTx, user)
+
+  const direction = isBuy ? 'Buy' : 'Sell'
+  const amountLabel = isBuy ? `${amountIn / 1e9} SOL` : `${amountIn / 1e6} tokens`
+  return {
+    transaction: versionedTx,
+    message: `${direction} ${amountLabel} (direct DEX)`,
+  }
+}
+
 // ============================================================================
 // Buy
 // ============================================================================
@@ -194,30 +231,39 @@ const buildBuyTransactionInternal = async (
 
   const { bondingCurve, treasury } = tokenData
 
-  // Migrated token — route through vault swap on DeepPool
+  // Migrated token — route through DeepPool. Vault-routed if a vault is
+  // provided, otherwise the user signs and pays directly.
   if (quote?.source === 'dex' || bondingCurve.bonding_complete) {
-    if (!vaultCreatorStr) {
-      throw new Error(
-        'Migrated tokens require vault-based trading. Use buildBuyTransaction with a vault parameter.',
-      )
-    }
     const resolvedQuote = quote ?? (await getBuyQuote(connection, mintStr, amount_sol))
     const slippage = slippage_bps ?? 100
     const minOut =
       (BigInt(resolvedQuote.min_output_tokens) * BigInt(10000 - slippage)) / BigInt(10000)
-    const result = await buildVaultSwapTransaction(connection, {
-      mint: mintStr,
-      signer: buyerStr,
-      vault_creator: vaultCreatorStr,
-      amount_in: amount_sol,
-      minimum_amount_out: Number(minOut),
-      is_buy: true,
-      message,
-    })
-    return {
-      ...result,
-      message: `Buy ~${resolvedQuote.tokens_to_user / 1e6} tokens for ${amount_sol / 1e9} SOL (via DEX)`,
+
+    if (vaultCreatorStr) {
+      const result = await buildVaultSwapTransaction(connection, {
+        mint: mintStr,
+        signer: buyerStr,
+        vault_creator: vaultCreatorStr,
+        amount_in: amount_sol,
+        minimum_amount_out: Number(minOut),
+        is_buy: true,
+        message,
+      })
+      return {
+        ...result,
+        message: `Buy ~${resolvedQuote.tokens_to_user / 1e6} tokens for ${amount_sol / 1e9} SOL (via vault)`,
+      }
     }
+
+    return await buildDirectDexSwapTransaction(
+      connection,
+      mintStr,
+      buyerStr,
+      amount_sol,
+      Number(minOut),
+      true,
+      message,
+    )
   }
 
   // Calculate expected output
@@ -518,29 +564,38 @@ export const buildSellTransaction = async (
 
   const { bondingCurve } = tokenData
 
-  // Migrated token — route through vault swap on DeepPool
+  // Migrated token — route through DeepPool. Vault-routed if a vault is
+  // provided, otherwise the user signs and pays directly.
   if (quote?.source === 'dex' || bondingCurve.bonding_complete) {
-    if (!vaultCreatorStr) {
-      throw new Error(
-        'Migrated tokens require vault-based trading. Use buildSellTransaction with a vault parameter.',
-      )
-    }
     const resolvedQuote = quote ?? (await getSellQuote(connection, mintStr, amount_tokens))
     const slippage = slippage_bps ?? 100
     const minOut = (BigInt(resolvedQuote.min_output_sol) * BigInt(10000 - slippage)) / BigInt(10000)
-    const result = await buildVaultSwapTransaction(connection, {
-      mint: mintStr,
-      signer: sellerStr,
-      vault_creator: vaultCreatorStr,
-      amount_in: amount_tokens,
-      minimum_amount_out: Number(minOut),
-      is_buy: false,
-      message,
-    })
-    return {
-      ...result,
-      message: `Sell ${amount_tokens / 1e6} tokens for ~${resolvedQuote.output_sol / 1e9} SOL (via DEX)`,
+
+    if (vaultCreatorStr) {
+      const result = await buildVaultSwapTransaction(connection, {
+        mint: mintStr,
+        signer: sellerStr,
+        vault_creator: vaultCreatorStr,
+        amount_in: amount_tokens,
+        minimum_amount_out: Number(minOut),
+        is_buy: false,
+        message,
+      })
+      return {
+        ...result,
+        message: `Sell ${amount_tokens / 1e6} tokens for ~${resolvedQuote.output_sol / 1e9} SOL (via vault)`,
+      }
     }
+
+    return await buildDirectDexSwapTransaction(
+      connection,
+      mintStr,
+      sellerStr,
+      amount_tokens,
+      Number(minOut),
+      false,
+      message,
+    )
   }
 
   // Calculate expected output

@@ -15,6 +15,7 @@ export {
   getTokensPage,
   getToken,
   getTokenMetadata,
+  fetchMintsMetadata,
   getHolders,
   getMessages,
   getLendingInfo,
@@ -136,10 +137,17 @@ export {
   PROGRAM_ID,
   LAMPORTS_PER_SOL,
   TOKEN_MULTIPLIER,
+  TOKEN_DECIMALS,
   TOTAL_SUPPLY,
   LEGACY_MINTS,
   TOKEN_2022_PROGRAM_ID,
   PROTOCOL_TREASURY_SEED,
+  BONDING_CURVE_SEED,
+  TREASURY_SEED,
+  USER_POSITION_SEED,
+  USER_STATS_SEED,
+  STAR_RECORD_SEED,
+  TREASURY_LOCK_SEED,
 } from './constants'
 
 // PDA / account derivers (for advanced usage — e.g. reading vault-owned ATAs directly).
@@ -151,6 +159,23 @@ export {
   getProtocolTreasuryPda,
   getTokenTreasuryPda,
   getTreasuryTokenAccount,
+  getTreasuryLockPda,
+  getStarRecordPda,
+  getUserStatsPda,
+  getUserPositionPda,
   getTorchConfigPda,
   getDeepPoolAccounts,
+  getDeepPoolPda,
+  decodeString,
+  calculatePrice,
+  calculateBondingProgress,
 } from './program'
+
+// account interfaces (for callers decoding on-chain accounts directly)
+export type {
+  BondingCurve,
+  Treasury as TreasuryAccount,
+  ProtocolTreasury as ProtocolTreasuryAccount,
+  UserStats as UserStatsAccount,
+} from './program'
+export type { MintMetadata } from './tokens'

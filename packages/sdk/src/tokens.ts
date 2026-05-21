@@ -118,7 +118,7 @@ const parseMintMetadataFromAccount = (
 
 // Batch-fetch Token-2022 metadata extensions for many mints in one (or few) RPCs.
 // getMultipleAccountsInfo caps at 100 accounts per call, so larger lists are chunked.
-const fetchMintsMetadata = async (
+export const fetchMintsMetadata = async (
   connection: Connection,
   mints: PublicKey[],
 ): Promise<Map<string, MintMetadata>> => {

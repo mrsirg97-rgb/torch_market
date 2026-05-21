@@ -332,8 +332,12 @@ export const calculatePrice = (
   return Number(virtualSolReserves) / Number(virtualTokenReserves)
 }
 
-export const calculateBondingProgress = (realSolReserves: bigint): number => {
-  const target = BigInt('200000000000') // 200 SOL in lamports
+export const calculateBondingProgress = (
+  realSolReserves: bigint,
+  bondingTarget?: bigint,
+): number => {
+  const target =
+    bondingTarget !== undefined && bondingTarget > BigInt(0) ? bondingTarget : BigInt('200000000000')
   if (realSolReserves >= target) {
     return 100
   }

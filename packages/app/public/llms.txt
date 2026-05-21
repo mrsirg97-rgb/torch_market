@@ -1,0 +1,33 @@
+# Torch Market
+
+> A programmable economic substrate on Solana. Every token is its own self-sustaining economy with bonding curves, community treasuries, lending markets, and governance. Torch Vault provides full-custody on-chain escrow for AI agents. Built for AI agents and humans alike.
+
+Torch Market lets anyone launch a token with a bonding curve, community treasury, and governance vote. No founder allocations, no insiders. When 200 SOL is raised, the token graduates to Raydium DEX with burned LP. The community votes on treasury outcomes. Treasury lending unlocks post-migration. All parameters are immutable on-chain. AI agents trade through Torch Vault -- a full-custody on-chain escrow with authority separation and instant revocation. The SDK builds transactions locally from the Anchor IDL. No API server. Solana is the compute layer.
+
+Program ID: `8hbUkonssSEEtkqzwM7ZcZrD9evacM92TcWSooVF4BeT`
+Chain: Solana (Mainnet)
+Version: V10.7.1
+
+## Requirements
+
+
+- **SOLANA_RPC_URL**: Solana RPC endpoint (HTTPS)
+- **SOLANA_PRIVATE_KEY**: Agent wallet keypair (base58 or byte array). Use a dedicated hot wallet with minimal SOL for gas. All signing is local -- key never leaves the runtime.
+- **TORCH_NETWORK**: devnet or mainnet mode for interacting with the torch protocol.
+
+## SDK (Preferred)
+
+- [Torch Program](https://github.com/mrsirg97-rgb/torch_market): Torch Market Source Code
+- [Torch SDK](https://github.com/mrsirg97-rgb/torchsdk): TypeScript SDK -- builds transactions locally via Anchor, reads state from RPC. No API server needed. **Start here.**
+- [npm: torchsdk](https://www.npmjs.com/package/torchsdk): `npm install torchsdk`
+
+## Agent Integration
+
+- [Skill File](https://torch.market/skill.md): Complete machine-readable reference for AI agents
+- [Agent Card](https://torch.market/agent.json): Agent metadata, capabilities, and SAID verification
+
+## Optional
+
+- [ClawHub Listing](https://clawhub.ai/mrsirg97-rgb/torchmarket): Agent skill marketplace listing
+- [SAID Agent Profile](https://www.saidprotocol.com/agent.html?wallet=8cpWmV4kGdvxVYYNBEMPNwsJSRVQw5MQ9NXn4t293nMa): On-chain identity and reputation
+- [Simulation Tooling](https://github.com/mrsirg97-rgb/torchmarket-sim): Economic simulation for bonding curves and lending

@@ -1,0 +1,30 @@
+{
+  "name": "said-register",
+  "version": "1.1.0",
+  "description": "Register your AI agent on SAID Protocol (Solana)",
+  "bin": {
+    "said-register": "./bin/register.mjs"
+  },
+  "type": "module",
+  "files": [
+    "bin"
+  ],
+  "keywords": [
+    "solana",
+    "ai-agents",
+    "identity",
+    "said",
+    "registration"
+  ],
+  "author": "SAID Protocol",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kaiclawd/said-register"
+  },
+  "homepage": "https://www.saidprotocol.com",
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.30.1",
+    "@solana/web3.js": "^1.98.0"
+  }
+}

@@ -1,0 +1,8 @@
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "market.torch.twa",
+    "sha256_cert_fingerprints": ["F8:9F:43:FD:35:D3:85:78:F4:7C:6D:34:C5:7C:D8:88:B9:9E:72:7D:CB:F5:66:D3:15:2B:7D:B1:A5:9B:6B:32"]
+  }
+}]

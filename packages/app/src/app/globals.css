@@ -1,0 +1,597 @@
+@import 'tailwindcss';
+
+/* ========================================
+   DARK (default) — warm near-black + amber
+   ======================================== */
+:root {
+  --background: #1c1815;
+  --foreground: #e8dfd2;
+  --card-bg: rgba(255, 248, 235, 0.03);
+  --border-color: transparent;
+  --accent: #d97706;
+  --accent-hover: #b45309;
+  --secondary: #7c6750;
+  --secondary-hover: #6b5944;
+  --success: #84a37a;
+  --danger: #c77a6d;
+  --muted: #968a7c;
+  --surface: rgba(255, 248, 235, 0.03);
+  --surface-hover: rgba(255, 248, 235, 0.06);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-space-grotesk);
+  --font-mono: var(--font-space-mono);
+}
+
+/* Borderless aesthetic — neutralize decorative 1px borders site-wide.
+ * Dashed borders (drop-zones, etc.) keep their color via the re-enable
+ * rules below; they are real affordances, not chrome. */
+[class*='border-white/'],
+[class*='border-black/'],
+[class*='border-danger'],
+[class*='border-success'],
+[class*='border-purple'],
+[class*='border-teal'],
+[class*='border-yellow'],
+[class*='border-accent'] {
+  border-color: transparent !important;
+}
+
+[class*='border-dashed'] {
+  border-color: rgba(232, 223, 210, 0.22) !important;
+}
+
+[class*='border-dashed'][class*='border-accent'] {
+  border-color: var(--accent) !important;
+}
+
+[data-theme='light'] [class*='border-dashed'] {
+  border-color: rgba(42, 36, 30, 0.22) !important;
+}
+
+html {
+  height: 100%;
+}
+
+/* Mobile viewport height fix - use dynamic viewport height */
+.h-mobile-screen {
+  height: 100vh;
+  height: 100dvh;
+}
+
+.min-h-mobile-screen {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family:
+    var(--font-space-grotesk),
+    system-ui,
+    -apple-system,
+    sans-serif;
+  letter-spacing: -0.01em;
+  min-height: 100%;
+  -webkit-font-smoothing: antialiased;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Borderless grouping — separate via background tint + whitespace, never lines */
+.card {
+  background: var(--surface);
+  border-radius: 12px;
+}
+
+/* Status colors */
+.text-success {
+  color: var(--success);
+}
+
+.text-danger {
+  color: var(--danger);
+}
+
+.text-accent {
+  color: var(--accent);
+}
+
+.text-muted {
+  color: var(--muted);
+}
+
+/* Progress bar for bonding curve */
+.progress-bar {
+  background: rgba(255, 248, 235, 0.08);
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  background: var(--accent);
+  height: 100%;
+  border-radius: 9999px;
+  transition: width 0.3s ease;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(232, 223, 210, 0.12);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(232, 223, 210, 0.22);
+}
+
+/* Wallet adapter — ghost button, no border */
+.wallet-adapter-button {
+  background: var(--surface) !important;
+  border: none !important;
+  border-radius: 0.5rem !important;
+  color: var(--foreground) !important;
+  font-weight: 500 !important;
+  font-size: 12px !important;
+  padding: 0 12px !important;
+  transition: background 0.15s ease !important;
+  height: 32px !important;
+}
+
+.wallet-adapter-button:hover {
+  background: var(--surface-hover) !important;
+}
+
+.wallet-adapter-button-start-icon {
+  display: none !important;
+}
+
+.wallet-adapter-button-trigger {
+  background: var(--surface) !important;
+}
+
+.wallet-adapter-button-trigger:hover {
+  background: var(--surface-hover) !important;
+}
+
+@media (max-width: 400px) {
+  .wallet-adapter-button {
+    font-size: 12px !important;
+    padding: 6px 10px !important;
+  }
+}
+
+.wallet-adapter-modal-wrapper {
+  background: rgba(28, 24, 21, 0.92) !important;
+  backdrop-filter: blur(20px) !important;
+}
+
+.wallet-adapter-modal-container {
+  background: rgba(36, 31, 27, 0.96) !important;
+  border: none !important;
+  border-radius: 16px !important;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.45);
+}
+
+.wallet-adapter-modal-title {
+  color: var(--foreground) !important;
+}
+
+.wallet-adapter-modal-list li {
+  background: rgba(255, 248, 235, 0.04) !important;
+  border-radius: 8px !important;
+  margin-bottom: 8px !important;
+}
+
+.wallet-adapter-modal-list li:hover {
+  background: rgba(255, 248, 235, 0.08) !important;
+}
+
+/* Inputs — ghost fill, no border, outline ring on focus */
+input[type='text'],
+input[type='number'],
+input[type='search'],
+textarea {
+  background: rgba(255, 248, 235, 0.04);
+  border: none;
+  border-radius: 8px;
+  padding: 10px 14px;
+  color: var(--foreground);
+  outline: none;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+input[type='text']:focus,
+input[type='number']:focus,
+input[type='search']:focus,
+textarea:focus {
+  background: rgba(255, 248, 235, 0.06);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* Tables — spacing, not lines */
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th {
+  text-align: left;
+  padding: 12px 16px;
+  font-weight: 600;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+td {
+  padding: 12px 16px;
+}
+
+tr:hover td {
+  background: rgba(255, 248, 235, 0.03);
+}
+
+/* Buttons — ghost fills, no borders */
+.btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-weight: 500;
+  font-size: 14px;
+  transition: background 0.15s ease;
+  cursor: pointer;
+  background: var(--surface);
+  border: none;
+  color: var(--foreground);
+}
+
+.btn:hover {
+  background: var(--surface-hover);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: color-mix(in srgb, var(--secondary) 35%, transparent);
+  color: var(--foreground);
+}
+
+.btn-primary:hover {
+  background: color-mix(in srgb, var(--secondary) 50%, transparent);
+}
+
+.btn-secondary {
+  background: rgba(255, 248, 235, 0.06);
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 248, 235, 0.10);
+}
+
+.btn-accent {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+
+.btn-accent:hover {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.btn-danger {
+  background: color-mix(in srgb, var(--danger) 22%, transparent);
+  color: var(--danger);
+}
+
+.btn-danger:hover {
+  background: color-mix(in srgb, var(--danger) 34%, transparent);
+}
+
+/* Market card — borderless, lifts on hover via bg tint */
+.token-card,
+.token-card-v2 {
+  background: var(--surface);
+  border-radius: 14px;
+  transition: background 0.15s ease, transform 0.15s ease;
+  overflow: hidden;
+}
+
+.token-card:hover,
+.token-card-v2:hover {
+  background: var(--surface-hover);
+  transform: translateY(-1px);
+}
+
+/* Badges — ghost pills, no borders */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.badge-new {
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--success);
+}
+
+.badge-bonding {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+}
+
+.badge-complete {
+  background: color-mix(in srgb, var(--success) 22%, transparent);
+  color: var(--success);
+}
+
+.badge-migrated {
+  background: color-mix(in srgb, var(--secondary) 30%, transparent);
+  color: #b89a78;
+}
+
+.badge-reclaimed {
+  background: rgba(150, 138, 124, 0.18);
+  color: var(--muted);
+}
+
+/* Animations */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 20px 10px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.5s ease-out;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s infinite;
+}
+
+/* Vote buttons — ghost fills, no borders */
+.vote-btn {
+  flex: 1;
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-weight: 500;
+  font-size: 14px;
+  transition: background 0.2s ease;
+  border: none;
+  cursor: pointer;
+}
+
+.vote-btn-return {
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--success);
+}
+
+.vote-btn-return:hover {
+  background: color-mix(in srgb, var(--success) 28%, transparent);
+}
+
+.vote-btn-burn {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  color: var(--danger);
+}
+
+.vote-btn-burn:hover {
+  background: color-mix(in srgb, var(--danger) 28%, transparent);
+}
+
+/* ========================================
+   LIGHT — warm cream paper + deep brown
+   ======================================== */
+
+[data-theme='light'] {
+  --background: #f7f1e8;
+  --foreground: #2a241e;
+  --card-bg: rgba(42, 36, 30, 0.03);
+  --border-color: transparent;
+  --accent: #b45309;
+  --accent-hover: #92400e;
+  --secondary: #6b5944;
+  --secondary-hover: #5a4b39;
+  --success: #6b8d61;
+  --danger: #a85b4f;
+  --muted: #8a7d6e;
+  --surface: rgba(42, 36, 30, 0.03);
+  --surface-hover: rgba(42, 36, 30, 0.06);
+}
+
+[data-theme='light'] body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+[data-theme='light'] .progress-bar {
+  background: rgba(42, 36, 30, 0.08);
+}
+
+[data-theme='light'] ::-webkit-scrollbar-thumb {
+  background: rgba(42, 36, 30, 0.14);
+}
+
+[data-theme='light'] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(42, 36, 30, 0.24);
+}
+
+/* Inputs flip to warm-paper fill */
+[data-theme='light'] input[type='text'],
+[data-theme='light'] input[type='number'],
+[data-theme='light'] input[type='search'],
+[data-theme='light'] textarea {
+  background: rgba(42, 36, 30, 0.04);
+  color: var(--foreground);
+}
+
+[data-theme='light'] input::placeholder,
+[data-theme='light'] textarea::placeholder {
+  color: rgba(42, 36, 30, 0.4);
+}
+
+[data-theme='light'] input[type='text']:focus,
+[data-theme='light'] input[type='number']:focus,
+[data-theme='light'] input[type='search']:focus,
+[data-theme='light'] textarea:focus {
+  background: rgba(42, 36, 30, 0.06);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+[data-theme='light'] tr:hover td {
+  background: rgba(42, 36, 30, 0.03);
+}
+
+[data-theme='light'] .wallet-adapter-modal-wrapper {
+  background: rgba(247, 241, 232, 0.92) !important;
+}
+
+[data-theme='light'] .wallet-adapter-modal-container {
+  background: rgba(253, 248, 238, 0.98) !important;
+  box-shadow: 0 12px 48px rgba(42, 36, 30, 0.18) !important;
+}
+
+[data-theme='light'] .wallet-adapter-modal-title {
+  color: var(--foreground) !important;
+}
+
+[data-theme='light'] .wallet-adapter-modal-list li {
+  background: rgba(42, 36, 30, 0.04) !important;
+}
+
+[data-theme='light'] .wallet-adapter-modal-list li:hover {
+  background: rgba(42, 36, 30, 0.08) !important;
+}
+
+[data-theme='light'] .wallet-adapter-button {
+  background: rgba(42, 36, 30, 0.05) !important;
+  color: var(--foreground) !important;
+}
+
+[data-theme='light'] .wallet-adapter-button:hover {
+  background: rgba(42, 36, 30, 0.10) !important;
+}
+
+[data-theme='light'] .wallet-adapter-dropdown-list {
+  background: #fdf8ee !important;
+  box-shadow: 0 8px 20px rgba(42, 36, 30, 0.12) !important;
+  border: none !important;
+}
+
+[data-theme='light'] .wallet-adapter-dropdown-list-item {
+  color: var(--foreground) !important;
+}
+
+[data-theme='light'] .wallet-adapter-dropdown-list-item:not([disabled]):hover {
+  background-color: rgba(42, 36, 30, 0.06) !important;
+}
+
+/* Global font color override — force all text dark in light mode */
+[data-theme='light'] {
+  color: var(--foreground);
+}
+
+[data-theme='light'] body,
+[data-theme='light'] p,
+[data-theme='light'] span,
+[data-theme='light'] div,
+[data-theme='light'] a,
+[data-theme='light'] li,
+[data-theme='light'] label,
+[data-theme='light'] h1,
+[data-theme='light'] h2,
+[data-theme='light'] h3,
+[data-theme='light'] h4,
+[data-theme='light'] h5,
+[data-theme='light'] h6 {
+  color: inherit;
+}
+
+/* Override explicit white text utilities (legacy tailwind in components) */
+[data-theme='light'] [class*='text-white'] {
+  color: var(--foreground) !important;
+}
+
+[data-theme='light'] .text-accent {
+  color: var(--accent) !important;
+}
+
+[data-theme='light'] .text-success {
+  color: var(--success) !important;
+}
+
+[data-theme='light'] .text-danger {
+  color: var(--danger) !important;
+}
+
+[data-theme='light'] .text-muted {
+  color: var(--muted) !important;
+}
+
+/* Hard-coded dark rgba bg utilities in components → warm card tint */
+[data-theme='light'] [class*='bg-\[rgba\(20'],
+[data-theme='light'] [class*='bg-\[rgba\(30'] {
+  background: rgba(42, 36, 30, 0.04) !important;
+}
+
+/* Translucent white utilities used throughout the codebase → translucent warm-dark */
+[data-theme='light'] [class*='bg-white/5'] {
+  background-color: rgba(42, 36, 30, 0.04) !important;
+}
+
+[data-theme='light'] [class*='bg-white/10'] {
+  background-color: rgba(42, 36, 30, 0.07) !important;
+}
+
+[data-theme='light'] [class*='bg-white/20'] {
+  background-color: rgba(42, 36, 30, 0.12) !important;
+}
+
+/* Stale border-white utilities in components — neutralize to invisible */
+[data-theme='light'] [class*='border-white/10'],
+[data-theme='light'] [class*='border-white/20'] {
+  border-color: transparent !important;
+}
+
+/* Modal overlays — keep softly dim */
+[data-theme='light'] [class*='bg-black/70'] {
+  background-color: rgba(42, 36, 30, 0.35) !important;
+}
+
+[data-theme='light'] [class*='bg-black/40'] {
+  background-color: rgba(42, 36, 30, 0.15) !important;
+}
+
+[data-theme='light'] [class*='bg-black/30'] {
+  background-color: rgba(42, 36, 30, 0.10) !important;
+}
