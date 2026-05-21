@@ -87,6 +87,35 @@ body {
   border-radius: 12px;
 }
 
+/* Modal surface — frosted glass over the page. The regular `.card` is too
+ * transparent to lift off the page; this surface keeps a translucent fill
+ * plus backdrop blur so content behind the dialog blurs softly without
+ * disappearing. Used by HowItWorksModal, TreasuryModal, and any other
+ * floating dialog. */
+.modal-surface {
+  background: var(--background);
+  border-radius: 16px;
+  /* Matches the launch slideout's elevation: soft 60px feather, modest alpha
+   * so the lift reads without competing with the dim backdrop. */
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+}
+
+[data-theme='light'] .modal-surface {
+  box-shadow: 0 20px 60px rgba(42, 36, 30, 0.15);
+}
+
+/* Modal backdrop — warm dim + soft blur on whatever sits behind the dialog
+ * area. Replaces raw `bg-black`. */
+.modal-backdrop {
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+[data-theme='light'] .modal-backdrop {
+  background: rgba(42, 36, 30, 0.28);
+}
+
 /* Status colors */
 .text-success {
   color: var(--success);

@@ -603,6 +603,15 @@ export interface ShortPositionInfo {
   warnings?: string[]
 }
 
+export interface ShortPositionWithKey extends ShortPositionInfo {
+  shorter: string
+}
+
+export interface AllShortPositionsResult {
+  positions: ShortPositionWithKey[]
+  pool_price_sol: number | null
+}
+
 // ============================================================================
 // Messages
 // ============================================================================

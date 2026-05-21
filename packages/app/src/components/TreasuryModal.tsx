@@ -155,15 +155,18 @@ export function TreasuryModal({ isOpen, onClose }: TreasuryModalProps) {
 
   return (
     <div
-      className="fixed inset-0 bg-black z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 modal-backdrop z-50 flex items-center justify-center p-4"
       onClick={onClose}
     >
       <div
-        className="card p-6 max-w-md w-full max-h-[85vh] flex flex-col"
+        className="modal-surface p-6 max-w-md w-full max-h-[85vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-xl font-bold flex items-center gap-2">
+          <h2
+            className="text-xl font-bold lowercase flex items-center gap-2"
+            style={{ color: 'var(--foreground)' }}
+          >
             <svg
               xmlns="http://www.w3.org/2000/svg"
               width="20"
@@ -183,20 +186,22 @@ export function TreasuryModal({ isOpen, onClose }: TreasuryModalProps) {
               <path d="M3 12h3" />
               <path d="M18 12h3" />
             </svg>
-            Protocol Treasury
+            protocol treasury
           </h2>
           <a
             href={`https://solscan.io/account/${treasuryAddress}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-white/40 hover:text-accent text-xs font-mono transition-colors"
+            className="text-xs font-mono transition-colors hover:text-accent"
+            style={{ color: 'var(--muted)' }}
             title="View on Solscan"
           >
             {shortenAddress(treasuryAddress)}
           </a>
           <button
             onClick={onClose}
-            className="text-white/50 hover:text-white text-2xl cursor-pointer"
+            className="text-2xl cursor-pointer"
+            style={{ color: 'var(--muted)' }}
           >
             &times;
           </button>

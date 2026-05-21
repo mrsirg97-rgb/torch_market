@@ -472,3 +472,93 @@ proptest! {
         prop_assert_eq!(acc3, expected);
     }
 }
+
+// ============================================================================
+// Math helpers extracted from handlers
+//
+// Universal-property checks. Concrete-case Kani proofs live alongside the
+// helper definitions; these proptests cover the symbolic range that's not
+// SAT-tractable in Kani (u128 mul-div with two symbolic operands).
+// ============================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(CASES))]
+
+    // apply_bps: result is bounded above by value when bps <= 10_000.
+    #[test]
+    fn apply_bps_bounded(value in 0u64..REALISTIC_MAX, bps in 0u16..=10_000) {
+        let r = apply_bps(value, bps).unwrap();
+        prop_assert!(r <= value);
+    }
+
+    // apply_bps: monotonic in bps for fixed value.
+    #[test]
+    fn apply_bps_monotonic_in_bps(value in 0u64..REALISTIC_MAX, a in 0u16..=10_000, b in 0u16..=10_000) {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        let r_lo = apply_bps(value, lo).unwrap();
+        let r_hi = apply_bps(value, hi).unwrap();
+        prop_assert!(r_hi >= r_lo);
+    }
+
+    // calc_user_borrow_cap: bounded by max_lendable * MULTIPLIER when user_collateral == denominator.
+    // Realistic bounds keep the triple-multiplication inside u128.
+    #[test]
+    fn user_borrow_cap_bounded(
+        max_lendable in 0u64..1_000_000_000_000u64, // 1000 SOL
+        user_collateral in 0u64..TOTAL_SUPPLY,
+        denominator in 1u64..TOTAL_SUPPLY,
+    ) {
+        let cap = calc_user_borrow_cap(max_lendable, user_collateral, denominator).unwrap();
+        // If user_collateral >= denominator they get the full multiplied cap.
+        if user_collateral >= denominator {
+            let expected_at_or_above = (max_lendable as u128)
+                .checked_mul(BORROW_SHARE_MULTIPLIER as u128)
+                .unwrap();
+            prop_assert!((cap as u128) >= expected_at_or_above || cap == u64::MAX);
+        }
+    }
+
+    // calc_user_borrow_cap: zero denominator short-circuits.
+    #[test]
+    fn user_borrow_cap_zero_denominator(max_lendable in 0u64..u64::MAX, user_collateral in 0u64..u64::MAX) {
+        prop_assert_eq!(calc_user_borrow_cap(max_lendable, user_collateral, 0).unwrap(), 0);
+    }
+
+    // calc_bad_debt: conservation identity over random valid inputs.
+    #[test]
+    fn bad_debt_conservation(total_debt in 0u64..REALISTIC_MAX) {
+        let debt_to_cover = total_debt / 2; // arbitrary deterministic carve
+        let covered = debt_to_cover / 2;
+        let bad = calc_bad_debt(total_debt, covered, debt_to_cover).unwrap();
+        let uncovered_remainder = total_debt - debt_to_cover;
+        prop_assert_eq!(bad + covered + uncovered_remainder, total_debt);
+    }
+
+    // calc_price_ratio: monotonic in num for a fixed positive denominator.
+    #[test]
+    fn price_ratio_monotonic_in_num(a in 0u64..1_000_000_000_000u64, b in 0u64..1_000_000_000_000u64, denom in 1u64..1_000_000_000_000u64) {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        let r_lo = calc_price_ratio(lo, denom).unwrap();
+        let r_hi = calc_price_ratio(hi, denom).unwrap();
+        prop_assert!(r_hi >= r_lo);
+    }
+
+    // calc_price_ratio: zero denominator returns None.
+    #[test]
+    fn price_ratio_zero_denom_is_none(num in 0u64..u64::MAX) {
+        prop_assert!(calc_price_ratio(num, 0).is_none());
+    }
+
+    // calc_short_partial_seize_proration: actual coverage never exceeds the un-capped target.
+    #[test]
+    fn short_partial_seize_proration_bounded(
+        tokens_to_cover in 0u64..1_000_000_000_000u64,
+        full_seize in 1u64..100_000_000_000u64,
+    ) {
+        // capped <= full_seize is the caller invariant; pick a deterministic fraction.
+        let capped = full_seize / 2;
+        let actual =
+            calc_short_partial_seize_proration(tokens_to_cover, capped, full_seize).unwrap();
+        prop_assert!(actual <= tokens_to_cover);
+    }
+}

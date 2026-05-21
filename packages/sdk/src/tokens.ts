@@ -64,6 +64,8 @@ import {
   ShortPositionInfo,
   LoanPositionWithKey,
   AllLoanPositionsResult,
+  ShortPositionWithKey,
+  AllShortPositionsResult,
   VaultInfo,
   VaultWalletLinkInfo,
   UserStatsInfo,
@@ -1306,6 +1308,145 @@ export const getAllLoanPositions = async (
       last_update_slot: lastUpdateSlot,
       total_owed: totalOwed,
       collateral_value_sol: collateralValueSol,
+      current_ltv_bps: currentLtvBps,
+      health,
+    }
+  })
+
+  // 5. Sort: liquidatable first, then at_risk, then healthy
+  const healthOrder: Record<string, number> = { liquidatable: 0, at_risk: 1, healthy: 2, none: 3 }
+  positions.sort((a, b) => (healthOrder[a.health] ?? 3) - (healthOrder[b.health] ?? 3))
+
+  return { positions, pool_price_sol: poolPriceSol }
+}
+
+/**
+ * Get all active short positions for a given token mint.
+ *
+ * Mirrors `getAllLoanPositions`: scans on-chain ShortPosition accounts,
+ * computes health for each (interest projected to currentSlot), and sorts
+ * with liquidatable positions first. Used by the UI's liquidate-shorts list.
+ *
+ * `ShortPosition` layout: [user(32), mint(32), ...] after the 8-byte
+ * discriminator, so the mint filter sits at offset 40 — identical to
+ * `LoanPosition`.
+ */
+export const getAllShortPositions = async (
+  connection: Connection,
+  mintStr: string,
+): Promise<AllShortPositionsResult> => {
+  const mint = new PublicKey(mintStr)
+  const coder = new BorshCoder(idl as unknown as Idl)
+
+  // 1. Fetch all ShortPosition accounts for this mint
+  const shortDiscriminator = coder.accounts.accountDiscriminator('ShortPosition')
+  const bs58 = await import('bs58')
+  const accounts = await connection.getProgramAccounts(PROGRAM_ID, {
+    filters: [
+      { memcmp: { offset: 0, bytes: bs58.default.encode(shortDiscriminator) } },
+      { memcmp: { offset: 8 + 32, bytes: mint.toBase58() } }, // mint at offset 40
+    ],
+  })
+
+  // 2. Decode and filter to active shorts (tokens_borrowed > 0)
+  const activeShorts: { shorter: string; short: ShortPosition }[] = []
+  for (const acc of accounts) {
+    try {
+      const short = coder.accounts.decode(
+        'ShortPosition',
+        acc.account.data,
+      ) as unknown as ShortPosition
+      const borrowed = Number(short.tokens_borrowed.toString())
+      if (borrowed > 0) {
+        activeShorts.push({
+          shorter: short.user.toString(),
+          short,
+        })
+      }
+    } catch {
+      // Skip malformed accounts
+    }
+  }
+
+  // 3. Fetch DeepPool reserves + current slot ONCE
+  let poolPriceSol: number | null = null
+  let solReserves = 0
+  let tokenReserves = 0
+  let currentSlot = 0
+  try {
+    const [reserves, slot] = await Promise.all([
+      fetchDeepPoolReserves(connection, mint),
+      connection.getSlot('confirmed'),
+    ])
+    currentSlot = slot
+    solReserves = reserves.solReserves
+    tokenReserves = reserves.tokenReserves
+    if (tokenReserves > 0) {
+      poolPriceSol = solReserves / tokenReserves
+    }
+  } catch {
+    try {
+      currentSlot = await connection.getSlot('confirmed')
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // 4. Compute health for each position (interest projected to currentSlot)
+  const positions: ShortPositionWithKey[] = activeShorts.map(({ shorter, short }) => {
+    const solCollateral = Number(short.sol_collateral.toString())
+    const tokensBorrowed = Number(short.tokens_borrowed.toString())
+    const storedInterest = Number(short.accrued_interest.toString())
+    const lastUpdateSlot = Number(short.last_update_slot.toString())
+    const interest = projectAccruedInterest(
+      tokensBorrowed,
+      storedInterest,
+      lastUpdateSlot,
+      currentSlot,
+    )
+    const totalOwedTokens = tokensBorrowed + interest
+
+    // Shorts: debt is denominated in tokens, collateral in SOL — inverse of
+    // the lending side. debt_value_sol = totalOwedTokens × pool_price.
+    let debtValueSol: number | null = 0
+    if (poolPriceSol !== null && tokenReserves > 0) {
+      debtValueSol = (totalOwedTokens * solReserves) / tokenReserves
+    } else {
+      debtValueSol = null
+    }
+
+    let currentLtvBps: number | null
+    if (debtValueSol === null) {
+      currentLtvBps = null
+    } else if (solCollateral > 0) {
+      currentLtvBps = Math.floor((debtValueSol / solCollateral) * 10000)
+    } else {
+      currentLtvBps = totalOwedTokens > 0 ? 10000 : 0
+    }
+
+    const maxLtvBps = getDepthMaxLtvBps(solReserves)
+    let health: ShortPositionInfo['health']
+    if (tokensBorrowed === 0 && interest === 0) {
+      health = 'none'
+    } else if (currentLtvBps === null) {
+      health = 'healthy'
+    } else if (currentLtvBps >= LIQUIDATION_THRESHOLD_BPS) {
+      health = 'liquidatable'
+    } else if (currentLtvBps >= maxLtvBps) {
+      health = 'at_risk'
+    } else {
+      health = 'healthy'
+    }
+
+    return {
+      shorter,
+      sol_collateral: solCollateral,
+      tokens_borrowed: tokensBorrowed,
+      accrued_interest: interest,
+      accrued_interest_stored: storedInterest,
+      last_update_slot: lastUpdateSlot,
+      total_owed_tokens: totalOwedTokens,
+      debt_value_sol: debtValueSol,
       current_ltv_bps: currentLtvBps,
       health,
     }

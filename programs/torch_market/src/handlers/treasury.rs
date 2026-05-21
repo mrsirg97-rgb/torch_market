@@ -1,6 +1,7 @@
 use crate::constants::*;
 use crate::contexts::*;
 use crate::errors::TorchMarketError;
+use crate::math;
 use crate::pool_validation::read_deep_pool_reserves;
 use crate::token_2022_utils::*;
 use anchor_lang::prelude::*;
@@ -85,21 +86,15 @@ pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) ->
         read_deep_pool_reserves(&ctx.accounts.deep_pool, &ctx.accounts.deep_pool_token_vault)?;
     require!(pool_tokens > 0, TorchMarketError::ZeroPoolReserves);
 
-    let current_ratio = (pool_sol as u128)
-        .checked_mul(RATIO_PRECISION)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(pool_tokens as u128)
-        .ok_or(TorchMarketError::MathOverflow)? as u64;
-    let baseline_ratio = (ctx.accounts.treasury.baseline_sol_reserves as u128)
-        .checked_mul(RATIO_PRECISION)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(ctx.accounts.treasury.baseline_token_reserves as u128)
-        .ok_or(TorchMarketError::MathOverflow)? as u64;
-    let sell_threshold = (baseline_ratio as u128)
-        .checked_mul(DEFAULT_SELL_THRESHOLD_BPS as u128)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(10000)
-        .ok_or(TorchMarketError::MathOverflow)? as u64;
+    let current_ratio =
+        math::calc_price_ratio(pool_sol, pool_tokens).ok_or(TorchMarketError::MathOverflow)?;
+    let baseline_ratio = math::calc_price_ratio(
+        ctx.accounts.treasury.baseline_sol_reserves,
+        ctx.accounts.treasury.baseline_token_reserves,
+    )
+    .ok_or(TorchMarketError::MathOverflow)?;
+    let sell_threshold = math::apply_bps(baseline_ratio, DEFAULT_SELL_THRESHOLD_BPS)
+        .ok_or(TorchMarketError::MathOverflow)?;
     if current_ratio < sell_threshold {
         return Ok(());
     }
@@ -107,11 +102,8 @@ pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) ->
     let sell_amount = if token_amount <= SELL_ALL_TOKEN_THRESHOLD {
         token_amount
     } else {
-        (token_amount as u128)
-            .checked_mul(DEFAULT_SELL_PERCENT_BPS as u128)
+        math::apply_bps(token_amount, DEFAULT_SELL_PERCENT_BPS)
             .ok_or(TorchMarketError::MathOverflow)?
-            .checked_div(10000)
-            .ok_or(TorchMarketError::MathOverflow)? as u64
     };
 
     if sell_amount == 0 {

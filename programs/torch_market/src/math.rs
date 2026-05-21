@@ -278,3 +278,112 @@ pub fn apply_short_interest_accrual(
     let new_accrued = accrued.checked_add(interest)?;
     Some((new_accrued, current_slot))
 }
+
+// ============================================================================
+// Generic bps helpers
+// ============================================================================
+
+// `value × bps / 10_000` with u128 intermediate so the multiplication never
+// overflows for any u64 × u16 pair. Floor-rounded. Used everywhere a flat or
+// dynamic basis-point fee/split/cap is applied.
+pub fn apply_bps(value: u64, bps: u16) -> Option<u64> {
+    (value as u128)
+        .checked_mul(bps as u128)?
+        .checked_div(10_000)?
+        .try_into()
+        .ok()
+}
+
+// ============================================================================
+// Lending / short caps
+// ============================================================================
+
+// Per-user borrow cap: `max_lendable × user_collateral × BORROW_SHARE_MULTIPLIER
+// / denominator`. The denominator is what each caller treats as "everyone's
+// collateral pool":
+//   - Long lending  → TOTAL_SUPPLY (collateral is tokens; cap each user against
+//     a share of total supply).
+//   - Short selling → treasury.sol_balance (collateral is SOL; cap each user
+//     against a share of treasury SOL).
+// `denominator == 0` is the no-pool case and returns 0 (no borrow allowed).
+pub fn calc_user_borrow_cap(
+    max_lendable: u64,
+    user_collateral: u64,
+    denominator: u64,
+) -> Option<u64> {
+    if denominator == 0 {
+        return Some(0);
+    }
+    (max_lendable as u128)
+        .checked_mul(user_collateral as u128)?
+        .checked_mul(BORROW_SHARE_MULTIPLIER as u128)?
+        .checked_div(denominator as u128)?
+        .try_into()
+        .ok()
+}
+
+// ============================================================================
+// Liquidation accounting
+// ============================================================================
+
+// Bad debt left on the position after a (possibly partial) liquidation.
+//
+//   bad_debt = total_debt − (covered + (total_debt − debt_to_cover))
+//
+// Algebraic identity: when `debt_to_cover == total_debt`, this is `total_debt
+// − covered`. When `debt_to_cover < total_debt`, the uncovered portion stays
+// on the position so `bad_debt == debt_to_cover − covered`.
+//
+// Both inner subtractions are invariant-safe by construction:
+// `debt_to_cover <= total_debt` and `covered <= debt_to_cover`. checked_sub is
+// used to fail loud if any caller violates that invariant.
+pub fn calc_bad_debt(total_debt: u64, covered: u64, debt_to_cover: u64) -> Option<u64> {
+    let uncovered_remainder = total_debt.checked_sub(debt_to_cover)?;
+    let total_resolved = covered.checked_add(uncovered_remainder)?;
+    total_debt.checked_sub(total_resolved)
+}
+
+// ============================================================================
+// Pricing / ratios
+// ============================================================================
+
+// Token price ratio in `RATIO_PRECISION`-scaled fixed point: `num × precision
+// / denom`. `denom == 0` returns `None` (cannot price against an empty side).
+pub fn calc_price_ratio(num: u64, denom: u64) -> Option<u64> {
+    if denom == 0 {
+        return None;
+    }
+    (num as u128)
+        .checked_mul(RATIO_PRECISION)?
+        .checked_div(denom as u128)?
+        .try_into()
+        .ok()
+}
+
+// ============================================================================
+// Short-specific
+// ============================================================================
+
+// When a short liquidation would seize more SOL than the position holds, the
+// covered token debt is prorated by the ratio of actual seizable collateral
+// to the would-be seizure. This is the short equivalent of the long's
+// `calc_collateral_value(actual_collateral_seized, ...)` rescue path.
+//
+//   actual_tokens_covered = tokens_to_cover × capped_collateral / full_seize
+//
+// `full_seize == 0` is undefined (would mean the liquidator wants to cover
+// debt with no SOL outflow) and returns `None`.
+pub fn calc_short_partial_seize_proration(
+    tokens_to_cover: u64,
+    capped_collateral: u64,
+    full_seize: u64,
+) -> Option<u64> {
+    if full_seize == 0 {
+        return None;
+    }
+    (tokens_to_cover as u128)
+        .checked_mul(capped_collateral as u128)?
+        .checked_div(full_seize as u128)?
+        .try_into()
+        .ok()
+}

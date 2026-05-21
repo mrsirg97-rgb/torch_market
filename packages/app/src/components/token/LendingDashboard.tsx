@@ -8,14 +8,23 @@ import {
   getLoanPosition,
   getAllLoanPositions,
   getShortPosition,
+  getAllShortPositions,
   buildBorrowTransaction,
   buildRepayTransaction,
   buildLiquidateTransaction,
+  buildLiquidateShortTransaction,
   buildOpenShortTransaction,
   buildCloseShortTransaction,
   getVault,
 } from 'torchsdk'
-import type { LendingInfo, LoanPositionInfo, AllLoanPositionsResult, ShortPositionInfo, VaultInfo } from 'torchsdk'
+import type {
+  LendingInfo,
+  LoanPositionInfo,
+  AllLoanPositionsResult,
+  ShortPositionInfo,
+  AllShortPositionsResult,
+  VaultInfo,
+} from 'torchsdk'
 import { LAMPORTS_PER_SOL, TOKEN_MULTIPLIER } from '@/lib/constants'
 
 const isDev = process.env.NODE_ENV === 'development'
@@ -209,6 +218,11 @@ export function LendingDashboard({
   const [shortPosition, setShortPosition] = useState<ShortPositionInfo | null>(null)
   const [shortLoading, setShortLoading] = useState(false)
 
+  // All-shorts scan state (mirrors allPositions for the lending side).
+  const [allShorts, setAllShorts] = useState<AllShortPositionsResult | null>(null)
+  const [shortPositionsLoading, setShortPositionsLoading] = useState(false)
+  const [liquidatingShorter, setLiquidatingShorter] = useState<string | null>(null)
+
   // Vault state
   const [userVault, setUserVault] = useState<VaultInfo | null>(null)
   const [useVault, setUseVault] = useState(false)
@@ -254,6 +268,11 @@ export function LendingDashboard({
   const collateralParsed = parseFloat(collateralAmount) || 0
   const collateralValueSol = collateralParsed * priceInSol
   const maxBorrowLtv = lendingInfo ? collateralValueSol * (lendingInfo.max_ltv_bps / 10000) : 0
+  // Short side shares the same depth-aware ceiling (both flows call
+  // `get_depth_max_ltv_bps(pool_sol)` on-chain against the DEX pool).
+  // Fallback to the lowest depth tier (25%) when lendingInfo is unavailable
+  // so the UI is never accidentally permissive vs. the on-chain check.
+  const shortMaxLtvRatio = (lendingInfo?.max_ltv_bps ?? 2500) / 10000
   // Use on-chain treasury data (correct utilizationCapBps) instead of SDK's hardcoded cap
   const correctAvailableSol = Math.max(0, treasurySolBalance * utilizationCapBps / 10000 - totalSolLent)
   const treasuryAvailableSol = lendingInfo ? correctAvailableSol : 0
@@ -314,6 +333,19 @@ export function LendingDashboard({
     }
   }, [connection, mintAddress, isMigrated])
 
+  const fetchAllShortPositions = useCallback(async () => {
+    if (!isMigrated) return
+    setShortPositionsLoading(true)
+    try {
+      const result = await getAllShortPositions(connection, mintAddress)
+      setAllShorts(result)
+    } catch (err) {
+      if (isDev) console.error('Failed to fetch all short positions:', err)
+    } finally {
+      setShortPositionsLoading(false)
+    }
+  }, [connection, mintAddress, isMigrated])
+
   useEffect(() => {
     fetchLendingInfo()
   }, [fetchLendingInfo])
@@ -325,6 +357,10 @@ export function LendingDashboard({
   useEffect(() => {
     fetchAllPositions()
   }, [fetchAllPositions])
+
+  useEffect(() => {
+    fetchAllShortPositions()
+  }, [fetchAllShortPositions])
 
   const fetchShortPosition = useCallback(async () => {
     if (!isMigrated || !wallet.publicKey) {
@@ -526,6 +562,47 @@ export function LendingDashboard({
       setError(parseLendingError(err))
     } finally {
       setLiquidatingBorrower(null)
+    }
+  }
+
+  async function handleLiquidateShort(shorter: string) {
+    if (!wallet.publicKey) return
+
+    setLiquidatingShorter(shorter)
+    setError(null)
+    setSuccess(null)
+
+    try {
+      const { transaction } = await buildLiquidateShortTransaction(connection, {
+        mint: mintAddress,
+        liquidator: wallet.publicKey.toString(),
+        // LiquidateShortParams reuses the `borrower` field name from the
+        // long-loan params shape; semantically this is the shorter.
+        borrower: shorter,
+        vault: useVault && userVault ? userVault.creator : undefined,
+      })
+
+      const txId = await sendTransaction(transaction)
+      const latestBlockhash = await connection.getLatestBlockhash()
+      await confirmTransactionSafe(
+        connection,
+        txId,
+        latestBlockhash.blockhash,
+        latestBlockhash.lastValidBlockHeight,
+      )
+
+      setSuccess('Short liquidation successful!')
+      setTimeout(() => setSuccess(null), 3000)
+      setTimeout(() => {
+        fetchLendingInfo()
+        fetchShortPosition()
+        fetchAllShortPositions()
+      }, 2000)
+    } catch (err: unknown) {
+      if (isDev) console.error('Liquidate short error:', err)
+      setError(parseLendingError(err))
+    } finally {
+      setLiquidatingShorter(null)
     }
   }
 
@@ -1232,15 +1309,21 @@ export function LendingDashboard({
           <div className="grid grid-cols-2 gap-x-4 gap-y-1">
             <div className="flex justify-between">
               <span className="text-white/40">Interest</span>
-              <span className="text-white font-mono">2%/epoch</span>
+              <span className="text-white font-mono">
+                {lendingInfo ? `${(lendingInfo.interest_rate_bps / 100).toFixed(1)}%/epoch` : '—'}
+              </span>
             </div>
             <div className="flex justify-between">
               <span className="text-white/40">Max LTV</span>
-              <span className="text-white font-mono">50%</span>
+              <span className="text-white font-mono">
+                {lendingInfo ? `${(lendingInfo.max_ltv_bps / 100).toFixed(0)}%` : '—'}
+              </span>
             </div>
             <div className="flex justify-between">
               <span className="text-white/40">Liq Threshold</span>
-              <span className="text-white font-mono">65%</span>
+              <span className="text-white font-mono">
+                {lendingInfo ? `${(lendingInfo.liquidation_threshold_bps / 100).toFixed(0)}%` : '—'}
+              </span>
             </div>
             <div className="flex justify-between">
               <span className="text-white/40">Market price</span>
@@ -1386,27 +1469,28 @@ export function LendingDashboard({
                 step="0.1"
                 min="0"
               />
-              {/* SOL collateral % presets — base on vault SOL when via vault, wallet otherwise. Leaves a 0.01 SOL buffer on wallet for fees. */}
+              {/* SOL collateral presets — absolute amounts. Disabled when the
+                  active source (vault SOL when toggled, wallet SOL otherwise,
+                  minus a small fee buffer for wallet) can't cover the value. */}
               {(() => {
                 const source = useVault && userVault ? userVault.sol_balance : walletSolBalance
                 const usable = useVault ? source : Math.max(0, source - 0.01)
                 if (usable <= 0) return null
                 return (
                   <div className="flex gap-2 mt-2">
-                    {[
-                      { label: '25%', fraction: 0.25 },
-                      { label: '50%', fraction: 0.50 },
-                      { label: '75%', fraction: 0.75 },
-                      { label: 'Max', fraction: 1.0 },
-                    ].map(({ label, fraction }) => (
-                      <button
-                        key={label}
-                        onClick={() => setShortCollateralSol((usable * fraction).toFixed(4))}
-                        className="flex-1 py-1.5 text-xs rounded-lg font-medium transition-colors cursor-pointer border border-transparent bg-white/10 text-white/70 hover:bg-white/20"
-                      >
-                        {label}
-                      </button>
-                    ))}
+                    {[1, 2, 5, 10].map((sol) => {
+                      const affordable = sol <= usable
+                      return (
+                        <button
+                          key={sol}
+                          onClick={() => setShortCollateralSol(sol.toString())}
+                          disabled={!affordable}
+                          className="flex-1 py-1.5 text-xs rounded-lg font-medium transition-colors cursor-pointer border border-transparent bg-white/10 text-white/70 hover:bg-white/20 disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          {sol} SOL
+                        </button>
+                      )
+                    })}
                   </div>
                 )
               })()}
@@ -1418,7 +1502,7 @@ export function LendingDashboard({
                 <label className="text-sm text-white/50">Amount to short (${symbol})</label>
                 {shortCollateralSol && parseFloat(shortCollateralSol) > 0 && (
                   <span className="text-xs text-white/40 font-mono">
-                    Max: ~{(parseFloat(shortCollateralSol) / priceInSol * 0.5).toFixed(0)} {symbol}
+                    Max: ~{(parseFloat(shortCollateralSol) * shortMaxLtvRatio / priceInSol).toFixed(0)} {symbol}
                   </span>
                 )}
               </div>
@@ -1431,7 +1515,7 @@ export function LendingDashboard({
                 step="100"
                 min="0"
               />
-              {/* Borrow % presets */}
+              {/* Borrow % presets — use depth-aware ceiling from lendingInfo */}
               {shortCollateralSol && parseFloat(shortCollateralSol) > 0 && priceInSol > 0 && (
                 <div className="flex gap-2 mt-2">
                   {[
@@ -1440,8 +1524,13 @@ export function LendingDashboard({
                     { label: '75%', fraction: 0.75 },
                     { label: 'Max', fraction: 1.0 },
                   ].map(({ label, fraction }) => {
-                    const maxTokens = parseFloat(shortCollateralSol) / priceInSol * 0.5
-                    const tokenValue = Math.floor(maxTokens * fraction)
+                    // Theoretical max tokens at the depth-tier LTV ceiling. Max
+                    // preset shaves 1% to leave room for price drift between
+                    // quote and on-chain execution; otherwise the program's
+                    // `new_ltv <= effective_max_ltv` check trips on rounding.
+                    const ceilingTokens = parseFloat(shortCollateralSol) * shortMaxLtvRatio / priceInSol
+                    const safetyMargin = fraction === 1.0 ? 0.99 : 1.0
+                    const tokenValue = Math.floor(ceilingTokens * fraction * safetyMargin)
                     return (
                       <button
                         key={label}
@@ -1502,8 +1591,21 @@ export function LendingDashboard({
               <div className="flex items-center justify-between mb-1.5">
                 <label className="text-sm text-white/50">Amount to repay (${symbol})</label>
                 {shortPosition && shortPosition.health !== 'none' && (
-                  <span className="text-xs text-white/40 font-mono">
+                  <span className="text-xs font-mono" style={{ color: 'var(--muted)' }}>
                     Owed: {formatTokenValue(shortPosition.total_owed_tokens)} {symbol}
+                    {' · '}
+                    {(() => {
+                      const owed = shortPosition.total_owed_tokens
+                      const held = Number(useVault && userVault && vaultTokenBalance && vaultTokenBalance > BigInt(0)
+                        ? vaultTokenBalance
+                        : userTokenBalance)
+                      const short = held < owed
+                      return (
+                        <span style={{ color: short ? 'var(--danger)' : 'var(--muted)' }}>
+                          You hold: {formatTokenValue(held)} {symbol}
+                        </span>
+                      )
+                    })()}
                   </span>
                 )}
               </div>
@@ -1578,6 +1680,123 @@ export function LendingDashboard({
           </div>
         )}
       </div>
+
+      {/* Card 3: Active Shorts (mirrors Active Loans card on the lending side) */}
+      {allShorts && allShorts.positions.length > 0 && (
+        <div className="bg-[var(--surface)] border border-[var(--border-color)] rounded-xl p-4">
+          <h3 className="text-white font-semibold text-sm mb-3 flex items-center gap-2">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polyline points="23 18 13.5 8.5 8.5 13.5 1 6" />
+              <polyline points="17 18 23 18 23 12" />
+            </svg>
+            Active Shorts ({allShorts.positions.length})
+          </h3>
+          <p className="text-white/30 text-[10px] mb-3 -mt-1">
+            Positions above 65% LTV can be liquidated. Liquidators repay token debt and seize SOL collateral at a 10% bonus.
+          </p>
+
+          <div className="grid grid-cols-[1fr_1fr_0.8fr_0.6fr_auto] gap-2 text-[10px] text-white/40 lowercase tracking-wider pb-1.5 border-b border-white/10">
+            <span>Shorter</span>
+            <span className="text-right">Collateral</span>
+            <span className="text-right">Owed</span>
+            <span className="text-right">LTV</span>
+            <span className="text-right">Status</span>
+          </div>
+
+          <div className="divide-y divide-white/5">
+            {allShorts.positions.map((pos) => {
+              const ltvPct = pos.current_ltv_bps !== null ? pos.current_ltv_bps / 100 : null
+              const ltvColor =
+                ltvPct === null
+                  ? 'text-white/50'
+                  : ltvPct >= 65
+                    ? 'text-danger'
+                    : ltvPct >= 50
+                      ? 'text-accent'
+                      : 'text-success'
+              const shortenedAddr = pos.shorter.slice(0, 4) + '...' + pos.shorter.slice(-2)
+              const isOwnPosition = wallet.publicKey?.toString() === pos.shorter
+              const canLiquidate =
+                pos.health === 'liquidatable' && wallet.publicKey && !isOwnPosition
+
+              return (
+                <div
+                  key={pos.shorter}
+                  className="grid grid-cols-[1fr_1fr_0.8fr_0.6fr_auto] gap-2 items-center py-2 text-xs"
+                >
+                  <a
+                    href={`https://solscan.io/account/${pos.shorter}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-accent hover:underline font-mono"
+                  >
+                    {shortenedAddr}
+                  </a>
+                  <span className="text-right text-white font-mono">
+                    {formatSolValue(pos.sol_collateral)} SOL
+                  </span>
+                  <span className="text-right text-white font-mono">
+                    {formatTokenValue(pos.total_owed_tokens)} {symbol}
+                  </span>
+                  <span className={`text-right font-mono ${ltvColor}`}>
+                    {ltvPct !== null ? `${ltvPct.toFixed(0)}%` : '—'}
+                  </span>
+                  <span className="text-right">
+                    {canLiquidate ? (
+                      <button
+                        onClick={() => handleLiquidateShort(pos.shorter)}
+                        disabled={liquidatingShorter !== null}
+                        className="px-2 py-0.5 text-[10px] font-semibold rounded bg-red-500/20 text-danger hover:bg-red-500/30 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {liquidatingShorter === pos.shorter ? 'Liquidating...' : 'Liquidate'}
+                      </button>
+                    ) : (
+                      <span
+                        className={`text-[10px] font-semibold ${
+                          pos.health === 'liquidatable'
+                            ? 'text-danger'
+                            : pos.health === 'at_risk'
+                              ? 'text-accent'
+                              : 'text-success'
+                        }`}
+                      >
+                        {pos.health === 'at_risk'
+                          ? 'At Risk'
+                          : pos.health === 'liquidatable'
+                            ? 'Underwater'
+                            : 'Healthy'}
+                      </span>
+                    )}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+
+          {error && liquidatingShorter === null && (
+            <p className="text-danger text-xs mt-2">{error}</p>
+          )}
+          {success && success.includes('Short liquidation') && (
+            <p className="text-success text-xs mt-2">{success}</p>
+          )}
+        </div>
+      )}
+
+      {shortPositionsLoading && (!allShorts || allShorts.positions.length === 0) && (
+        <div className="bg-[var(--surface)] border border-[var(--border-color)] rounded-xl p-4">
+          <p className="text-white/50 text-sm text-center">Loading active shorts...</p>
+        </div>
+      )}
       </div>
       )}
     </div>

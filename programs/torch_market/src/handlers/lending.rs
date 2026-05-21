@@ -82,11 +82,8 @@ fn check_borrow_caps(
         .sol_balance
         .checked_sub(short_reserved)
         .ok_or(TorchMarketError::MathOverflow)?;
-    let max_lendable = (available_sol as u128)
-        .checked_mul(treasury.lending_utilization_cap_bps as u128)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(10_000)
-        .ok_or(TorchMarketError::MathOverflow)? as u64;
+    let max_lendable = math::apply_bps(available_sol, treasury.lending_utilization_cap_bps)
+        .ok_or(TorchMarketError::MathOverflow)?;
     require!(
         new_total_lent <= max_lendable,
         TorchMarketError::LendingCapExceeded
@@ -94,13 +91,8 @@ fn check_borrow_caps(
     let user_total_borrowed = loan_borrowed_before
         .checked_add(sol_to_borrow)
         .ok_or(TorchMarketError::MathOverflow)?;
-    let max_user_borrow = (max_lendable as u128)
-        .checked_mul(user_collateral as u128)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_mul(BORROW_SHARE_MULTIPLIER as u128)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(TOTAL_SUPPLY as u128)
-        .ok_or(TorchMarketError::MathOverflow)? as u64;
+    let max_user_borrow = math::calc_user_borrow_cap(max_lendable, user_collateral, TOTAL_SUPPLY)
+        .ok_or(TorchMarketError::MathOverflow)?;
     require!(
         user_total_borrowed <= max_user_borrow,
         TorchMarketError::UserBorrowCapExceeded
@@ -654,11 +646,8 @@ fn compute_liquidation(
         current_ltv > treasury.liquidation_threshold_bps as u64,
         TorchMarketError::NotLiquidatable
     );
-    let max_debt_to_cover = (total_debt as u128)
-        .checked_mul(treasury.liquidation_close_bps as u128)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(10_000)
-        .ok_or(TorchMarketError::MathOverflow)? as u64;
+    let max_debt_to_cover = math::apply_bps(total_debt, treasury.liquidation_close_bps)
+        .ok_or(TorchMarketError::MathOverflow)?;
     let debt_to_cover = max_debt_to_cover.min(total_debt);
     let collateral_to_seize = math::calc_collateral_to_seize(
         debt_to_cover,
@@ -674,19 +663,7 @@ fn compute_liquidation(
     } else {
         debt_to_cover
     };
-    // total_debt - (covered + (total_debt - debt_to_cover)) = debt_to_cover - covered.
-    // Both inner subtractions are invariant-safe: debt_to_cover <= total_debt and
-    // actual_debt_covered <= debt_to_cover by construction. checked_sub for loud-fail.
-    let bad_debt = total_debt
-        .checked_sub(
-            actual_debt_covered
-                .checked_add(
-                    total_debt
-                        .checked_sub(debt_to_cover)
-                        .ok_or(TorchMarketError::MathOverflow)?,
-                )
-                .ok_or(TorchMarketError::MathOverflow)?,
-        )
+    let bad_debt = math::calc_bad_debt(total_debt, actual_debt_covered, debt_to_cover)
         .ok_or(TorchMarketError::MathOverflow)?;
     Ok(LiquidationComputed {
         actual_collateral_seized,

@@ -72,11 +72,9 @@ fn check_short_caps(
         .total_tokens_lent
         .checked_add(tokens_to_borrow)
         .ok_or(TorchMarketError::MathOverflow)?;
-    let max_lendable_tokens = (treasury_lock_token_balance as u128)
-        .checked_mul(treasury.lending_utilization_cap_bps as u128)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(10_000)
-        .ok_or(TorchMarketError::MathOverflow)? as u64;
+    let max_lendable_tokens =
+        math::apply_bps(treasury_lock_token_balance, treasury.lending_utilization_cap_bps)
+            .ok_or(TorchMarketError::MathOverflow)?;
     require!(
         new_total_tokens_lent <= max_lendable_tokens,
         TorchMarketError::ShortCapExceeded
@@ -84,15 +82,9 @@ fn check_short_caps(
     let user_total_tokens_borrowed = user_currently_borrowed
         .checked_add(tokens_to_borrow)
         .ok_or(TorchMarketError::MathOverflow)?;
-    // Denominator is treasury.sol_balance (SOL) because collateral is SOL.
-    // Lending uses TOTAL_SUPPLY because its collateral is tokens.
-    let max_user_borrow = (max_lendable_tokens as u128)
-        .checked_mul(user_collateral as u128)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_mul(BORROW_SHARE_MULTIPLIER as u128)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(treasury.sol_balance as u128)
-        .ok_or(TorchMarketError::MathOverflow)? as u64;
+    let max_user_borrow =
+        math::calc_user_borrow_cap(max_lendable_tokens, user_collateral, treasury.sol_balance)
+            .ok_or(TorchMarketError::MathOverflow)?;
     require!(
         user_total_tokens_borrowed <= max_user_borrow,
         TorchMarketError::UserShortCapExceeded
@@ -242,7 +234,13 @@ pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
         args.tokens_to_borrow,
     )?;
 
-    if args.tokens_to_borrow > 0 {
+    // Token-2022 transfer-fee aware: record the NET amount the shorter
+    // actually receives (and therefore owes). Mirrors the borrow path in
+    // handlers/lending.rs:233-254. Without this, position.tokens_borrowed
+    // would be the gross transfer amount while the shorter only ever held
+    // gross × (1 - fee_bps/10000), making full close arithmetically
+    // unreachable.
+    let net_tokens_borrowed = if args.tokens_to_borrow > 0 {
         ctx.accounts.treasury_lock_token_account.reload()?;
         let lock_token_balance = ctx.accounts.treasury_lock_token_account.amount;
         check_short_caps(
@@ -253,6 +251,9 @@ pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
             user_collateral,
             ctx.accounts.short_position.tokens_borrowed,
         )?;
+
+        ctx.accounts.shorter_token_account.reload()?;
+        let before = ctx.accounts.shorter_token_account.amount;
 
         let mint_key = ctx.accounts.mint.key();
         let lock_bump = ctx.accounts.treasury_lock.bump;
@@ -272,7 +273,16 @@ pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
             args.tokens_to_borrow,
             TOKEN_DECIMALS,
         )?;
-    }
+
+        ctx.accounts.shorter_token_account.reload()?;
+        ctx.accounts
+            .shorter_token_account
+            .amount
+            .checked_sub(before)
+            .ok_or(TorchMarketError::MathOverflow)?
+    } else {
+        0
+    };
 
     let shorter_key = ctx.accounts.shorter.key();
     let mint_key = ctx.accounts.mint.key();
@@ -289,7 +299,7 @@ pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
         short_config_bump,
         user_collateral,
         args.sol_collateral,
-        args.tokens_to_borrow,
+        net_tokens_borrowed,
     )?;
 
     emit!(ShortOpened {
@@ -350,7 +360,10 @@ pub fn open_short_via_vault(
         args.tokens_to_borrow,
     )?;
 
-    if args.tokens_to_borrow > 0 {
+    // Token-2022 transfer-fee aware: record the NET amount the vault
+    // actually receives (and therefore the position owes). Mirrors the
+    // pattern in open_short above.
+    let net_tokens_borrowed = if args.tokens_to_borrow > 0 {
         ctx.accounts.treasury_lock_token_account.reload()?;
         let lock_token_balance = ctx.accounts.treasury_lock_token_account.amount;
         check_short_caps(
@@ -361,6 +374,9 @@ pub fn open_short_via_vault(
             user_collateral,
             ctx.accounts.short_position.tokens_borrowed,
         )?;
+
+        ctx.accounts.vault_token_account.reload()?;
+        let before = ctx.accounts.vault_token_account.amount;
 
         let mint_key = ctx.accounts.mint.key();
         let lock_bump = ctx.accounts.treasury_lock.bump;
@@ -380,7 +396,16 @@ pub fn open_short_via_vault(
             args.tokens_to_borrow,
             TOKEN_DECIMALS,
         )?;
-    }
+
+        ctx.accounts.vault_token_account.reload()?;
+        ctx.accounts
+            .vault_token_account
+            .amount
+            .checked_sub(before)
+            .ok_or(TorchMarketError::MathOverflow)?
+    } else {
+        0
+    };
 
     let shorter_key = ctx.accounts.shorter.key();
     let mint_key = ctx.accounts.mint.key();
@@ -397,7 +422,7 @@ pub fn open_short_via_vault(
         short_config_bump,
         user_collateral,
         args.sol_collateral,
-        args.tokens_to_borrow,
+        net_tokens_borrowed,
     )?;
 
     emit!(ShortOpened {
@@ -642,11 +667,8 @@ fn compute_short_liquidation(
         TorchMarketError::ShortNotLiquidatable
     );
 
-    let max_tokens_to_cover = (total_token_debt as u128)
-        .checked_mul(treasury.liquidation_close_bps as u128)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(10_000)
-        .ok_or(TorchMarketError::MathOverflow)? as u64;
+    let max_tokens_to_cover = math::apply_bps(total_token_debt, treasury.liquidation_close_bps)
+        .ok_or(TorchMarketError::MathOverflow)?;
     let tokens_to_cover = max_tokens_to_cover.min(total_token_debt);
     let tokens_covered_value = math::calc_short_debt_value(tokens_to_cover, pool_sol, pool_tokens)
         .ok_or(TorchMarketError::MathOverflow)?;
@@ -655,24 +677,12 @@ fn compute_short_liquidation(
             .ok_or(TorchMarketError::MathOverflow)?;
     let actual_sol_seized = sol_to_seize.min(position.sol_collateral);
     let actual_tokens_covered = if sol_to_seize > position.sol_collateral {
-        (tokens_to_cover as u128)
-            .checked_mul(position.sol_collateral as u128)
+        math::calc_short_partial_seize_proration(tokens_to_cover, position.sol_collateral, sol_to_seize)
             .ok_or(TorchMarketError::MathOverflow)?
-            .checked_div(sol_to_seize as u128)
-            .ok_or(TorchMarketError::MathOverflow)? as u64
     } else {
         tokens_to_cover
     };
-    let bad_debt_tokens = total_token_debt
-        .checked_sub(
-            actual_tokens_covered
-                .checked_add(
-                    total_token_debt
-                        .checked_sub(tokens_to_cover)
-                        .ok_or(TorchMarketError::MathOverflow)?,
-                )
-                .ok_or(TorchMarketError::MathOverflow)?,
-        )
+    let bad_debt_tokens = math::calc_bad_debt(total_token_debt, actual_tokens_covered, tokens_to_cover)
         .ok_or(TorchMarketError::MathOverflow)?;
     Ok(ShortLiquidationComputed {
         actual_tokens_covered,

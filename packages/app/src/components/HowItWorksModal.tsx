@@ -21,11 +21,11 @@ export function HowItWorksModal({ isOpen, onClose }: HowItWorksModalProps) {
 
   return (
     <div
-      className="fixed inset-0 bg-black z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 modal-backdrop z-50 flex items-center justify-center p-4"
       onClick={onClose}
     >
       <div
-        className="card p-6 sm:p-8 max-w-2xl w-full max-h-[85vh] flex flex-col"
+        className="modal-surface p-6 sm:p-8 max-w-2xl w-full max-h-[85vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

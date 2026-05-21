@@ -51,19 +51,12 @@ fn compute_buy_split(
         math::calc_treasury_rate_bps(real_sol_reserves, target).ok_or(TorchMarketError::MathOverflow)?;
     let creator_rate_bps =
         math::calc_creator_rate_bps(real_sol_reserves, target).ok_or(TorchMarketError::MathOverflow)?;
-    let total_split = sol_after_fees
-        .checked_mul(treasury_rate_bps as u64)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(10_000)
-        .ok_or(TorchMarketError::MathOverflow)?;
+    let total_split =
+        math::apply_bps(sol_after_fees, treasury_rate_bps).ok_or(TorchMarketError::MathOverflow)?;
     let creator_sol = if is_community_token {
         0
     } else {
-        sol_after_fees
-            .checked_mul(creator_rate_bps as u64)
-            .ok_or(TorchMarketError::MathOverflow)?
-            .checked_div(10_000)
-            .ok_or(TorchMarketError::MathOverflow)?
+        math::apply_bps(sol_after_fees, creator_rate_bps).ok_or(TorchMarketError::MathOverflow)?
     };
     let sol_to_treasury_split = total_split
         .checked_sub(creator_sol)
@@ -473,11 +466,7 @@ fn compute_sell(
 ) -> Result<SellComputed> {
     let sol_out = math::calc_sol_out(virtual_sol_reserves, virtual_token_reserves, token_amount)
         .ok_or(TorchMarketError::MathOverflow)?;
-    let sell_fee = sol_out
-        .checked_mul(SELL_FEE_BPS as u64)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .checked_div(10_000)
-        .ok_or(TorchMarketError::MathOverflow)?;
+    let sell_fee = math::apply_bps(sol_out, SELL_FEE_BPS).ok_or(TorchMarketError::MathOverflow)?;
     let sol_to_seller = sol_out
         .checked_sub(sell_fee)
         .ok_or(TorchMarketError::MathOverflow)?;
