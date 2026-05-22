@@ -275,6 +275,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::CreateToken2022 {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 creator: creator.pubkey(),
                 global_config: self.global_config,
                 mint: mint_key,
@@ -355,6 +357,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::Buy {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 buyer: buyer.pubkey(),
                 global_config: self.global_config,
                 dev_wallet: self.dev_wallet.pubkey(),
@@ -414,6 +418,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::Buy {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 buyer: buyer.pubkey(),
                 global_config: self.global_config,
                 dev_wallet: dev_wallet_override.unwrap_or(self.dev_wallet.pubkey()),
@@ -482,6 +488,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::BuyViaVault {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 buyer: signer.pubkey(),
                 global_config: self.global_config,
                 dev_wallet: self.dev_wallet.pubkey(),
@@ -537,6 +545,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::Sell {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 seller: seller.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
@@ -590,6 +600,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::SellViaVault {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 seller: signer.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
@@ -791,6 +803,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::ContributeRevival {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 contributor: contributor.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
@@ -1058,6 +1072,8 @@ impl Env {
         let migrate_ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::MigrateToDex {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 payer: payer.pubkey(),
                 global_config: self.global_config,
                 mint: t.mint,
@@ -1111,6 +1127,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::Borrow {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 borrower: borrower.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
@@ -1154,6 +1172,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::Repay {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 borrower: borrower.pubkey(),
                 mint: t.mint,
                 treasury: t.treasury,
@@ -1195,6 +1215,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::BorrowViaVault {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 borrower: signer.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
@@ -1246,6 +1268,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::RepayViaVault {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 borrower: signer.pubkey(),
                 mint: t.mint,
                 treasury: t.treasury,
@@ -1288,6 +1312,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::LiquidateViaVault {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 liquidator: signer.pubkey(),
                 borrower,
                 mint: t.mint,
@@ -1330,6 +1356,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::Liquidate {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 liquidator: liquidator.pubkey(),
                 borrower,
                 mint: t.mint,
@@ -1381,6 +1409,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::OpenShort {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 shorter: shorter.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
@@ -1424,6 +1454,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::CloseShort {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 shorter: shorter.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
@@ -1466,6 +1498,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::OpenShortViaVault {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 shorter: signer.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
@@ -1517,6 +1551,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::CloseShortViaVault {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 shorter: signer.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
@@ -1556,6 +1592,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::LiquidateShort {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 liquidator: liquidator.pubkey(),
                 borrower,
                 mint: t.mint,
@@ -1600,6 +1638,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::LiquidateShortViaVault {
+                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 liquidator: signer.pubkey(),
                 borrower,
                 mint: t.mint,

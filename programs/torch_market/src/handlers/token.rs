@@ -259,5 +259,30 @@ pub fn create_token(ctx: Context<CreateToken2022>, args: CreateTokenArgs) -> Res
         signer_seeds,
     )?;
 
+    emit_cpi!(MarketCreated {
+        mint: mint_key,
+        creator: ctx.accounts.creator.key(),
+        name: args.name.clone(),
+        symbol: args.symbol.clone(),
+        metadata_uri: args.uri.clone(),
+        is_community_token: args.community_token,
+        sol_target: bonding_target,
+        virtual_sol_reserves: bonding_curve.virtual_sol_reserves,
+        virtual_token_reserves: bonding_curve.virtual_token_reserves,
+    });
+
     Ok(())
+}
+
+#[event]
+pub struct MarketCreated {
+    pub mint: Pubkey,
+    pub creator: Pubkey,
+    pub name: String,
+    pub symbol: String,
+    pub metadata_uri: String,
+    pub is_community_token: bool,
+    pub sol_target: u64,
+    pub virtual_sol_reserves: u64,
+    pub virtual_token_reserves: u64,
 }

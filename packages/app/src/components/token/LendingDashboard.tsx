@@ -26,6 +26,7 @@ import type {
   VaultInfo,
 } from 'torchsdk'
 import { LAMPORTS_PER_SOL, TOKEN_MULTIPLIER } from '@/lib/constants'
+import { useNetwork } from '@/lib/NetworkContext'
 
 const isDev = process.env.NODE_ENV === 'development'
 
@@ -202,6 +203,7 @@ export function LendingDashboard({
 }: LendingDashboardProps) {
   const { connection } = useConnection()
   const wallet = useWallet()
+  const { effectiveIndexerUrl } = useNetwork()
   const sendTransaction = useMwaSendTransaction()
 
   const [lendingInfo, setLendingInfo] = useState<LendingInfo | null>(null)
@@ -324,27 +326,31 @@ export function LendingDashboard({
     if (!isMigrated) return
     setPositionsLoading(true)
     try {
-      const result = await getAllLoanPositions(connection, mintAddress)
+      const result = await getAllLoanPositions(connection, mintAddress, {
+        indexer: effectiveIndexerUrl,
+      })
       setAllPositions(result)
     } catch (err) {
       if (isDev) console.error('Failed to fetch all positions:', err)
     } finally {
       setPositionsLoading(false)
     }
-  }, [connection, mintAddress, isMigrated])
+  }, [connection, mintAddress, isMigrated, effectiveIndexerUrl])
 
   const fetchAllShortPositions = useCallback(async () => {
     if (!isMigrated) return
     setShortPositionsLoading(true)
     try {
-      const result = await getAllShortPositions(connection, mintAddress)
+      const result = await getAllShortPositions(connection, mintAddress, {
+        indexer: effectiveIndexerUrl,
+      })
       setAllShorts(result)
     } catch (err) {
       if (isDev) console.error('Failed to fetch all short positions:', err)
     } finally {
       setShortPositionsLoading(false)
     }
-  }, [connection, mintAddress, isMigrated])
+  }, [connection, mintAddress, isMigrated, effectiveIndexerUrl])
 
   useEffect(() => {
     fetchLendingInfo()

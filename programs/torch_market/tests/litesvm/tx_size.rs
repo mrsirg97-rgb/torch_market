@@ -68,6 +68,8 @@ fn build_buy_ix(env: &Env, buyer: &Keypair, t: &TokenCtx) -> Instruction {
     Instruction {
         program_id: torch_market::ID,
         accounts: torch_market::accounts::Buy {
+            event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+            program: torch_market::ID,
             buyer: buyer.pubkey(),
             global_config: env.global_config,
             dev_wallet: env.dev_wallet.pubkey(),
@@ -113,6 +115,8 @@ fn build_sell_ix(env: &Env, seller: &Keypair, t: &TokenCtx) -> Instruction {
     Instruction {
         program_id: torch_market::ID,
         accounts: torch_market::accounts::Sell {
+            event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+            program: torch_market::ID,
             seller: seller.pubkey(),
             mint: t.mint,
             bonding_curve: t.bonding_curve,
@@ -156,6 +160,8 @@ fn build_buy_via_vault_ix(env: &Env, signer: &Keypair, vault: &VaultCtx, t: &Tok
     Instruction {
         program_id: torch_market::ID,
         accounts: torch_market::accounts::BuyViaVault {
+            event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+            program: torch_market::ID,
             buyer: signer.pubkey(),
             global_config: env.global_config,
             dev_wallet: env.dev_wallet.pubkey(),
@@ -212,6 +218,8 @@ fn build_migrate_ixs(env: &Env, payer: &Keypair, t: &TokenCtx) -> Vec<Instructio
     let migrate = Instruction {
         program_id: torch_market::ID,
         accounts: torch_market::accounts::MigrateToDex {
+            event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+            program: torch_market::ID,
             payer: payer.pubkey(),
             global_config: env.global_config,
             mint: t.mint,

@@ -260,5 +260,22 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
     treasury.baseline_initialized = true;
     treasury.min_buyback_interval_slots = DEFAULT_MIN_BUYBACK_INTERVAL_SLOTS;
 
+    emit_cpi!(MigratedToDex {
+        mint: ctx.accounts.mint.key(),
+        deep_pool: ctx.accounts.deep_pool.key(),
+        sol_seeded: sol_amount,
+        tokens_seeded: tokens_in_pool,
+        lp_burned: lp_amount,
+    });
+
     Ok(())
+}
+
+#[event]
+pub struct MigratedToDex {
+    pub mint: Pubkey,
+    pub deep_pool: Pubkey,
+    pub sol_seeded: u64,
+    pub tokens_seeded: u64,
+    pub lp_burned: u64,
 }

@@ -72,7 +72,16 @@ import {
   ProtocolTreasuryInfo,
   TreasuryInfo,
   TokenMetadataResult,
+  ReadOptions,
 } from './types'
+import {
+  fetchLoansFromIndexer,
+  fetchShortsFromIndexer,
+  fetchMessagesFromIndexer,
+  fetchMarketsFromIndexer,
+  withFallback,
+  type IndexerMarketStatus,
+} from './indexer'
 
 // ============================================================================
 // Internal helpers
@@ -221,6 +230,59 @@ const toTokenSummary = (raw: RawToken, meta?: MintMetadata): TokenSummary => {
     holders: null,
     created_at: 0,
     last_activity_at: Number(bc.last_activity_slot.toString()),
+  }
+}
+
+// Indexer row → TokenSummary. Fields the indexer exposes get passed through;
+// fields it doesn't (holders count) are null, matching the RPC path's
+// initial-render state. `image_url` is preserved if the indexer's metadata
+// fetcher has populated it — that's a strict improvement over RPC, which
+// has no image at all without a per-mint arweave fetch.
+const indexerRowToTokenSummary = (
+  row: import('./indexer').IndexerMarketRow,
+  meta?: MintMetadata,
+): TokenSummary => {
+  const virtualSol = BigInt(row.virtual_sol)
+  const virtualTokens = BigInt(row.virtual_token)
+  const realSol = BigInt(row.real_sol)
+
+  const price = calculatePrice(virtualSol, virtualTokens)
+  const priceInSol = (price * TOKEN_MULTIPLIER) / LAMPORTS_PER_SOL
+  const marketCapSol = (priceInSol * Number(TOTAL_SUPPLY)) / TOKEN_MULTIPLIER
+
+  // Indexer status (RS/RD/ASN/MIGRATED/RECLAIMED) → SDK status enum.
+  // RD and ASN both mean "bonding complete, awaiting migration" from the
+  // consumer's perspective — collapsed into 'complete' to match the
+  // frontend's 4-state TokenStatus model.
+  let status: TokenStatus
+  switch (row.status) {
+    case 'MIGRATED':
+      status = 'migrated'
+      break
+    case 'RECLAIMED':
+      status = 'reclaimed'
+      break
+    case 'RD':
+    case 'ASN':
+      status = 'complete'
+      break
+    case 'RS':
+    default:
+      status = 'bonding'
+      break
+  }
+
+  return {
+    mint: row.mint,
+    name: meta?.name ?? row.name,
+    symbol: meta?.symbol ?? row.symbol,
+    status,
+    price_sol: priceInSol,
+    market_cap_sol: marketCapSol,
+    progress_percent: calculateBondingProgress(realSol),
+    holders: null,
+    created_at: Math.floor(new Date(row.created_at).getTime() / 1000),
+    last_activity_at: row.last_activity_slot,
   }
 }
 
@@ -376,11 +438,31 @@ const fetchTokenRaw = async (
 
 /**
  * List tokens with optional filtering and sorting.
+ *
+ * Indexer-first when `options.indexer` is provided. The indexer replaces
+ * the expensive `getProgramAccounts` scan (which decodes every BondingCurve
+ * on-chain) with a single HTTP request — by far the hottest acceleration
+ * point in the SDK. Falls back silently to the RPC path on any indexer
+ * failure.
+ *
+ * Per-mint name/symbol still comes from the Token-2022 metadata extension
+ * via `fetchMintsMetadata` in both paths, because the indexer's
+ * `markets.name`/`symbol` are seeded from the MarketCreated event and may
+ * lag if mint metadata was updated post-creation.
  */
 export const getTokens = async (
   connection: Connection,
   params: TokenListParams = {},
+  options?: ReadOptions,
 ): Promise<TokenListResult> => {
+  if (options?.indexer) {
+    try {
+      return await getTokensViaIndexer(connection, params, options.indexer)
+    } catch {
+      // fall through to RPC path
+    }
+  }
+
   const allTokens = await fetchAllRawTokens(connection)
   const filtered = filterAndSort(allTokens, params)
   const mintKeys = filtered.map((t) => new PublicKey(t.mint))
@@ -390,6 +472,58 @@ export const getTokens = async (
   return {
     tokens: summaries,
     total: allTokens.length,
+    limit: params.limit || summaries.length,
+    offset: params.offset || 0,
+  }
+}
+
+// Map the SDK's TokenStatusFilter to the indexer's MarketStatus filter,
+// or null for "no status filter" (indexer returns all statuses).
+const sdkStatusToIndexer = (
+  s: TokenListParams['status'],
+): IndexerMarketStatus | null => {
+  switch (s) {
+    case 'bonding':
+      return 'RS'
+    case 'complete':
+      // 'complete' maps to RD on the indexer side (RD = bonding-complete,
+      // pre-migration). ASN gets collapsed into 'complete' on read; we
+      // don't filter on ASN here because no current writer code path
+      // produces it.
+      return 'RD'
+    case 'migrated':
+      return 'MIGRATED'
+    case 'reclaimed':
+      return 'RECLAIMED'
+    case 'all':
+    case undefined:
+      return null
+    default:
+      return null
+  }
+}
+
+async function getTokensViaIndexer(
+  connection: Connection,
+  params: TokenListParams,
+  indexer: string,
+): Promise<TokenListResult> {
+  const status = sdkStatusToIndexer(params.status)
+  const rows = await fetchMarketsFromIndexer(indexer, {
+    status: status ?? undefined,
+    limit: params.limit,
+  })
+
+  // Token-2022 metadata still resolved client-side. The indexer's
+  // markets.name/symbol are seeded once at MarketCreated and don't reflect
+  // post-creation mint-metadata updates (rare but possible).
+  const mintKeys = rows.map((r) => new PublicKey(r.mint))
+  const metaMap = await fetchMintsMetadata(connection, mintKeys)
+  const summaries = rows.map((r) => indexerRowToTokenSummary(r, metaMap.get(r.mint)))
+
+  return {
+    tokens: summaries,
+    total: summaries.length,
     limit: params.limit || summaries.length,
     offset: params.offset || 0,
   }
@@ -698,12 +832,36 @@ export const getMessages = async (
   connection: Connection,
   mintStr: string,
   limit: number = 50,
-  opts?: { source?: 'bonding' | 'pool' | 'all'; enrich?: boolean },
+  opts?: {
+    source?: 'bonding' | 'pool' | 'all'
+    enrich?: boolean
+  } & ReadOptions,
 ): Promise<MessagesResult> => {
   const mint = new PublicKey(mintStr)
   const safeLimit = Math.min(limit, 100)
   const sigLimit = Math.min(safeLimit, 50)
   const source = opts?.source ?? 'all'
+
+  // Indexer-first path: the indexer stores memos co-resident with torch
+  // trades (per the gating policy), pre-decoded. Massively faster than
+  // walking getSignaturesForAddress + getParsedTransactions for every sig.
+  // Falls back silently to the RPC walker on any indexer failure.
+  if (opts?.indexer) {
+    try {
+      const rows = await fetchMessagesFromIndexer(opts.indexer, mintStr, safeLimit)
+      const messages: TokenMessage[] = rows.map((r) => ({
+        signature: r.signature,
+        memo: r.memo_text,
+        sender: r.sender,
+        // Indexer's created_at is the slot's block_time (UTC). Frontend
+        // expects unix-seconds; convert.
+        timestamp: Math.floor(new Date(r.created_at).getTime() / 1000),
+      }))
+      return { messages, total: messages.length }
+    } catch {
+      // fall through to RPC walker
+    }
+  }
 
   // Helper: extract memo from a parsed transaction
   const extractMemo = async (
@@ -1194,20 +1352,22 @@ export const getShortPosition = async (
   }
 }
 
-/**
- * Get all active loan positions for a given token mint.
- *
- * Scans on-chain LoanPosition accounts, computes health for each,
- * and returns them sorted: liquidatable first, then at_risk, then healthy.
- */
-export const getAllLoanPositions = async (
-  connection: Connection,
-  mintStr: string,
-): Promise<AllLoanPositionsResult> => {
-  const mint = new PublicKey(mintStr)
-  const coder = new BorshCoder(idl as unknown as Idl)
+// Row shape shared by both row-acquisition paths (RPC scan vs indexer fetch).
+// The projection loop in `getAllLoanPositions` consumes this regardless of
+// source — keeps the indexer-first path drop-in compatible.
+interface RawLoanRow {
+  borrower: string
+  collateral_amount: number
+  borrowed_amount: number
+  accrued_interest_stored: number
+  last_update_slot: number
+}
 
-  // 1. Fetch all LoanPosition accounts for this mint
+async function fetchLoanRowsViaRpc(
+  connection: Connection,
+  mint: PublicKey,
+): Promise<RawLoanRow[]> {
+  const coder = new BorshCoder(idl as unknown as Idl)
   const loanDiscriminator = coder.accounts.accountDiscriminator('LoanPosition')
   const bs58 = await import('bs58')
   const accounts = await connection.getProgramAccounts(PROGRAM_ID, {
@@ -1216,9 +1376,7 @@ export const getAllLoanPositions = async (
       { memcmp: { offset: 8 + 32, bytes: mint.toBase58() } }, // mint at offset 40
     ],
   })
-
-  // 2. Decode and filter to active loans (borrowed_amount > 0)
-  const activeLoans: { borrower: string; loan: LoanPosition }[] = []
+  const rows: RawLoanRow[] = []
   for (const acc of accounts) {
     try {
       const loan = coder.accounts.decode(
@@ -1227,15 +1385,60 @@ export const getAllLoanPositions = async (
       ) as unknown as LoanPosition
       const borrowed = Number(loan.borrowed_amount.toString())
       if (borrowed > 0) {
-        activeLoans.push({
+        rows.push({
           borrower: loan.user.toString(),
-          loan,
+          collateral_amount: Number(loan.collateral_amount.toString()),
+          borrowed_amount: borrowed,
+          accrued_interest_stored: Number(loan.accrued_interest.toString()),
+          last_update_slot: Number(loan.last_update_slot.toString()),
         })
       }
     } catch {
-      // Skip malformed accounts
+      // Skip malformed accounts.
     }
   }
+  return rows
+}
+
+async function fetchLoanRowsViaIndexer(
+  indexer: string,
+  mintStr: string,
+): Promise<RawLoanRow[]> {
+  const indexerRows = await fetchLoansFromIndexer(indexer, mintStr, true)
+  return indexerRows.map((r) => ({
+    borrower: r.borrower,
+    collateral_amount: r.collateral_amount,
+    borrowed_amount: r.borrowed_amount,
+    accrued_interest_stored: r.accrued_interest_stored,
+    last_update_slot: r.last_update_slot,
+  }))
+}
+
+/**
+ * Get all active loan positions for a given token mint.
+ *
+ * Indexer-first when `options.indexer` is provided; falls back silently to
+ * an on-chain getProgramAccounts scan on any indexer failure. Either path
+ * feeds the same client-side interest projection + health computation,
+ * keyed off live DeepPool reserves and currentSlot.
+ *
+ * Sort order: liquidatable first, then at_risk, then healthy.
+ */
+export const getAllLoanPositions = async (
+  connection: Connection,
+  mintStr: string,
+  options?: ReadOptions,
+): Promise<AllLoanPositionsResult> => {
+  const mint = new PublicKey(mintStr)
+
+  // 1+2. Raw rows. Indexer accelerates only the scan; we still hit RPC
+  // for pool reserves + slot below so the health calc reflects live state.
+  const activeLoans = options?.indexer
+    ? await withFallback(
+        () => fetchLoanRowsViaIndexer(options.indexer!, mintStr),
+        () => fetchLoanRowsViaRpc(connection, mint),
+      )
+    : await fetchLoanRowsViaRpc(connection, mint)
 
   // 3. Fetch DeepPool reserves + current slot ONCE (interest projection needs currentSlot)
   let poolPriceSol: number | null = null
@@ -1263,11 +1466,12 @@ export const getAllLoanPositions = async (
   }
 
   // 4. Compute health for each position (interest projected to currentSlot)
-  const positions: LoanPositionWithKey[] = activeLoans.map(({ borrower, loan }) => {
-    const collateral = Number(loan.collateral_amount.toString())
-    const borrowed = Number(loan.borrowed_amount.toString())
-    const storedInterest = Number(loan.accrued_interest.toString())
-    const lastUpdateSlot = Number(loan.last_update_slot.toString())
+  const positions: LoanPositionWithKey[] = activeLoans.map((row) => {
+    const { borrower } = row
+    const collateral = row.collateral_amount
+    const borrowed = row.borrowed_amount
+    const storedInterest = row.accrued_interest_stored
+    const lastUpdateSlot = row.last_update_slot
     const interest = projectAccruedInterest(borrowed, storedInterest, lastUpdateSlot, currentSlot)
     const totalOwed = borrowed + interest
 
@@ -1331,25 +1535,28 @@ export const getAllLoanPositions = async (
  * discriminator, so the mint filter sits at offset 40 — identical to
  * `LoanPosition`.
  */
-export const getAllShortPositions = async (
-  connection: Connection,
-  mintStr: string,
-): Promise<AllShortPositionsResult> => {
-  const mint = new PublicKey(mintStr)
-  const coder = new BorshCoder(idl as unknown as Idl)
+interface RawShortRow {
+  shorter: string
+  sol_collateral: number
+  tokens_borrowed: number
+  accrued_interest_stored: number
+  last_update_slot: number
+}
 
-  // 1. Fetch all ShortPosition accounts for this mint
+async function fetchShortRowsViaRpc(
+  connection: Connection,
+  mint: PublicKey,
+): Promise<RawShortRow[]> {
+  const coder = new BorshCoder(idl as unknown as Idl)
   const shortDiscriminator = coder.accounts.accountDiscriminator('ShortPosition')
   const bs58 = await import('bs58')
   const accounts = await connection.getProgramAccounts(PROGRAM_ID, {
     filters: [
       { memcmp: { offset: 0, bytes: bs58.default.encode(shortDiscriminator) } },
-      { memcmp: { offset: 8 + 32, bytes: mint.toBase58() } }, // mint at offset 40
+      { memcmp: { offset: 8 + 32, bytes: mint.toBase58() } },
     ],
   })
-
-  // 2. Decode and filter to active shorts (tokens_borrowed > 0)
-  const activeShorts: { shorter: string; short: ShortPosition }[] = []
+  const rows: RawShortRow[] = []
   for (const acc of accounts) {
     try {
       const short = coder.accounts.decode(
@@ -1358,15 +1565,49 @@ export const getAllShortPositions = async (
       ) as unknown as ShortPosition
       const borrowed = Number(short.tokens_borrowed.toString())
       if (borrowed > 0) {
-        activeShorts.push({
+        rows.push({
           shorter: short.user.toString(),
-          short,
+          sol_collateral: Number(short.sol_collateral.toString()),
+          tokens_borrowed: borrowed,
+          accrued_interest_stored: Number(short.accrued_interest.toString()),
+          last_update_slot: Number(short.last_update_slot.toString()),
         })
       }
     } catch {
-      // Skip malformed accounts
+      // Skip malformed accounts.
     }
   }
+  return rows
+}
+
+async function fetchShortRowsViaIndexer(
+  indexer: string,
+  mintStr: string,
+): Promise<RawShortRow[]> {
+  const indexerRows = await fetchShortsFromIndexer(indexer, mintStr, true)
+  return indexerRows.map((r) => ({
+    shorter: r.shorter,
+    sol_collateral: r.sol_collateral,
+    tokens_borrowed: r.tokens_borrowed,
+    accrued_interest_stored: r.accrued_interest_stored,
+    last_update_slot: r.last_update_slot,
+  }))
+}
+
+export const getAllShortPositions = async (
+  connection: Connection,
+  mintStr: string,
+  options?: ReadOptions,
+): Promise<AllShortPositionsResult> => {
+  const mint = new PublicKey(mintStr)
+
+  // 1+2. Raw rows. Same indexer-first pattern as getAllLoanPositions.
+  const activeShorts = options?.indexer
+    ? await withFallback(
+        () => fetchShortRowsViaIndexer(options.indexer!, mintStr),
+        () => fetchShortRowsViaRpc(connection, mint),
+      )
+    : await fetchShortRowsViaRpc(connection, mint)
 
   // 3. Fetch DeepPool reserves + current slot ONCE
   let poolPriceSol: number | null = null
@@ -1393,11 +1634,12 @@ export const getAllShortPositions = async (
   }
 
   // 4. Compute health for each position (interest projected to currentSlot)
-  const positions: ShortPositionWithKey[] = activeShorts.map(({ shorter, short }) => {
-    const solCollateral = Number(short.sol_collateral.toString())
-    const tokensBorrowed = Number(short.tokens_borrowed.toString())
-    const storedInterest = Number(short.accrued_interest.toString())
-    const lastUpdateSlot = Number(short.last_update_slot.toString())
+  const positions: ShortPositionWithKey[] = activeShorts.map((row) => {
+    const { shorter } = row
+    const solCollateral = row.sol_collateral
+    const tokensBorrowed = row.tokens_borrowed
+    const storedInterest = row.accrued_interest_stored
+    const lastUpdateSlot = row.last_update_slot
     const interest = projectAccruedInterest(
       tokensBorrowed,
       storedInterest,

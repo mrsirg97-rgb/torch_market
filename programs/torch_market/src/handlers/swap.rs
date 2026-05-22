@@ -87,7 +87,7 @@ pub fn vault_swap(
             },
         )?;
 
-        emit!(VaultSwapExecuted {
+        emit_cpi!(VaultSwapExecuted {
             vault: ctx.accounts.torch_vault.key(),
             mint: ctx.accounts.mint.key(),
             signer: ctx.accounts.signer.key(),
@@ -148,7 +148,7 @@ pub fn vault_swap(
             .checked_add(sol_received)
             .ok_or(TorchMarketError::MathOverflow)?;
 
-        emit!(VaultSwapExecuted {
+        emit_cpi!(VaultSwapExecuted {
             vault: vault.key(),
             mint: ctx.accounts.mint.key(),
             signer: ctx.accounts.signer.key(),

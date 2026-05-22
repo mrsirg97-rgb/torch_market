@@ -302,7 +302,7 @@ pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
         net_tokens_borrowed,
     )?;
 
-    emit!(ShortOpened {
+    emit_cpi!(ShortOpened {
         mint: mint_key,
         user: shorter_key,
         sol_collateral: user_collateral,
@@ -425,7 +425,7 @@ pub fn open_short_via_vault(
         net_tokens_borrowed,
     )?;
 
-    emit!(ShortOpened {
+    emit_cpi!(ShortOpened {
         mint: mint_key,
         user: shorter_key,
         sol_collateral: user_collateral,
@@ -513,7 +513,7 @@ pub fn close_short(ctx: Context<CloseShort>, token_amount: u64) -> Result<()> {
             .ok_or(TorchMarketError::MathOverflow)?;
     }
 
-    emit!(ShortClosed {
+    emit_cpi!(ShortClosed {
         mint: mint_key,
         user: ctx.accounts.shorter.key(),
         tokens_returned: actual_return,
@@ -621,7 +621,7 @@ pub fn close_short_via_vault(
             .ok_or(TorchMarketError::MathOverflow)?;
     }
 
-    emit!(ShortClosed {
+    emit_cpi!(ShortClosed {
         mint: mint_key,
         user: ctx.accounts.shorter.key(),
         tokens_returned: actual_return,
@@ -820,7 +820,7 @@ pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
         fully_liquidated,
     )?;
 
-    emit!(ShortLiquidated {
+    emit_cpi!(ShortLiquidated {
         mint: mint_key,
         borrower: ctx.accounts.short_position.user,
         liquidator: ctx.accounts.liquidator.key(),
@@ -910,7 +910,7 @@ pub fn liquidate_short_via_vault(ctx: Context<LiquidateShortViaVault>) -> Result
         fully_liquidated,
     )?;
 
-    emit!(ShortLiquidated {
+    emit_cpi!(ShortLiquidated {
         mint: mint_key,
         borrower: ctx.accounts.short_position.user,
         liquidator: ctx.accounts.liquidator.key(),

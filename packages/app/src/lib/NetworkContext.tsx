@@ -12,11 +12,20 @@ export interface NetworkConfig {
   explorerUrl: string
   jupiterEnabled: boolean
   isSimnet?: boolean
+  /** Default torch-indexer URL for this network. Undefined means no
+   *  indexer is wired by default and SDK calls go RPC-only. The env var
+   *  `NEXT_PUBLIC_INDEXER_URL` overrides this globally; a localStorage
+   *  custom URL overrides per-user. See `effectiveIndexerUrl`. */
+  indexerUrl?: string
 }
 
 // Cloudflare Worker proxy for Helius RPC (keeps API key server-side)
 const HELIUS_PROXY_URL = 'https://torch-market-rpc.mrsirg97.workers.dev'
 const HELIUS_WS_URL = 'wss://torch-market-rpc.mrsirg97.workers.dev'
+
+// Global indexer override. When set, applies to every network in NETWORKS
+// below. For per-network indexers, edit the per-config entry instead.
+const ENV_INDEXER_URL = process.env.NEXT_PUBLIC_INDEXER_URL || ''
 
 const NETWORKS: Record<NetworkId, NetworkConfig> = {
   simnet: {
@@ -27,6 +36,9 @@ const NETWORKS: Record<NetworkId, NetworkConfig> = {
     explorerUrl: 'https://explorer.solana.com',
     jupiterEnabled: false,
     isSimnet: true,
+    // Local dev workflow: `docker compose up -d postgres && cargo run` from
+    // ./indexer binds to 127.0.0.1:8080. Env override wins if set.
+    indexerUrl: ENV_INDEXER_URL || 'http://localhost:8080',
   },
   devnet: {
     id: 'devnet',
@@ -35,6 +47,7 @@ const NETWORKS: Record<NetworkId, NetworkConfig> = {
     wsUrl: `${HELIUS_WS_URL}/devnet`,
     explorerUrl: 'https://explorer.solana.com',
     jupiterEnabled: false,
+    indexerUrl: ENV_INDEXER_URL || undefined,
   },
   mainnet: {
     id: 'mainnet',
@@ -43,11 +56,13 @@ const NETWORKS: Record<NetworkId, NetworkConfig> = {
     wsUrl: HELIUS_WS_URL,
     explorerUrl: 'https://explorer.solana.com',
     jupiterEnabled: false,
+    indexerUrl: ENV_INDEXER_URL || undefined,
   },
 }
 
 const STORAGE_KEY = 'torch-network'
 const CUSTOM_RPC_KEY = 'torch-custom-rpc'
+const CUSTOM_INDEXER_KEY = 'torch-custom-indexer'
 
 // Check if running on localhost (where simnet is available)
 function isLocalhost(): boolean {
@@ -96,6 +111,13 @@ interface NetworkContextType {
   effectiveRpcUrl: string
   /** The actual WebSocket URL in use (null if custom RPC is set — no WS for custom) */
   effectiveWsUrl: string | undefined
+  /** Custom torch-indexer URL set by the user (empty string = use default for network) */
+  customIndexerUrl: string
+  /** Set a custom indexer URL (empty string to clear) */
+  setCustomIndexerUrl: (url: string) => void
+  /** The torch-indexer URL in use, or undefined when no indexer is wired.
+   *  Pass as `options.indexer` to torchsdk getters. */
+  effectiveIndexerUrl: string | undefined
 }
 
 const NetworkContext = createContext<NetworkContextType | null>(null)
@@ -126,9 +148,23 @@ function getCustomRpcServerSnapshot(): string {
   return ''
 }
 
+function getCustomIndexerSnapshot(): string {
+  if (typeof window === 'undefined') return ''
+  return localStorage.getItem(CUSTOM_INDEXER_KEY) || ''
+}
+
+function getCustomIndexerServerSnapshot(): string {
+  return ''
+}
+
 export function NetworkProvider({ children }: { children: ReactNode }) {
   const networkId = useSyncExternalStore(subscribeToStorage, getNetworkSnapshot, getServerSnapshot)
   const customRpcUrl = useSyncExternalStore(subscribeToStorage, getCustomRpcSnapshot, getCustomRpcServerSnapshot)
+  const customIndexerUrl = useSyncExternalStore(
+    subscribeToStorage,
+    getCustomIndexerSnapshot,
+    getCustomIndexerServerSnapshot,
+  )
 
   const setNetworkId = useCallback((id: NetworkId) => {
     if (typeof window !== 'undefined') {
@@ -151,6 +187,19 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const setCustomIndexerUrl = useCallback((url: string) => {
+    if (typeof window !== 'undefined') {
+      if (url) {
+        localStorage.setItem(CUSTOM_INDEXER_KEY, url)
+      } else {
+        localStorage.removeItem(CUSTOM_INDEXER_KEY)
+      }
+      window.dispatchEvent(
+        new StorageEvent('storage', { key: CUSTOM_INDEXER_KEY, newValue: url || null }),
+      )
+    }
+  }, [])
+
   // Sync network to globalThis so torchsdk picks it up at runtime
   if (typeof window !== 'undefined') {
     ;(globalThis as any).__TORCH_NETWORK__ = networkId === 'devnet' ? 'devnet' : ''
@@ -162,6 +211,10 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   const effectiveRpcUrl = customRpcUrl || network.rpcUrl
   // Disable WebSocket when using custom RPC (we don't know their WS endpoint)
   const effectiveWsUrl = customRpcUrl ? undefined : network.wsUrl
+  // Resolution order: per-user localStorage override → network default
+  // (which may itself come from NEXT_PUBLIC_INDEXER_URL). Empty/undefined
+  // → no indexer; SDK calls go RPC-only.
+  const effectiveIndexerUrl = customIndexerUrl || network.indexerUrl || undefined
 
   const value: NetworkContextType = {
     network,
@@ -174,6 +227,9 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     setCustomRpcUrl,
     effectiveRpcUrl,
     effectiveWsUrl,
+    customIndexerUrl,
+    setCustomIndexerUrl,
+    effectiveIndexerUrl,
   }
 
   return <NetworkContext.Provider value={value}>{children}</NetworkContext.Provider>

@@ -299,7 +299,7 @@ pub fn borrow(ctx: Context<Borrow>, args: BorrowArgs) -> Result<()> {
         net_deposited,
     )?;
 
-    emit!(LoanCreated {
+    emit_cpi!(LoanCreated {
         mint: mint_key,
         user: borrower_key,
         collateral_amount: user_collateral,
@@ -404,7 +404,7 @@ pub fn borrow_via_vault(ctx: Context<BorrowViaVault>, args: BorrowArgs) -> Resul
         net_deposited,
     )?;
 
-    emit!(LoanCreated {
+    emit_cpi!(LoanCreated {
         mint: mint_key,
         user: borrower_key,
         collateral_amount: user_collateral,
@@ -497,7 +497,7 @@ pub fn repay(ctx: Context<Repay>, sol_amount: u64) -> Result<()> {
             .ok_or(TorchMarketError::MathOverflow)?;
     }
 
-    emit!(LoanRepaid {
+    emit_cpi!(LoanRepaid {
         mint: mint_key,
         user: ctx.accounts.borrower.key(),
         sol_repaid: actual_repay,
@@ -601,7 +601,7 @@ pub fn repay_via_vault(ctx: Context<RepayViaVault>, sol_amount: u64) -> Result<(
             .ok_or(TorchMarketError::MathOverflow)?;
     }
 
-    emit!(LoanRepaid {
+    emit_cpi!(LoanRepaid {
         mint: mint_key,
         user: ctx.accounts.borrower.key(),
         sol_repaid: actual_repay,
@@ -818,7 +818,7 @@ pub fn liquidate(ctx: Context<Liquidate>) -> Result<()> {
         fully_liquidated,
     )?;
 
-    emit!(LoanLiquidated {
+    emit_cpi!(LoanLiquidated {
         mint: mint_key,
         borrower: ctx.accounts.loan_position.user,
         liquidator: ctx.accounts.liquidator.key(),
@@ -915,7 +915,7 @@ pub fn liquidate_via_vault(ctx: Context<LiquidateViaVault>) -> Result<()> {
         fully_liquidated,
     )?;
 
-    emit!(LoanLiquidated {
+    emit_cpi!(LoanLiquidated {
         mint: mint_key,
         borrower: ctx.accounts.loan_position.user,
         liquidator: ctx.accounts.liquidator.key(),

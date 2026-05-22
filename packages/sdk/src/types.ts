@@ -5,6 +5,23 @@
 import { PublicKey, VersionedTransaction, Keypair } from '@solana/web3.js'
 
 // ============================================================================
+// Indexer Integration
+// ============================================================================
+//
+// Pass `indexer` to opt into the indexer-first read path; on any failure the
+// call silently falls back to RPC. Without it, every read goes straight to
+// the chain.
+//
+// Two getters (`getTrades`, `getCandles`) are indexer-only — RPC can't
+// aggregate historical events in any reasonable time. They throw if `indexer`
+// is omitted.
+
+export interface ReadOptions {
+  /** Base URL of a running torch-indexer (e.g. http://localhost:8080). */
+  indexer?: string
+}
+
+// ============================================================================
 // Token Types
 // ============================================================================
 

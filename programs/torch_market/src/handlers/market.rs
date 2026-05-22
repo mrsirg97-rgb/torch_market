@@ -289,7 +289,24 @@ pub fn buy(ctx: Context<Buy>, args: BuyArgs) -> Result<()> {
         args.sol_amount,
         tokens_out,
         &computed,
-    )
+    )?;
+
+    let trade = build_bonding_trade(
+        &ctx.accounts.bonding_curve,
+        mint_key,
+        buyer_key,
+        Pubkey::default(),
+        true,
+        args.sol_amount,
+        0,
+        0,
+        tokens_out,
+        computed.total_to_treasury,
+        computed.creator_sol,
+        computed.protocol_fee,
+    );
+    emit_cpi!(trade);
+    Ok(())
 }
 
 // Vault-routed buy: vault funds the SOL, tokens deposited into vault ATA.
@@ -379,7 +396,24 @@ pub fn buy_via_vault(ctx: Context<BuyViaVault>, args: BuyArgs) -> Result<()> {
         args.sol_amount,
         tokens_out,
         &computed,
-    )
+    )?;
+
+    let trade = build_bonding_trade(
+        &ctx.accounts.bonding_curve,
+        mint_key,
+        buyer_key,
+        ctx.accounts.torch_vault.key(),
+        true,
+        args.sol_amount,
+        0,
+        0,
+        tokens_out,
+        computed.total_to_treasury,
+        computed.creator_sol,
+        computed.protocol_fee,
+    );
+    emit_cpi!(trade);
+    Ok(())
 }
 
 // 5-way System.transfer fan-out from the wallet signer.
@@ -621,7 +655,24 @@ pub fn sell(ctx: Context<Sell>, args: SellArgs) -> Result<()> {
         protocol_treasury_ref,
         args.token_amount,
         &computed,
-    )
+    )?;
+
+    let trade = build_bonding_trade(
+        &ctx.accounts.bonding_curve,
+        ctx.accounts.mint.key(),
+        ctx.accounts.seller.key(),
+        Pubkey::default(),
+        false,
+        0,
+        computed.sol_to_seller,
+        args.token_amount,
+        0,
+        computed.sell_fee,
+        0,
+        0,
+    );
+    emit_cpi!(trade);
+    Ok(())
 }
 
 // Vault-routed sell: tokens come from vault ATA, SOL proceeds go to vault.
@@ -698,5 +749,89 @@ pub fn sell_via_vault(ctx: Context<SellViaVault>, args: SellArgs) -> Result<()> 
         protocol_treasury_ref,
         args.token_amount,
         &computed,
-    )
+    )?;
+
+    let trade = build_bonding_trade(
+        &ctx.accounts.bonding_curve,
+        ctx.accounts.mint.key(),
+        ctx.accounts.seller.key(),
+        ctx.accounts.torch_vault.key(),
+        false,
+        0,
+        computed.sol_to_seller,
+        args.token_amount,
+        0,
+        computed.sell_fee,
+        0,
+        0,
+    );
+    emit_cpi!(trade);
+    Ok(())
+}
+
+// ============================================================================
+// Bonding-curve trade event
+// ============================================================================
+//
+// Single event for all four bonding-curve paths (buy / buy_via_vault / sell /
+// sell_via_vault). `vault == Pubkey::default()` means the trade was direct
+// (no vault routing); otherwise it's the torch_vault PDA of the routed
+// position. Sells set `sol_in = tokens_out = 0`; buys set `sol_out = tokens_in
+// = 0`. Reserves snapshot is post-state — fields named *_after.
+
+#[event]
+pub struct BondingCurveTrade {
+    pub mint: Pubkey,
+    pub trader: Pubkey,
+    pub vault: Pubkey,
+    pub is_buy: bool,
+    pub sol_in: u64,
+    pub sol_out: u64,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub sol_to_treasury: u64,
+    pub sol_to_creator: u64,
+    pub protocol_fee: u64,
+    pub virtual_sol_after: u64,
+    pub virtual_token_after: u64,
+    pub real_sol_after: u64,
+    pub real_token_after: u64,
+}
+
+// Build a BondingCurveTrade payload from the post-state reserves + the
+// 12 caller-supplied fields. Plain function so call sites can `emit_cpi!`
+// in their own ctx scope (event_cpi requires `ctx.accounts.event_authority`
+// which only exists inside the handler).
+#[allow(clippy::too_many_arguments)]
+fn build_bonding_trade(
+    bonding_curve: &BondingCurve,
+    mint: Pubkey,
+    trader: Pubkey,
+    vault: Pubkey,
+    is_buy: bool,
+    sol_in: u64,
+    sol_out: u64,
+    tokens_in: u64,
+    tokens_out: u64,
+    sol_to_treasury: u64,
+    sol_to_creator: u64,
+    protocol_fee: u64,
+) -> BondingCurveTrade {
+    BondingCurveTrade {
+        mint,
+        trader,
+        vault,
+        is_buy,
+        sol_in,
+        sol_out,
+        tokens_in,
+        tokens_out,
+        sol_to_treasury,
+        sol_to_creator,
+        protocol_fee,
+        virtual_sol_after: bonding_curve.virtual_sol_reserves,
+        virtual_token_after: bonding_curve.virtual_token_reserves,
+        real_sol_after: bonding_curve.real_sol_reserves,
+        real_token_after: bonding_curve.real_token_reserves,
+    }
 }

@@ -7625,6 +7625,19 @@
   ],
   "events": [
     {
+      "name": "BondingCurveTrade",
+      "discriminator": [
+        205,
+        202,
+        53,
+        123,
+        175,
+        46,
+        121,
+        12
+      ]
+    },
+    {
       "name": "LoanCreated",
       "discriminator": [
         142,
@@ -7661,6 +7674,32 @@
         54,
         142,
         243
+      ]
+    },
+    {
+      "name": "MarketCreated",
+      "discriminator": [
+        88,
+        184,
+        130,
+        231,
+        226,
+        84,
+        6,
+        58
+      ]
+    },
+    {
+      "name": "MigratedToDex",
+      "discriminator": [
+        235,
+        136,
+        240,
+        203,
+        24,
+        201,
+        54,
+        72
       ]
     },
     {
@@ -8080,6 +8119,74 @@
       }
     },
     {
+      "name": "BondingCurveTrade",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "trader",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "is_buy",
+            "type": "bool"
+          },
+          {
+            "name": "sol_in",
+            "type": "u64"
+          },
+          {
+            "name": "sol_out",
+            "type": "u64"
+          },
+          {
+            "name": "tokens_in",
+            "type": "u64"
+          },
+          {
+            "name": "tokens_out",
+            "type": "u64"
+          },
+          {
+            "name": "sol_to_treasury",
+            "type": "u64"
+          },
+          {
+            "name": "sol_to_creator",
+            "type": "u64"
+          },
+          {
+            "name": "protocol_fee",
+            "type": "u64"
+          },
+          {
+            "name": "virtual_sol_after",
+            "type": "u64"
+          },
+          {
+            "name": "virtual_token_after",
+            "type": "u64"
+          },
+          {
+            "name": "real_sol_after",
+            "type": "u64"
+          },
+          {
+            "name": "real_token_after",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "BorrowArgs",
       "type": {
         "kind": "struct",
@@ -8299,6 +8406,78 @@
           {
             "name": "fully_repaid",
             "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketCreated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "creator",
+            "type": "pubkey"
+          },
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "symbol",
+            "type": "string"
+          },
+          {
+            "name": "metadata_uri",
+            "type": "string"
+          },
+          {
+            "name": "is_community_token",
+            "type": "bool"
+          },
+          {
+            "name": "sol_target",
+            "type": "u64"
+          },
+          {
+            "name": "virtual_sol_reserves",
+            "type": "u64"
+          },
+          {
+            "name": "virtual_token_reserves",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MigratedToDex",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "deep_pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "sol_seeded",
+            "type": "u64"
+          },
+          {
+            "name": "tokens_seeded",
+            "type": "u64"
+          },
+          {
+            "name": "lp_burned",
+            "type": "u64"
           }
         ]
       }

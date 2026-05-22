@@ -81,6 +81,7 @@ pub struct UpdateDevWallet<'info> {
     pub new_dev_wallet: UncheckedAccount<'info>,
 }
 
+#[event_cpi]
 #[derive(Accounts)]
 #[instruction(args: CreateTokenArgs)]
 pub struct CreateToken2022<'info> {
@@ -136,6 +137,7 @@ pub struct CreateToken2022<'info> {
 }
 
 // Wallet-funded buy on the bonding curve. For vault-routed buys, use `BuyViaVault`.
+#[event_cpi]
 #[derive(Accounts)]
 #[instruction(args: BuyArgs)]
 pub struct Buy<'info> {
@@ -226,6 +228,7 @@ pub struct Buy<'info> {
 // Vault-routed buy. Vault accounts are MANDATORY (not Optional) — no `unwrap()`
 // in constraints. The signer is a linked controller wallet acting on behalf of
 // the vault; vault holds the SOL paid and receives the tokens.
+#[event_cpi]
 #[derive(Accounts)]
 #[instruction(args: BuyArgs)]
 pub struct BuyViaVault<'info> {
@@ -325,6 +328,7 @@ pub struct BuyViaVault<'info> {
 }
 
 // Wallet-funded sell on the bonding curve. For vault-routed sells, use `SellViaVault`.
+#[event_cpi]
 #[derive(Accounts)]
 #[instruction(args: SellArgs)]
 pub struct Sell<'info> {
@@ -383,6 +387,7 @@ pub struct Sell<'info> {
 
 // Vault-routed sell. Vault accounts MANDATORY. Tokens come from vault ATA, SOL
 // proceeds go to vault.
+#[event_cpi]
 #[derive(Accounts)]
 #[instruction(args: SellArgs)]
 pub struct SellViaVault<'info> {
@@ -558,6 +563,7 @@ pub struct ReclaimFailedToken<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[event_cpi]
 #[derive(Accounts)]
 pub struct ContributeRevival<'info> {
     #[account(mut)]
@@ -755,6 +761,7 @@ pub struct FundMigrationSol<'info> {
     pub bonding_curve: Box<Account<'info, BondingCurve>>,
 }
 
+#[event_cpi]
 #[derive(Accounts)]
 pub struct MigrateToDex<'info> {
     #[account(mut)]
@@ -848,6 +855,7 @@ pub struct MigrateToDex<'info> {
 }
 
 // Wallet-funded borrow against token collateral. For vault-routed borrows, use `BorrowViaVault`.
+#[event_cpi]
 #[derive(Accounts)]
 #[instruction(args: BorrowArgs)]
 pub struct Borrow<'info> {
@@ -907,6 +915,7 @@ pub struct Borrow<'info> {
 
 // Vault-routed borrow. Vault accounts MANDATORY. Collateral from vault ATA,
 // borrowed SOL to vault.
+#[event_cpi]
 #[derive(Accounts)]
 #[instruction(args: BorrowArgs)]
 pub struct BorrowViaVault<'info> {
@@ -977,6 +986,7 @@ pub struct BorrowViaVault<'info> {
 }
 
 // Wallet-funded repay. For vault-routed repay, use `RepayViaVault`.
+#[event_cpi]
 #[derive(Accounts)]
 pub struct Repay<'info> {
     #[account(mut)]
@@ -1017,6 +1027,7 @@ pub struct Repay<'info> {
 
 // Vault-routed repay. Vault accounts MANDATORY. SOL repaid from vault,
 // collateral returned to vault ATA.
+#[event_cpi]
 #[derive(Accounts)]
 pub struct RepayViaVault<'info> {
     #[account(mut)]
@@ -1068,6 +1079,7 @@ pub struct RepayViaVault<'info> {
 }
 
 // Wallet-funded liquidation. For vault-routed liquidation, use `LiquidateViaVault`.
+#[event_cpi]
 #[derive(Accounts)]
 pub struct Liquidate<'info> {
     #[account(mut)]
@@ -1126,6 +1138,7 @@ pub struct Liquidate<'info> {
 
 // Vault-routed liquidation. Vault accounts MANDATORY. Liquidator pays SOL from
 // vault, receives collateral to vault ATA.
+#[event_cpi]
 #[derive(Accounts)]
 pub struct LiquidateViaVault<'info> {
     #[account(mut)]
@@ -1329,6 +1342,7 @@ pub struct WithdrawTokens<'info> {
     pub token_program: Interface<'info, TokenInterface>,
 }
 
+#[event_cpi]
 #[derive(Accounts)]
 pub struct VaultSwap<'info> {
     #[account(mut)]
@@ -1389,6 +1403,7 @@ pub struct VaultSwap<'info> {
 }
 
 // Wallet-funded short open. For vault-routed, use `OpenShortViaVault`.
+#[event_cpi]
 #[derive(Accounts)]
 #[instruction(args: OpenShortArgs)]
 pub struct OpenShort<'info> {
@@ -1458,6 +1473,7 @@ pub struct OpenShort<'info> {
 
 // Vault-routed short open. Vault accounts MANDATORY. SOL collateral from vault,
 // borrowed tokens to vault ATA.
+#[event_cpi]
 #[derive(Accounts)]
 #[instruction(args: OpenShortArgs)]
 pub struct OpenShortViaVault<'info> {
@@ -1538,6 +1554,7 @@ pub struct OpenShortViaVault<'info> {
 }
 
 // Wallet-funded short close. For vault-routed, use `CloseShortViaVault`.
+#[event_cpi]
 #[derive(Accounts)]
 #[instruction(token_amount: u64)]
 pub struct CloseShort<'info> {
@@ -1596,6 +1613,7 @@ pub struct CloseShort<'info> {
 
 // Vault-routed short close. Vault accounts MANDATORY. Tokens returned from
 // vault ATA, SOL collateral back to vault.
+#[event_cpi]
 #[derive(Accounts)]
 #[instruction(token_amount: u64)]
 pub struct CloseShortViaVault<'info> {
@@ -1665,6 +1683,7 @@ pub struct CloseShortViaVault<'info> {
 }
 
 // Wallet-funded short liquidation. For vault-routed, use `LiquidateShortViaVault`.
+#[event_cpi]
 #[derive(Accounts)]
 pub struct LiquidateShort<'info> {
     #[account(mut)]
@@ -1730,6 +1749,7 @@ pub struct LiquidateShort<'info> {
 
 // Vault-routed short liquidation. Vault accounts MANDATORY. Liquidator covers
 // debt from vault ATA, receives SOL to vault.
+#[event_cpi]
 #[derive(Accounts)]
 pub struct LiquidateShortViaVault<'info> {
     #[account(mut)]

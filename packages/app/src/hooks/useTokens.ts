@@ -59,7 +59,7 @@ interface UseTokensResult {
 export function useTokens(options?: { enabled?: boolean }): UseTokensResult {
   const enabled = options?.enabled !== false
   const { connection } = useConnection()
-  const { isSimnet, isMainnet } = useNetwork()
+  const { isSimnet, isMainnet, effectiveIndexerUrl } = useNetwork()
   const [loading, setLoading] = useState(true)
   const [rawTokens, setRawTokens] = useState<TokenData[]>([])
   const [currentSlot, setCurrentSlot] = useState<bigint>(BigInt(0))
@@ -83,7 +83,7 @@ export function useTokens(options?: { enabled?: boolean }): UseTokensResult {
   const fetchTokens = useCallback(
     async (isRefresh = false) => {
       try {
-        const result = await getTokens(connection)
+        const result = await getTokens(connection, {}, { indexer: effectiveIndexerUrl })
 
         // Smart update: only replace if data actually changed
         setRawTokens((prev) => {
@@ -108,7 +108,7 @@ export function useTokens(options?: { enabled?: boolean }): UseTokensResult {
         }
       }
     },
-    [connection],
+    [connection, effectiveIndexerUrl],
   )
 
   useEffect(() => {

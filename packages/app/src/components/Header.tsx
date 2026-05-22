@@ -102,16 +102,6 @@ export function Header({ onHowItWorksClick, onTreasuryClick }: HeaderProps) {
           >
             markets
           </Link>
-          {onHowItWorksClick && (
-            <button
-              onClick={onHowItWorksClick}
-              className="hidden sm:inline-flex text-sm cursor-pointer"
-              style={{ color: 'var(--muted)' }}
-              title="How it works"
-            >
-              how
-            </button>
-          )}
           {onTreasuryClick && (
             <button
               onClick={onTreasuryClick}
@@ -120,6 +110,16 @@ export function Header({ onHowItWorksClick, onTreasuryClick }: HeaderProps) {
               title="Protocol treasury"
             >
               treasury
+            </button>
+          )}
+          {onHowItWorksClick && (
+            <button
+              onClick={onHowItWorksClick}
+              className="hidden sm:inline-flex text-sm cursor-pointer"
+              style={{ color: 'var(--muted)' }}
+              title="How it works"
+            >
+              how
             </button>
           )}
 

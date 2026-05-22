@@ -1,0 +1,73 @@
+[package]
+name = "torch-indexer"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone — kept out of the program workspace at /Users/.../torch_market so
+# anchor builds don't pull in the indexer's heavy deps (yellowstone, axum,
+# sqlx, reqwest).
+[workspace]
+
+[lib]
+name = "torch_indexer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "torch-indexer"
+path = "src/main.rs"
+
+[dependencies]
+# Runtime
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+tokio-stream = "0.1"
+futures = "0.3"
+
+# Yellowstone gRPC (Laserstream is compatible)
+yellowstone-grpc-client = "5.0"
+yellowstone-grpc-proto = "5.0"
+
+# Database
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "macros", "migrate"] }
+
+# HTTP + WebSocket
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Backfill subcommand calls JSON-RPC against a regular Solana RPC node
+# (separate endpoint from Laserstream gRPC). rustls-only build keeps the
+# alpine Docker image free of an OpenSSL dependency.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+borsh = { version = "1", features = ["derive"] }
+
+# Encoding
+bs58 = "0.5"
+
+# Cryptography (for computing event discriminators at startup)
+sha2 = "0.10"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+prometheus = { version = "0.13", default-features = false }
+once_cell = "1"
+
+# Config + errors
+anyhow = "1"
+thiserror = "2"
+dotenvy = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+# Unique per-test database names
+uuid = { version = "1", features = ["v4"] }
+# Axum test client (in-process HTTP) for it_api tests
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+# Sync orchestration in test fixtures
+once_cell = "1"
+# JSON body extraction in API tests
+serde_json = "1"

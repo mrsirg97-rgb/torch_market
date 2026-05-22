@@ -8,6 +8,7 @@ import { TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddressSync } from '@solana/sp
 import { buildWithdrawTokensTransaction, getTokens, getTorchVaultPda } from 'torchsdk'
 import type { VaultInfo } from 'torchsdk'
 import { formatTokens, shortenAddress } from '@/lib/constants'
+import { useNetwork } from '@/lib/NetworkContext'
 
 const isDev = process.env.NODE_ENV === 'development'
 
@@ -27,6 +28,7 @@ export function VaultTokens({ vault, onSuccess }: VaultTokensProps) {
   const { connection } = useConnection()
   const wallet = useWallet()
   const sendTransaction = useMwaSendTransaction()
+  const { effectiveIndexerUrl } = useNetwork()
 
   const [holdings, setHoldings] = useState<VaultTokenHolding[]>([])
   const [loading, setLoading] = useState(true)
@@ -50,7 +52,7 @@ export function VaultTokens({ vault, onSuccess }: VaultTokensProps) {
       setLoading(true)
       try {
         // Get all tokens to know which mints exist
-        const { tokens } = await getTokens(connection)
+        const { tokens } = await getTokens(connection, {}, { indexer: effectiveIndexerUrl })
         if (cancelled) return
 
         // Build ATAs for vault PDA
@@ -101,7 +103,7 @@ export function VaultTokens({ vault, onSuccess }: VaultTokensProps) {
     fetchHoldings()
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connection, vault.creator])
+  }, [connection, vault.creator, effectiveIndexerUrl])
 
   async function handleWithdraw(mint: string) {
     if (!wallet.publicKey || !isAuthority) return

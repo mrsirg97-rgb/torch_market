@@ -34,6 +34,22 @@ export {
 // quotes
 export { getBuyQuote, getSellQuote, getBorrowQuote } from './quotes'
 
+// indexer-only getters + wire types
+export { getTrades, getCandles } from './indexer'
+export type {
+  IndexerMarketStatus,
+  IndexerMarketTier,
+  IndexerPositionHealth,
+  IndexerMarketRow,
+  IndexerTradeRow,
+  IndexerMessageRow,
+  IndexerLoanRow,
+  IndexerShortRow,
+  IndexerCandle,
+  TradeHistoryQuery,
+  CandlesQuery,
+} from './indexer'
+
 // transaction builders
 export {
   buildBuyTransaction,
@@ -74,6 +90,7 @@ export { verifySaid, confirmTransaction } from './said'
 
 // types
 export type {
+  ReadOptions,
   TokenStatus,
   TokenSummary,
   TokenDetail,

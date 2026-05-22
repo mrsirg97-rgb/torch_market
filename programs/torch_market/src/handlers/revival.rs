@@ -53,14 +53,14 @@ pub fn contribute_revival(ctx: Context<ContributeRevival>, sol_amount: u64) -> R
     if revived {
         ctx.accounts.bonding_curve.reclaimed = false;
         ctx.accounts.bonding_curve.last_activity_slot = Clock::get()?.slot;
-        emit!(TokenRevived {
+        emit_cpi!(TokenRevived {
             mint: mint_key,
             total_contributed: new_real_sol,
             revival_slot: ctx.accounts.bonding_curve.last_activity_slot,
         });
     }
 
-    emit!(RevivalContribution {
+    emit_cpi!(RevivalContribution {
         mint: mint_key,
         contributor: contributor_key,
         amount: sol_amount,
