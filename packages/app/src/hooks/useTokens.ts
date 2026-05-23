@@ -132,10 +132,51 @@ export function useTokens(options?: { enabled?: boolean }): UseTokensResult {
       return () => clearInterval(pollInterval)
     }
 
-    // On change, trigger SDK refetch instead of manual Borsh decode
+    // On change, decode the updated BondingCurve directly from the
+    // subscription event and patch the enrichment map. This keeps the
+    // per-card progress bar moving in real time as trades land, without
+    // waiting for the indexer to commit + a full SDK refetch round-trip.
+    // We ALSO trigger an SDK refetch in the background so any newly
+    // appeared mints (e.g., create_token) show up.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const subCoder = new BorshCoder(idl as any)
     const subscriptionId = connection.onProgramAccountChange(
       programId,
-      () => {
+      (keyedAccountInfo) => {
+        try {
+          const bc = subCoder.accounts.decode(
+            'BondingCurve',
+            keyedAccountInfo.accountInfo.data,
+          ) as BondingCurve
+          const mint = bc.mint.toString()
+          const map = enrichmentMapRef.current
+          const existing = map.get(mint)
+          const realSol = BigInt(bc.real_sol_reserves.toString())
+          const targetBigInt = BigInt(bc.bonding_target.toString())
+          const newProgress = bc.migrated
+            ? 100
+            : calculateBondingProgress(realSol, targetBigInt)
+          const newActivity = Number(bc.last_activity_slot.toString())
+          if (existing) {
+            existing.progress_percent = newProgress
+            existing.last_activity_at = newActivity
+          } else {
+            // Mint not yet in the enrichment map (e.g., just created).
+            // Seed a minimal entry; the regular enrichment useEffect will
+            // backfill image/tier/creator on next pass via fetchTokens.
+            map.set(mint, {
+              progress_percent: newProgress,
+              last_activity_at: newActivity,
+              bonding_target: Number(bc.bonding_target.toString()),
+              creator: bc.creator.toString(),
+              tier: getTierFromTarget(Number(bc.bonding_target.toString())),
+            })
+          }
+          setEnrichmentVersion((v) => v + 1)
+        } catch {
+          // Account isn't a BondingCurve — ignore (filter should prevent
+          // this, but defensive).
+        }
         fetchTokens(true)
       },
       {
@@ -214,6 +255,14 @@ export function useTokens(options?: { enabled?: boolean }): UseTokensResult {
             progress_percent: bc.migrated ? 100 : calculateBondingProgress(realSolReserves, bondingTargetBigInt),
           }
 
+          // Indexer-supplied image: pre-populate so the slow arweave HTTPS
+          // fetch below short-circuits. Live BondingCurve fields above are
+          // still authoritative — only the visual asset comes from the
+          // indexer's metadata cache.
+          if (batch[j].image) {
+            enrichment.image = batch[j].image
+          }
+
           if (bc.migrated) {
             migratedInBatch.push({ mint, bc, enrichment })
           }
@@ -234,6 +283,9 @@ export function useTokens(options?: { enabled?: boolean }): UseTokensResult {
                 const metaMap = await fetchMintsMetadata(connection, mintPks)
                 await Promise.allSettled(
                   enrichmentsForBatch.map(async ({ mint, enrichment }) => {
+                    // Skip if the indexer already gave us an image — saves
+                    // a per-mint arweave HTTPS fetch (the slowest step).
+                    if (enrichment.image) return
                     const md = metaMap.get(mint)
                     const uri = md?.uri
                     if (!uri || !isLikelyValidMetadataUri(uri)) return

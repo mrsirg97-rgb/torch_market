@@ -500,8 +500,15 @@ proptest! {
         prop_assert!(r_hi >= r_lo);
     }
 
-    // calc_user_borrow_cap: bounded by max_lendable * MULTIPLIER when user_collateral == denominator.
-    // Realistic bounds keep the triple-multiplication inside u128.
+    // calc_user_borrow_cap: cap = min(formula, absolute), where
+    //   formula  = max_lendable × user_collateral × BORROW_SHARE_MULTIPLIER / denominator
+    //   absolute = max_lendable × MAX_USER_BORROW_SHARE_BPS / 10_000
+    //
+    // Since MAX_USER_BORROW_SHARE_BPS = 2000 (20%) and BORROW_SHARE_MULTIPLIER = 23,
+    // the absolute cap is always tighter when user_collateral saturates the formula
+    // (0.2 × max_lendable < 23 × max_lendable). When user_collateral is small
+    // relative to denominator, the formula can be tighter (≈0). Either way, both
+    // upper bounds hold.
     #[test]
     fn user_borrow_cap_bounded(
         max_lendable in 0u64..1_000_000_000_000u64, // 1000 SOL
@@ -509,13 +516,20 @@ proptest! {
         denominator in 1u64..TOTAL_SUPPLY,
     ) {
         let cap = calc_user_borrow_cap(max_lendable, user_collateral, denominator).unwrap();
-        // If user_collateral >= denominator they get the full multiplied cap.
-        if user_collateral >= denominator {
-            let expected_at_or_above = (max_lendable as u128)
-                .checked_mul(BORROW_SHARE_MULTIPLIER as u128)
-                .unwrap();
-            prop_assert!((cap as u128) >= expected_at_or_above || cap == u64::MAX);
-        }
+
+        // Bound 1: cap is at most the absolute clamp.
+        let absolute_cap = apply_bps(max_lendable, MAX_USER_BORROW_SHARE_BPS).unwrap();
+        prop_assert!(cap <= absolute_cap);
+
+        // Bound 2: cap is at most the formula value.
+        let formula = (max_lendable as u128)
+            .checked_mul(user_collateral as u128)
+            .unwrap()
+            .checked_mul(BORROW_SHARE_MULTIPLIER as u128)
+            .unwrap()
+            .checked_div(denominator as u128)
+            .unwrap();
+        prop_assert!((cap as u128) <= formula);
     }
 
     // calc_user_borrow_cap: zero denominator short-circuits.
@@ -560,5 +574,21 @@ proptest! {
         let actual =
             calc_short_partial_seize_proration(tokens_to_cover, capped, full_seize).unwrap();
         prop_assert!(actual <= tokens_to_cover);
+    }
+
+    // gross_up_for_transfer_fee: sufficiency + tightness over the full
+    // realistic range. Kani proves the same invariant at bounded scale
+    // (kani_proofs.rs::verify_gross_up_preserves_net_delivery); proptest
+    // covers the wider symbolic range that BMC can't tractably enumerate.
+    //
+    // Sufficiency: net_received >= net (no protocol underpayment).
+    // Tightness:   net_received <= net + 1 (no caller over-payment).
+    #[test]
+    fn gross_up_preserves_net_delivery(net in 1u64..TOTAL_SUPPLY) {
+        let gross = gross_up_for_transfer_fee(net).unwrap();
+        let fee = calc_transfer_fee(gross).unwrap();
+        let net_received = gross.checked_sub(fee).unwrap();
+        prop_assert!(net_received >= net);
+        prop_assert!(net_received <= net + 1);
     }
 }

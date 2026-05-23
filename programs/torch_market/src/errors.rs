@@ -110,4 +110,11 @@ pub enum TorchMarketError {
     NoActiveShort,
     #[msg("Pool depth below minimum for margin operations")]
     PoolTooThin,
+    // NOTE: append new variants here, NOT in the middle of the enum.
+    // Inserting in the middle shifts the Anchor-generated error codes
+    // (6000 + index) and breaks every test that asserts on specific codes
+    // for downstream variants. Same applies to clients with hard-coded
+    // error matching.
+    #[msg("Lending unlocks once treasury reaches the activity threshold (see docs/lending-unlock.md)")]
+    LendingNotYetUnlocked,
 }

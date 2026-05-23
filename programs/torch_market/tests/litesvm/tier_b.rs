@@ -19,6 +19,13 @@ fn migrated_token() -> (Env, TokenCtx, solana_sdk::signature::Keypair) {
     let migrator = env.new_funded(2 * LAMPORTS_PER_SOL);
     env.migrate(&t, &migrator).expect("migrate");
     assert!(env.get_bonding_curve(&t).migrated);
+    // Poke treasury above the lending-unlock gate so tier_b's lending tests
+    // (liquidation_proceeds_when_pool_thin, loan_position_closes_on_full_repay)
+    // can borrow against the freshly-migrated state. Shorts tests in this file
+    // don't depend on the treasury balance, so this is a strict superset.
+    let mut tr = env.get_treasury(&t);
+    tr.sol_balance = 200 * LAMPORTS_PER_SOL;
+    env.poke_anchor(t.treasury, tr);
     (env, t, last_buyer)
 }
 

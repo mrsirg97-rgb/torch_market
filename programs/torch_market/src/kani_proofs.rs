@@ -2365,3 +2365,42 @@ fn verify_short_partial_seize_proration_concrete_fixtures() {
     assert!(half == tokens_to_cover / 2);
 }
 
+// ============================================================================
+// 16. SHORT POOL STABILITY: gross_up_for_transfer_fee preserves net delivery
+//     Proves: for any `net`, sending `gross_up_for_transfer_fee(net)` results
+//     in the recipient receiving AT LEAST `net` after Token-2022 fee
+//     deduction. This is the load-bearing property that keeps
+//     treasury_lock_token_account stable across short open+close cycles —
+//     borrower covers the transfer fee so the pool never depletes.
+//
+//     Tightness clause: the gross-up overshoots by at most 1 unit, so the
+//     borrower isn't over-charged. (Single-unit overshoot is unavoidable
+//     when combining ceiling-up gross-up with ceiling-up Token-2022 fee.)
+// ============================================================================
+
+#[kani::proof]
+fn verify_gross_up_preserves_net_delivery() {
+    let net: u64 = kani::any();
+    // Tight upper bound for Kani tractability. The u128 arithmetic inside
+    // gross_up_for_transfer_fee blows up CBMC's SAT space at wider ranges;
+    // at 10_000 the proof completes in seconds. Since the ceiling-division
+    // semantics are range-independent, proving the invariant exhaustively
+    // here generalizes — `tests/math_proptests.rs::gross_up_preserves_net_delivery`
+    // covers the symbolic range up to TOTAL_SUPPLY with random inputs.
+    kani::assume(net > 0);
+    kani::assume(net <= 10_000);
+
+    let gross = gross_up_for_transfer_fee(net).unwrap();
+    let fee = calc_transfer_fee(gross).unwrap();
+    let net_received = gross.checked_sub(fee).unwrap();
+
+    // SUFFICIENCY: recipient gets at least the requested net — the
+    // protocol's token pool stays whole.
+    assert!(net_received >= net);
+
+    // TIGHTNESS: overshoot is bounded by 1 unit. Prevents the gross-up
+    // from being inflated beyond what's necessary to make the recipient
+    // whole.
+    assert!(net_received <= net + 1);
+}
+

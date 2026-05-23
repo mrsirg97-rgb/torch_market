@@ -8691,6 +8691,11 @@
       "code": 6053,
       "name": "PoolTooThin",
       "msg": "Pool depth below minimum for margin operations"
+    },
+    {
+      "code": 6054,
+      "name": "LendingNotYetUnlocked",
+      "msg": "Lending unlocks once treasury reaches the activity threshold (see docs/lending-unlock.md)"
     }
   ],
   "types": [

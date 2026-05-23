@@ -9,19 +9,25 @@ import {
   HistogramData,
   Time,
   MouseEventParams,
+  WhitespaceData,
 } from 'lightweight-charts'
 import type { PricePoint } from '@/lib/trades'
+import { useCandles, type CandleInterval } from '@/hooks/useCandles'
 
 interface PriceChartProps {
+  mint: string
   priceInSol: number
   solRaised: number
   solPriceUsd: number | null
   priceHistory: PricePoint[]
 }
 
-type TimeInterval = '1m' | '5m' | '15m' | '1H' | '4H'
+type TimeInterval = '1s' | '15s' | '30s' | '1m' | '5m' | '15m' | '1H' | '4H'
 
 const TIME_INTERVALS: { label: string; value: TimeInterval }[] = [
+  { label: '1s', value: '1s' },
+  { label: '15s', value: '15s' },
+  { label: '30s', value: '30s' },
   { label: '1m', value: '1m' },
   { label: '5m', value: '5m' },
   { label: '15m', value: '15m' },
@@ -29,19 +35,50 @@ const TIME_INTERVALS: { label: string; value: TimeInterval }[] = [
   { label: '4H', value: '4H' },
 ]
 
-// Get number of minutes for each interval
-function getIntervalMinutes(interval: TimeInterval): number {
-  switch (interval) {
+// UI interval label → indexer interval value. Sub-minute intervals
+// round-trip as-is; we keep the UI labels stylistically uppercase for
+// the hour intervals to match conventional charts.
+function uiIntervalToIndexer(ui: TimeInterval): CandleInterval {
+  switch (ui) {
+    case '1s':
+      return '1s'
+    case '15s':
+      return '15s'
+    case '30s':
+      return '30s'
     case '1m':
-      return 1
+      return '1m'
     case '5m':
-      return 5
+      return '5m'
     case '15m':
-      return 15
+      return '15m'
     case '1H':
-      return 60
+      return '1h'
     case '4H':
-      return 240
+      return '4h'
+  }
+}
+
+// Seconds per interval. Used by the client-synthesis fallback path
+// (buildCandlesFromHistory); the indexer path computes buckets server-side.
+function getIntervalSeconds(interval: TimeInterval): number {
+  switch (interval) {
+    case '1s':
+      return 1
+    case '15s':
+      return 15
+    case '30s':
+      return 30
+    case '1m':
+      return 60
+    case '5m':
+      return 300
+    case '15m':
+      return 900
+    case '1H':
+      return 3600
+    case '4H':
+      return 14_400
   }
 }
 
@@ -55,12 +92,10 @@ function getIntervalMinutes(interval: TimeInterval): number {
  */
 function buildCandlesFromHistory(
   points: PricePoint[],
-  intervalMinutes: number,
+  intervalSeconds: number,
   priceMultiplier: number,
 ): { candles: CandlestickData<Time>[]; volumes: HistogramData<Time>[] } {
   if (points.length === 0) return { candles: [], volumes: [] }
-
-  const intervalSeconds = intervalMinutes * 60
 
   const firstTs = points[0].timestamp
   const lastTs = points[points.length - 1].timestamp
@@ -110,7 +145,7 @@ function buildCandlesFromHistory(
   return { candles, volumes }
 }
 
-export function PriceChart({ priceInSol, solRaised, solPriceUsd, priceHistory }: PriceChartProps) {
+export function PriceChart({ mint, priceInSol, solRaised, solPriceUsd, priceHistory }: PriceChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
@@ -120,6 +155,10 @@ export function PriceChart({ priceInSol, solRaised, solPriceUsd, priceHistory }:
   const [hoveredCandle, setHoveredCandle] = useState<{
     open: number; high: number; low: number; close: number
   } | null>(null)
+
+  // Indexer-served candles (preferred path). Returns `null` when no indexer
+  // is configured — the buildCandlesFromHistory fallback then runs.
+  const { candles: indexerCandles } = useCandles(mint, uiIntervalToIndexer(selectedInterval))
 
   // Crosshair handler — updates hoveredCandle as user moves across the chart
   const onCrosshairMove = useCallback((param: MouseEventParams<Time>) => {
@@ -137,16 +176,80 @@ export function PriceChart({ priceInSol, solRaised, solPriceUsd, priceHistory }:
     }
   }, [])
 
-  // Build OHLC data from real trades (empty until priceHistory loads)
+  // Build OHLC data — prefer indexer-served candles when available, fall
+  // back to client-synthesized buckets from raw priceHistory otherwise.
+  // The indexer path is O(1) HTTP fetch and computes the OHLCV server-side
+  // via a SQL window query over trades ∪ swaps.
   const { candleData, volumeData, priceChange, currentPrice } = useMemo(() => {
     const priceMultiplier = solPriceUsd ?? 1
-    const intervalMinutes = getIntervalMinutes(selectedInterval)
 
-    const { candles, volumes } = buildCandlesFromHistory(
-      priceHistory,
-      intervalMinutes,
-      priceMultiplier,
-    )
+    let candles: CandlestickData<Time>[]
+    let volumes: HistogramData<Time>[]
+
+    if (indexerCandles && indexerCandles.length > 0) {
+      // Indexer path. Server-side SQL now computes MARGINAL post-trade
+      // price (= reserves_after_sol / reserves_after_tokens) rather than
+      // execution price, so each candle reflects the pool's new spot
+      // price after the trade settles. That's the right semantic for a
+      // public chart: where the curve/pool stands, not the avg price a
+      // particular trader experienced.
+      //
+      // Price scale: the SQL emits raw lamport-per-microtoken. Multiply
+      // by 10^-3 to convert to SOL-per-token (matches the SDK's
+      // calculatePrice → TOKEN_MULTIPLIER/LAMPORTS_PER_SOL pattern used
+      // elsewhere in the app).
+      const LAMPORT_TO_SOL_PER_TOKEN = 1e-3
+      const finalMultiplier = priceMultiplier * LAMPORT_TO_SOL_PER_TOKEN
+
+      // Force candle N's open = candle N-1's close so wicks/bodies bridge
+      // cleanly between buckets. The SQL emits each bucket's open as the
+      // first marginal-price-after-trade in that bucket, which doesn't
+      // connect to the previous bucket's last price visually. Bridging
+      // them makes each candle's BODY represent "price change during this
+      // bucket from the previous known state," matching how the original
+      // client-synth path renders sparse data.
+      const realCandles = indexerCandles.filter(
+        (c) => c.open != null && c.high != null && c.low != null && c.close != null,
+      )
+      let prevClose: number | null = null
+      candles = realCandles.map((c) => {
+        const t = Math.floor(new Date(c.bucket_start).getTime() / 1000) as Time
+        const sqlOpen = (c.open as number) * finalMultiplier
+        const sqlHigh = (c.high as number) * finalMultiplier
+        const sqlLow = (c.low as number) * finalMultiplier
+        const close = (c.close as number) * finalMultiplier
+        const open = prevClose ?? sqlOpen
+        const high = Math.max(open, sqlHigh, close)
+        const low = Math.min(open, sqlLow, close)
+        prevClose = close
+        return { time: t, open, high, low, close }
+      })
+
+      // Volume colors are derived from the BRIDGED open vs close so the
+      // histogram color matches the candle body color.
+      let prevCloseForVol: number | null = null
+      volumes = realCandles.map((c) => {
+        const t = Math.floor(new Date(c.bucket_start).getTime() / 1000) as Time
+        const close = (c.close as number) * finalMultiplier
+        const open = prevCloseForVol ?? (c.open as number) * finalMultiplier
+        const isBullish = close >= open
+        prevCloseForVol = close
+        return {
+          time: t,
+          value: Math.max(0.001, (c.volume as number) ?? 0),
+          color: isBullish ? 'rgba(34, 197, 94, 0.5)' : 'rgba(239, 68, 68, 0.5)',
+        }
+      })
+    } else {
+      const intervalSeconds = getIntervalSeconds(selectedInterval)
+      const synthesized = buildCandlesFromHistory(
+        priceHistory,
+        intervalSeconds,
+        priceMultiplier,
+      )
+      candles = synthesized.candles
+      volumes = synthesized.volumes
+    }
 
     const firstPrice = candles[0]?.open || 0
     const lastCandle = candles[candles.length - 1]
@@ -164,7 +267,7 @@ export function PriceChart({ priceInSol, solRaised, solPriceUsd, priceHistory }:
       currentPrice: currentPriceData,
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [solPriceUsd, priceHistory, selectedInterval])
+  }, [solPriceUsd, priceHistory, selectedInterval, indexerCandles])
 
   // Initialize chart
   useEffect(() => {
@@ -200,7 +303,16 @@ export function PriceChart({ priceInSol, solRaised, solPriceUsd, priceHistory }:
       timeScale: {
         borderColor: 'rgba(255, 255, 255, 0.1)',
         timeVisible: true,
-        secondsVisible: false,
+        secondsVisible: true,
+        // Fixed-width candles. lightweight-charts' default behavior is to
+        // auto-fit bars across the full chart width — which makes a
+        // sparsely-populated chart show comically wide candles. Pinning
+        // `barSpacing` keeps every candle the same pixel width regardless
+        // of how many candles are loaded. `rightOffset` reserves blank
+        // space on the right so the newest candle isn't flush against the
+        // edge.
+        barSpacing: 6,
+        rightOffset: 12,
       },
       handleScale: {
         axisPressedMouseMove: true,
@@ -275,30 +387,63 @@ export function PriceChart({ priceInSol, solRaised, solPriceUsd, priceHistory }:
 
   // Update data when it changes
   useEffect(() => {
-    if (candlestickSeriesRef.current && volumeSeriesRef.current) {
-      candlestickSeriesRef.current.setData(candleData)
-      volumeSeriesRef.current.setData(volumeData)
+    if (!candlestickSeriesRef.current || !volumeSeriesRef.current || !chartRef.current) return
 
-      // Remove existing price line
-      if (priceLineRef.current) {
-        candlestickSeriesRef.current.removePriceLine(priceLineRef.current)
+    // Center sparse data by padding both sides with WhitespaceData bars.
+    // The chart treats whitespace bars as reserved time slots without
+    // rendering anything in them — net effect: real data sits in the
+    // middle, surrounded by empty slots that maintain barSpacing.
+    //
+    // This sidesteps every rightOffset / scrollToPosition / visibleRange
+    // quirk we hit: the chart only ever sees N+leftPad+rightPad logical
+    // bars, and centers naturally because the data IS centered in the
+    // array we hand it.
+    const timeScale = chartRef.current.timeScale()
+    const chartWidthPx = timeScale.width()
+    const BAR_SPACING_PX = 6
+    const barsThatFit = Math.floor(chartWidthPx / BAR_SPACING_PX)
+    const dataLen = candleData.length
+
+    let paddedCandles: (CandlestickData<Time> | WhitespaceData<Time>)[] = candleData
+    let paddedVolumes: (HistogramData<Time> | WhitespaceData<Time>)[] = volumeData
+
+    if (dataLen > 0 && dataLen < barsThatFit) {
+      const totalPad = barsThatFit - dataLen
+      const leftPad = Math.floor(totalPad / 2)
+      const rightPad = totalPad - leftPad
+      const intervalSec = getIntervalSeconds(selectedInterval)
+      const firstTime = candleData[0].time as number
+      const lastTime = candleData[dataLen - 1].time as number
+
+      const leftWhitespace: WhitespaceData<Time>[] = []
+      for (let i = leftPad; i > 0; i--) {
+        leftWhitespace.push({ time: (firstTime - i * intervalSec) as Time })
       }
-
-      // Add horizontal line at current price
-      if (currentPrice) {
-        priceLineRef.current = candlestickSeriesRef.current.createPriceLine({
-          price: currentPrice.price,
-          color: currentPrice.isUp ? '#22c55e' : '#ef4444',
-          lineWidth: 1,
-          lineStyle: 2, // Dashed
-          axisLabelVisible: false,
-          title: '',
-        })
+      const rightWhitespace: WhitespaceData<Time>[] = []
+      for (let i = 1; i <= rightPad; i++) {
+        rightWhitespace.push({ time: (lastTime + i * intervalSec) as Time })
       }
-
-      chartRef.current?.timeScale().fitContent()
+      paddedCandles = [...leftWhitespace, ...candleData, ...rightWhitespace]
+      paddedVolumes = [...leftWhitespace, ...volumeData, ...rightWhitespace]
     }
-  }, [candleData, volumeData, currentPrice])
+
+    candlestickSeriesRef.current.setData(paddedCandles)
+    volumeSeriesRef.current.setData(paddedVolumes)
+
+    if (priceLineRef.current) {
+      candlestickSeriesRef.current.removePriceLine(priceLineRef.current)
+    }
+    if (currentPrice) {
+      priceLineRef.current = candlestickSeriesRef.current.createPriceLine({
+        price: currentPrice.price,
+        color: currentPrice.isUp ? '#22c55e' : '#ef4444',
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: false,
+        title: '',
+      })
+    }
+  }, [candleData, volumeData, currentPrice, selectedInterval])
 
   return (
     <div className="p-4 h-full w-full flex flex-col">

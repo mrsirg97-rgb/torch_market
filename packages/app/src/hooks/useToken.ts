@@ -154,7 +154,7 @@ interface UseTokenResult {
 
 export function useToken(mintAddress: string): UseTokenResult {
   const { connection } = useConnection()
-  const { isSimnet, isDevnet } = useNetwork()
+  const { isSimnet, isDevnet, lendingGateLamports } = useNetwork()
   const wallet = useWallet()
 
   // SDK data
@@ -255,7 +255,7 @@ export function useToken(mintAddress: string): UseTokenResult {
         treasuryLockAta ? connection.getAccountInfo(treasuryLockAta) : Promise.resolve(null),
         treasuryTokenAccount ? connection.getAccountInfo(treasuryTokenAccount) : Promise.resolve(null),
         getTreasuryState(connection, mintAddress),
-        getLendingInfo(connection, mintAddress).catch(() => null),
+        getLendingInfo(connection, mintAddress, lendingGateLamports).catch(() => null),
         getTokenMetadata(connection, mintAddress).catch(() => null),
       ])
       if (!bcAccount) return

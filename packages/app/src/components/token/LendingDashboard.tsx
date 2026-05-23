@@ -16,6 +16,7 @@ import {
   buildOpenShortTransaction,
   buildCloseShortTransaction,
   getVault,
+  grossUpForTransferFee,
 } from 'torchsdk'
 import type {
   LendingInfo,
@@ -203,7 +204,7 @@ export function LendingDashboard({
 }: LendingDashboardProps) {
   const { connection } = useConnection()
   const wallet = useWallet()
-  const { effectiveIndexerUrl } = useNetwork()
+  const { effectiveIndexerUrl, lendingGateLamports } = useNetwork()
   const sendTransaction = useMwaSendTransaction()
 
   const [lendingInfo, setLendingInfo] = useState<LendingInfo | null>(null)
@@ -278,15 +279,26 @@ export function LendingDashboard({
   // Use on-chain treasury data (correct utilizationCapBps) instead of SDK's hardcoded cap
   const correctAvailableSol = Math.max(0, treasurySolBalance * utilizationCapBps / 10000 - totalSolLent)
   const treasuryAvailableSol = lendingInfo ? correctAvailableSol : 0
-  // Per-user cap: max borrow = maxLendable * collateral * 3 / TOTAL_SUPPLY
-  // treasurySolBalance is in SOL, collateral in display units, TOTAL_SUPPLY in display units
+  // Per-user cap = min(formula, absolute_20%).
+  //   formula  = max_lendable × collateral_share × BORROW_SHARE_MULTIPLIER
+  //   absolute = max_lendable × MAX_USER_BORROW_SHARE_BPS / 10000  (v20: 20%)
+  // The on-chain handler enforces this same min; without it the formula
+  // alone would let users with > ~4.35% of supply claim the entire
+  // lendable amount.
   const TOTAL_SUPPLY_TOKENS = 1_000_000_000 // 1B tokens (display units)
   const maxLendableSol = treasurySolBalance * utilizationCapBps / 10000
   // Account for Token-2022 transfer fee (4 bps) reducing net collateral on-chain
   const netCollateralTokens = collateralParsed * (1 - 4 / 10000)
   const borrowMultiplier = lendingInfo?.borrow_share_multiplier || 3
-  const perUserCapSol = lendingInfo
+  const perUserFormulaCap = lendingInfo
     ? maxLendableSol * netCollateralTokens * borrowMultiplier / TOTAL_SUPPLY_TOKENS
+    : 0
+  // v20 absolute ceiling: 20% of max_lendable, regardless of collateral.
+  const perUserAbsoluteCap = lendingInfo
+    ? maxLendableSol * (lendingInfo.max_user_borrow_share_bps / 10000)
+    : 0
+  const perUserCapSol = lendingInfo
+    ? Math.min(perUserFormulaCap, perUserAbsoluteCap)
     : 0
   const effectiveMaxBorrow = Math.min(maxBorrowLtv, treasuryAvailableSol, perUserCapSol > 0 ? perUserCapSol : Infinity)
   const borrowParsed = parseFloat(borrowAmount) || 0
@@ -297,14 +309,14 @@ export function LendingDashboard({
     if (!isMigrated) return
     setLendingLoading(true)
     try {
-      const info = await getLendingInfo(connection, mintAddress)
+      const info = await getLendingInfo(connection, mintAddress, lendingGateLamports)
       setLendingInfo(info)
     } catch (err) {
       if (isDev) console.error('Failed to fetch lending info:', err)
     } finally {
       setLendingLoading(false)
     }
-  }, [connection, mintAddress, isMigrated])
+  }, [connection, mintAddress, isMigrated, lendingGateLamports])
 
   const fetchLoanPosition = useCallback(async () => {
     if (!isMigrated || !wallet.publicKey) {
@@ -761,6 +773,34 @@ export function LendingDashboard({
           <p className="text-white/50 text-sm">Loading pool info...</p>
         ) : lendingInfo ? (
           <div className="space-y-2 text-xs">
+            {/* Lending-unlock gate status (v20). Shown only when locked —
+                once unlocked it's just the normal lending UI below. */}
+            {!lendingInfo.lending_unlocked && (() => {
+              const treasurySol = lendingInfo.treasury_sol_lamports / 1e9
+              const gateSol = lendingInfo.lending_unlock_threshold_lamports / 1e9
+              const progressPct = Math.min(100, (treasurySol / gateSol) * 100)
+              return (
+                <div className="rounded-lg border border-white/10 bg-white/5 p-3 mb-2">
+                  <div className="flex justify-between items-baseline mb-1">
+                    <span className="text-white/70 text-xs font-medium">Lending Locked</span>
+                    <span className="text-white/50 text-[10px] font-mono">
+                      {treasurySol.toFixed(2)} / {gateSol.toFixed(0)} SOL
+                    </span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
+                    <div
+                      className="h-full bg-accent transition-all"
+                      style={{ width: `${progressPct}%` }}
+                    />
+                  </div>
+                  <p className="text-white/40 text-[10px] mt-1.5">
+                    Lending unlocks once this token&apos;s treasury accumulates {gateSol.toFixed(0)} SOL
+                    of fees from trading volume. Drive volume to unlock — every short and trade
+                    accrues fees here.
+                  </p>
+                </div>
+              )
+            })()}
             {/* 2-column grid for pool params */}
             <div className="grid grid-cols-2 gap-x-4 gap-y-1">
               <div className="flex justify-between">
@@ -797,7 +837,9 @@ export function LendingDashboard({
                   </div>
                   {perUserCapSol > 0 && perUserCapSol < maxBorrowLtv && perUserCapSol < treasuryAvailableSol && (
                     <div className="col-span-2 text-[10px] text-white/30">
-                      Limited by per-user cap ({(netCollateralTokens / TOTAL_SUPPLY_TOKENS * 100).toFixed(2)}% of supply × {borrowMultiplier} = {perUserCapSol.toFixed(4)} SOL max)
+                      {perUserAbsoluteCap > 0 && perUserAbsoluteCap <= perUserFormulaCap
+                        ? `Limited by 20% per-user cap (${perUserCapSol.toFixed(4)} SOL max — any one borrower can take at most 20% of available lending)`
+                        : `Limited by per-user formula cap (${(netCollateralTokens / TOTAL_SUPPLY_TOKENS * 100).toFixed(2)}% of supply × ${borrowMultiplier} = ${perUserCapSol.toFixed(4)} SOL max)`}
                     </div>
                   )}
                 </>
@@ -1084,10 +1126,20 @@ export function LendingDashboard({
             {wallet.publicKey ? (
               <button
                 onClick={handleBorrow}
-                disabled={actionLoading || !collateralAmount || !borrowAmount}
+                disabled={
+                  actionLoading ||
+                  !collateralAmount ||
+                  !borrowAmount ||
+                  (lendingInfo && !lendingInfo.lending_unlocked) ||
+                  false
+                }
                 className="w-full py-3 text-sm rounded-lg font-semibold transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed bg-white/15 text-white hover:bg-white/25"
               >
-                {actionLoading ? 'Processing...' : 'Borrow'}
+                {actionLoading
+                  ? 'Processing...'
+                  : lendingInfo && !lendingInfo.lending_unlocked
+                    ? 'Lending Locked'
+                    : 'Borrow'}
               </button>
             ) : (
               <p className="text-center text-white/50 text-sm py-3">Connect wallet to borrow</p>
@@ -1466,10 +1518,46 @@ export function LendingDashboard({
                   ) : null
                 })()}
               </div>
+              {(() => {
+                // Per-user short cap is a flat MAX_WALLET_TOKENS = 2% of supply
+                // (= 20M display tokens). Useful max SOL collateral is the
+                // amount that lets LTV reach this token cap; beyond that,
+                // adding more collateral can't unlock additional shorting.
+                //
+                //   useful_max_sol = MAX_WALLET_TOKENS × price / max_ltv
+                //
+                // Highly price-dependent: a $0.0001/token short uses way less
+                // collateral than a $0.01/token short for the same 20M cap.
+                const MAX_SHORT_TOKENS_DISPLAY = 20_000_000 // 2% of 1B supply
+                const usefulMaxSol =
+                  priceInSol > 0 && shortMaxLtvRatio > 0
+                    ? (MAX_SHORT_TOKENS_DISPLAY * priceInSol) / shortMaxLtvRatio
+                    : 0
+                return usefulMaxSol > 0 ? (
+                  <p className="text-[10px] text-white/30 mb-1">
+                    Max useful: {usefulMaxSol.toFixed(2)} SOL (per-user short cap is 2% of
+                    supply = 20M {symbol}; more collateral past this point doesn&apos;t
+                    unlock additional capacity)
+                  </p>
+                ) : null
+              })()}
               <input
                 type="number"
                 value={shortCollateralSol}
-                onChange={(e) => setShortCollateralSol(e.target.value)}
+                onChange={(e) => {
+                  const v = e.target.value
+                  const MAX_SHORT_TOKENS_DISPLAY = 20_000_000
+                  const usefulMaxSol =
+                    priceInSol > 0 && shortMaxLtvRatio > 0
+                      ? (MAX_SHORT_TOKENS_DISPLAY * priceInSol) / shortMaxLtvRatio
+                      : Infinity
+                  const parsed = parseFloat(v) || 0
+                  if (parsed > usefulMaxSol && usefulMaxSol > 0) {
+                    setShortCollateralSol(usefulMaxSol.toFixed(4))
+                  } else {
+                    setShortCollateralSol(v)
+                  }
+                }}
                 placeholder="0.0 SOL"
                 className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 text-white placeholder:text-white/30 focus:outline-none focus:border-accent transition-colors"
                 step="0.1"
@@ -1601,11 +1689,15 @@ export function LendingDashboard({
                     Owed: {formatTokenValue(shortPosition.total_owed_tokens)} {symbol}
                     {' · '}
                     {(() => {
-                      const owed = shortPosition.total_owed_tokens
+                      // v20: program transfers gross_up_for_transfer_fee(net)
+                      // from the borrower so treasury_lock receives the full
+                      // net. Borrower needs gross in their wallet, not net.
+                      const owedNet = shortPosition.total_owed_tokens
+                      const grossRequired = grossUpForTransferFee(owedNet)
                       const held = Number(useVault && userVault && vaultTokenBalance && vaultTokenBalance > BigInt(0)
                         ? vaultTokenBalance
                         : userTokenBalance)
-                      const short = held < owed
+                      const short = held < grossRequired
                       return (
                         <span style={{ color: short ? 'var(--danger)' : 'var(--muted)' }}>
                           You hold: {formatTokenValue(held)} {symbol}
@@ -1643,6 +1735,19 @@ export function LendingDashboard({
                   })}
                 </div>
               )}
+              {/* v20: tokens needed in wallet = gross_up of the net token_amount
+                  parameter. The 0.07% gross-up keeps the short token pool stable
+                  (see docs and program: handlers/short.rs). */}
+              {shortPosition &&
+                shortPosition.health !== 'none' &&
+                closeTokenAmount &&
+                parseFloat(closeTokenAmount) > 0 && (
+                  <p className="text-[10px] text-white/30 mt-1.5 font-mono">
+                    Send {(grossUpForTransferFee(parseFloat(closeTokenAmount) * TOKEN_MULTIPLIER) / TOKEN_MULTIPLIER).toFixed(2)}{' '}
+                    {symbol} from wallet (clears {parseFloat(closeTokenAmount).toFixed(2)} {symbol}{' '}
+                    debt + 0.07% transfer fee, paid by you)
+                  </p>
+                )}
             </div>
 
             {/* Vault Toggle */}

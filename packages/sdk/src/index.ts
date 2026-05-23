@@ -33,9 +33,10 @@ export {
 
 // quotes
 export { getBuyQuote, getSellQuote, getBorrowQuote } from './quotes'
+export { TRANSFER_FEE_BPS, grossUpForTransferFee } from './tokens'
 
 // indexer-only getters + wire types
-export { getTrades, getCandles } from './indexer'
+export { getTrades, getCandles, getUserPnl } from './indexer'
 export type {
   IndexerMarketStatus,
   IndexerMarketTier,
@@ -46,6 +47,8 @@ export type {
   IndexerLoanRow,
   IndexerShortRow,
   IndexerCandle,
+  UserPnlByMint,
+  UserPnlSummary,
   TradeHistoryQuery,
   CandlesQuery,
 } from './indexer'

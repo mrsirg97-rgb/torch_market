@@ -174,14 +174,21 @@ export const getSellQuote = async (
 
 // get a borrow quote: maximum borrowable SOL for a given collateral amount on a migrated token.
 // collateralAmount in token base units (with 6 decimals).
+//
+// v20: applies the new lending-unlock gate (returns max_borrow_sol = 0 when
+// treasury below threshold) AND the new 20% per-user absolute cap.
+//
+// `lendingUnlockThresholdLamports` defaults to mainnet 100 SOL; frontend
+// passes the right value per network (simnet 0, devnet 1 SOL).
 export const getBorrowQuote = async (
   connection: Connection,
   mintStr: string,
   collateralAmount: number,
+  lendingUnlockThresholdLamports?: number,
 ): Promise<BorrowQuoteResult> => {
   const TRANSFER_FEE_BPS = 7
   const [lending, detail] = await Promise.all([
-    getLendingInfo(connection, mintStr),
+    getLendingInfo(connection, mintStr, lendingUnlockThresholdLamports),
     getToken(connection, mintStr),
   ])
   const pricePerToken = detail.price_sol
@@ -194,17 +201,31 @@ export const getBorrowQuote = async (
   const maxLendableSol = (treasurySol * lending.utilization_cap_bps) / 10000
   const totalLent = lending.total_sol_lent ?? 0
   const poolAvailableSol = Math.max(0, maxLendableSol - totalLent)
-  // 3. per-user cap (accounts for transfer fee reducing net collateral)
+  // 3a. per-user formula cap (accounts for transfer fee reducing net collateral)
   const netCollateral = collateralAmount * (1 - TRANSFER_FEE_BPS / 10000)
   const borrowMultiplier = lending.borrow_share_multiplier || 5
   const perUserCapSol = (maxLendableSol * netCollateral * borrowMultiplier) / Number(TOTAL_SUPPLY)
-  const maxBorrowSol = Math.max(0, Math.min(ltvMaxSol, poolAvailableSol, perUserCapSol))
+  // 3b. per-user absolute ceiling (v20: max_lendable × 20%)
+  const perUserAbsoluteCapSol =
+    (maxLendableSol * lending.max_user_borrow_share_bps) / 10000
+
+  // v20 gate: lending refuses if treasury below threshold. Return all bounds
+  // computed but max_borrow forced to 0 with `lending_unlocked: false`.
+  const allBoundsMax = Math.max(
+    0,
+    Math.min(ltvMaxSol, poolAvailableSol, perUserCapSol, perUserAbsoluteCapSol),
+  )
+  const maxBorrowSol = lending.lending_unlocked ? allBoundsMax : 0
+
   return {
     max_borrow_sol: Math.floor(maxBorrowSol),
     collateral_value_sol: Math.floor(collateralValueSol),
     ltv_max_sol: Math.floor(ltvMaxSol),
     pool_available_sol: Math.floor(poolAvailableSol),
     per_user_cap_sol: Math.floor(perUserCapSol),
+    per_user_absolute_cap_sol: Math.floor(perUserAbsoluteCapSol),
+    lending_unlocked: lending.lending_unlocked,
+    lending_unlock_threshold_sol: lending.lending_unlock_threshold_lamports,
     interest_rate_bps: lending.interest_rate_bps,
     liquidation_threshold_bps: lending.liquidation_threshold_bps,
   }

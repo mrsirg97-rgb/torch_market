@@ -131,23 +131,30 @@ fn open_short_cap_exceeded() {
 
 #[test]
 fn open_short_user_cap_exceeded() {
-    // Trigger UserShortCap without LendingCap firing first.
-    // Need: tokens_to_borrow > user_cap AND tokens_to_borrow <= short_cap AND LTV passes.
-    //
-    // utilization_cap = 1 bp (0.01%) → max_lendable_tokens = 300M raw * 1/10000 = 3e10 raw.
-    // Collateral 2M lamports (0.002 SOL — just above LTV min for MIN_SHORT_TOKENS).
-    //   LTV: 1e9 raw debt → 668k lamports debt_value. 668k/2M = 33.4% < 35% cap ✓.
-    //   ShortCap: 1e9 < 3e10 ✓.
-    //   UserCap: max_lendable * 2M * 23 / 10.8e9 = 3e10 * 4.6e7 / 1.08e10 ≈ 1.28e8 raw.
-    //   1e9 > 1.28e8 → fails ✓.
+    // Per-user short cap is now a flat MAX_WALLET_TOKENS = 2% of supply
+    // (= 20M display tokens × 1e6 decimals = 2e13 raw). Decoupled from
+    // treasury size — no formula scaling. Trigger by:
+    //  - shorting MAX_WALLET_TOKENS + 1
+    //  - with treasury_lock having enough tokens for global utilization OK
+    //  - with sufficient SOL collateral so LTV doesn't fire first
+    //  - with sufficient pool depth so LTV math is permissive
     let (mut env, t, _) = migrated();
-    let mut tr = env.get_treasury(&t);
-    tr.lending_utilization_cap_bps = 1;
-    env.poke_anchor(t.treasury, tr);
 
-    let shorter = env.new_funded(LAMPORTS_PER_SOL);
+    // Stage treasury_lock with way more than the per-user cap so global
+    // utilization (80%) doesn't bind first.
+    env.poke_token_amount(t.treasury_lock_token_account, 100_000_000_000_000_000); // 100M display
+
+    // Pool depth pumps so LTV at 50% allows shorting MAX_WALLET_TOKENS+1
+    // with realistic SOL collateral.
+    env.poke_pool_sol(&t, 1000 * LAMPORTS_PER_SOL);
+    env.poke_token_amount(t.deep_pool_token_vault, 100_000_000_000_000); // 100M
+
+    // 1000 SOL collateral → 50% LTV permits 500 SOL of position value.
+    // MAX_WALLET_TOKENS+1 ≈ 20M tokens × (1000 SOL / 100M tokens) = 200 SOL value.
+    // 200 < 500 → LTV passes. User cap (20M) fires.
+    let shorter = env.new_funded(1500 * LAMPORTS_PER_SOL);
     expect_err!(
-        env.open_short(&shorter, &t, 2_000_000, MIN_SHORT_TOKENS),
+        env.open_short(&shorter, &t, 1000 * LAMPORTS_PER_SOL, MAX_WALLET_TOKENS + 1),
         TorchMarketError::UserShortCapExceeded
     );
 }

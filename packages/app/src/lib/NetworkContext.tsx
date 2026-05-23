@@ -118,6 +118,17 @@ interface NetworkContextType {
   /** The torch-indexer URL in use, or undefined when no indexer is wired.
    *  Pass as `options.indexer` to torchsdk getters. */
   effectiveIndexerUrl: string | undefined
+  /** Lending-unlock gate (lamports) for the current network. Matches the
+   *  on-chain MIN_TREASURY_SOL_FOR_LENDING constant compiled into the
+   *  deployed program (simnet=0, devnet=1 SOL, mainnet=100 SOL).
+   *  Pass to `getBorrowQuote` / `getLendingInfo`'s optional threshold arg. */
+  lendingGateLamports: number
+}
+
+const LENDING_GATE_BY_NETWORK: Record<NetworkId, number> = {
+  simnet: 0,
+  devnet: 1_000_000_000, // 1 SOL — matches programs/torch_market `--features devnet`
+  mainnet: 100_000_000_000, // 100 SOL — matches default (no feature flag) program build
 }
 
 const NetworkContext = createContext<NetworkContextType | null>(null)
@@ -230,6 +241,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     customIndexerUrl,
     setCustomIndexerUrl,
     effectiveIndexerUrl,
+    lendingGateLamports: LENDING_GATE_BY_NETWORK[networkId],
   }
 
   return <NetworkContext.Provider value={value}>{children}</NetworkContext.Provider>

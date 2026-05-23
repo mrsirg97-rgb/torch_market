@@ -94,7 +94,10 @@ fn split_header(data: &[u8]) -> Result<([u8; 8], &[u8]), DecodeError> {
         return Err(DecodeError::TooShort);
     }
     if data[..8] != EVENT_IX_TAG_LE {
-        return Err(DecodeError::UnknownDiscriminator);
+        // Not an Anchor emit_cpi! event — could be a regular CPI ix.
+        // Distinct from UnknownDiscriminator so callers can silently skip
+        // these instead of logging a misleading "did not decode" warning.
+        return Err(DecodeError::NotAnEvent);
     }
     let mut event_disc = [0u8; 8];
     event_disc.copy_from_slice(&data[8..16]);

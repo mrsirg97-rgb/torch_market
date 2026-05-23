@@ -59,6 +59,7 @@ export function Header({ onHowItWorksClick, onTreasuryClick }: HeaderProps) {
 
   const isHome = pathname === '/'
   const isMarkets = pathname?.startsWith('/markets')
+  const isProfile = pathname?.startsWith('/profile')
 
   return (
     <header
@@ -101,6 +102,13 @@ export function Header({ onHowItWorksClick, onTreasuryClick }: HeaderProps) {
             style={linkStyle(!!isMarkets)}
           >
             markets
+          </Link>
+          <Link
+            href="/profile"
+            className="hidden sm:inline-flex text-sm"
+            style={linkStyle(!!isProfile)}
+          >
+            stats
           </Link>
           {onTreasuryClick && (
             <button
@@ -172,6 +180,14 @@ export function Header({ onHowItWorksClick, onTreasuryClick }: HeaderProps) {
                   style={linkStyle(!!isMarkets)}
                 >
                   markets
+                </Link>
+                <Link
+                  href="/profile"
+                  onClick={() => setMenuOpen(false)}
+                  className="block px-4 py-2 text-sm"
+                  style={linkStyle(!!isProfile)}
+                >
+                  stats
                 </Link>
                 {onHowItWorksClick && (
                   <button

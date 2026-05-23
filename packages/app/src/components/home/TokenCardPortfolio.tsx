@@ -20,6 +20,10 @@ interface TokenCardPortfolioProps {
   valueSol?: number
   /** This position's share of the total portfolio (0–100). Renders next to value. */
   portfolioPct?: number
+  /** Unrealized PnL in SOL: current value − cost basis of remaining tokens.
+   *  Positive = green +X, negative = red −X. Requires indexer-served PnL data
+   *  to be available; omit when unknown. */
+  unrealizedPnlSol?: number
 }
 
 function fmtValue(n: number): string {
@@ -41,6 +45,7 @@ export function TokenCardPortfolio({
   vaultBalance,
   valueSol,
   portfolioPct,
+  unrealizedPnlSol,
 }: TokenCardPortfolioProps) {
   const [copied, setCopied] = useState(false)
 
@@ -180,6 +185,17 @@ export function TokenCardPortfolio({
                         <span className="font-mono text-sm" style={{ color: 'var(--foreground)' }}>
                           {fmtValue(valueSol)} SOL
                         </span>
+                        {unrealizedPnlSol !== undefined && (
+                          <span
+                            className="font-mono text-[10px]"
+                            style={{
+                              color: unrealizedPnlSol >= 0 ? '#22c55e' : '#ef4444',
+                            }}
+                          >
+                            {unrealizedPnlSol >= 0 ? '+' : ''}
+                            {fmtValue(Math.abs(unrealizedPnlSol))} SOL
+                          </span>
+                        )}
                         <span className="font-mono text-[10px]" style={{ color: 'var(--muted)' }}>
                           {formatTokens(userBalance)}
                           {portfolioPct !== undefined && portfolioPct > 0 && (

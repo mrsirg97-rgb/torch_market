@@ -227,7 +227,7 @@ export function ChartTabs({ mint, priceInSol, solRaised, solPriceUsd, priceHisto
 
       {/* Content */}
       <div className="flex-1 min-h-0">
-        {activeTab === 'chart' && <PriceChart priceInSol={priceInSol} solRaised={solRaised} solPriceUsd={solPriceUsd} priceHistory={priceHistory} />}
+        {activeTab === 'chart' && <PriceChart mint={mint.toBase58()} priceInSol={priceInSol} solRaised={solRaised} solPriceUsd={solPriceUsd} priceHistory={priceHistory} />}
         {activeTab === 'leaderboard' && (
           <LeaderboardView holders={holders} loading={holdersLoading} error={holdersError} />
         )}

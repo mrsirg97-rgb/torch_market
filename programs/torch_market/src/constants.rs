@@ -81,6 +81,16 @@ pub const DEFAULT_LIQUIDATION_CLOSE_BPS: u16 = 5000;
 pub const DEFAULT_LENDING_UTILIZATION_CAP_BPS: u16 = 8000;
 pub const MIN_BORROW_AMOUNT: u64 = 100_000_000;
 pub const BORROW_SHARE_MULTIPLIER: u64 = 23; // Per-user cap: max borrow = lendable * (collateral / denominator) * multiplier
+// Hard ceiling on per-user borrow regardless of collateral size. Without
+// this, the BORROW_SHARE_MULTIPLIER allows a user with >~4.35% of total
+// supply (= TOTAL_SUPPLY / multiplier) as collateral to take the entire
+// lendable amount — defeating the per-user cap entirely. 2000 bps = 20%
+// ceiling: each whale gets a meaningful 1/5 slice of lendable, leaving
+// room for at least 5 simultaneous concentrated positions. By design:
+// smaller per-user positions → more positions in flight → more
+// liquidation opportunities → more hunters/shorters participating in
+// the game.
+pub const MAX_USER_BORROW_SHARE_BPS: u16 = 2000;
 pub const EPOCH_DURATION_SLOTS: u64 = 7 * 24 * 60 * 60 * 1000 / 400; // ~7 days at 400ms/slot
 pub const METADATA_POINTER_EXTENSION_SIZE: usize = 68;
 pub const TOKEN_METADATA_FIXED_SIZE: usize = 80;
@@ -95,6 +105,31 @@ pub const SHORT_CONFIG_SEED: &[u8] = b"short_config";
 /// Prevents dust positions that cost more in rent than they're worth
 pub const MIN_SHORT_TOKENS: u64 = 1_000_000_000;
 pub const MIN_POOL_SOL_LENDING: u64 = 5_000_000_000;
+
+// Lending unlocks once the protocol has accumulated enough SOL fees in the
+// treasury to make borrowing meaningful. Threshold is volume-driven, NOT
+// price-driven — it grows from trade fees + 4× transfer fees per short
+// cycle + interest, so it gates lending on actual protocol activity rather
+// than oracle-pumpable price signals.
+//
+// Build flag per environment (see Cargo.toml `[features]`):
+//   `simnet`  → 0 SOL (unlocked from launch — local tests don't need to
+//               simulate volume to test lending paths)
+//   `devnet`  → 1 SOL (achievable with light e2e activity)
+//   default   → 100 SOL (mainnet; the real bar — see docs/lending-unlock.md)
+//
+// Belt-and-suspenders: both flags simultaneously = compile_error below.
+#[cfg(feature = "simnet")]
+pub const MIN_TREASURY_SOL_FOR_LENDING: u64 = 0;
+
+#[cfg(all(feature = "devnet", not(feature = "simnet")))]
+pub const MIN_TREASURY_SOL_FOR_LENDING: u64 = 1_000_000_000; // 1 SOL
+
+#[cfg(not(any(feature = "simnet", feature = "devnet")))]
+pub const MIN_TREASURY_SOL_FOR_LENDING: u64 = 100_000_000_000; // 100 SOL
+
+#[cfg(all(feature = "simnet", feature = "devnet"))]
+compile_error!("only one of `simnet` or `devnet` features may be enabled at a time");
 // Depth-based risk bands: pool SOL thresholds and corresponding max LTV (bps).
 // More SOL in pool = harder to manipulate = higher LTV allowed.
 pub const DEPTH_TIER_1: u64 = 50_000_000_000; // 50 SOL

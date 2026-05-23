@@ -144,11 +144,19 @@ pub async fn apply_trade(
     Ok(())
 }
 
-// Apply MigratedToDex — sets status='MIGRATED', migrated_slot, and the
-// deep_pool_pubkey FK. The pool row in `pools` must already exist (the
-// migrate_to_dex tx CPIs into deep_pool's create_pool first, so the writer
-// is guaranteed to see PoolCreated before MigratedToDex within the same
-// block batch — same writer txn).
+// Apply MigratedToDex — mirrors the on-chain migrate_to_dex_handler:
+//   - status → MIGRATED
+//   - migrated_slot set
+//   - deep_pool_pubkey FK set
+//   - real_sol / real_token zeroed (the on-chain handler does this; without
+//     this here, the indexer's row keeps stale reserves and the frontend's
+//     `progress = real_sol / sol_target` math stays pegged at 100% even
+//     after the market is no longer on the bonding curve)
+//
+// The pool row in `pools` must already exist when this runs. In live ingest
+// the writer's phase-2 inserts deep_pool's PoolCreated before phase-3
+// touches MigratedToDex (same block batch, same writer txn). In backfill,
+// deep_pool is walked before torch — same ordering guarantee.
 pub async fn apply_migration(
     tx: &mut Transaction<'_, Postgres>,
     mint: &str,
@@ -161,6 +169,8 @@ pub async fn apply_migration(
          SET status = 'MIGRATED',
              migrated_slot = $2,
              deep_pool_pubkey = $3,
+             real_sol = 0,
+             real_token = 0,
              last_activity_slot = $2,
              updated_at = $4
          WHERE mint = $1",

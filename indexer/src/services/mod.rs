@@ -13,6 +13,7 @@ pub mod loan;
 pub mod market;
 pub mod message;
 pub mod migration;
+pub mod pnl;
 pub mod short;
 pub mod trade;
 
@@ -27,6 +28,7 @@ pub use loan::LoanService;
 pub use market::MarketService;
 pub use message::MessageService;
 pub use migration::MigrationService;
+pub use pnl::PnlService;
 pub use short::ShortService;
 pub use trade::TradeService;
 
@@ -54,6 +56,9 @@ impl RequestCtx {
     }
     pub fn migrations(&mut self) -> MigrationService<'_> {
         MigrationService::new(self)
+    }
+    pub fn pnl(&mut self) -> PnlService<'_> {
+        PnlService::new(self)
     }
     pub fn pools(&mut self) -> PoolService<'_> {
         PoolService::new(self)

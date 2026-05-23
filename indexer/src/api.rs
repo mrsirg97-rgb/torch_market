@@ -62,6 +62,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/shorts", get(list_shorts))
         .route("/api/migrations", get(list_migrations))
         .route("/api/candles", get(list_candles))
+        .route("/api/user-pnl/:wallet", get(get_user_pnl))
         // deep_pool endpoints
         .route("/api/pools", get(list_pools))
         .route("/api/pools/:pubkey", get(get_pool))
@@ -321,6 +322,22 @@ async fn list_migrations(
     Ok(Json(arc_owned(migrations)))
 }
 
+// ---------- /api/user-pnl/:wallet ----------
+//
+// Realized PnL per mint via FIFO over the wallet's bonding-curve trades
+// and DEX swaps, plus aggregate totals. Unrealized PnL not computed
+// server-side — clients should multiply `tokens_remaining` by the live
+// marginal price and subtract `cost_basis_remaining`.
+
+async fn get_user_pnl(
+    State(state): State<AppState>,
+    axum::extract::Path(wallet): axum::extract::Path<String>,
+) -> Result<Json<crate::services::pnl::UserPnlSummary>, ApiError> {
+    let mut ctx = RequestCtx::begin(&state.pool).await?;
+    let summary = ctx.pnl().for_wallet(&wallet).await?;
+    Ok(Json(summary))
+}
+
 // ---------- /api/candles ----------
 //
 // OHLCV across the full lifecycle of a mint: bonding-curve trades (pre-
@@ -331,7 +348,7 @@ async fn list_migrations(
 #[derive(Debug, Deserialize)]
 struct CandlesQuery {
     mint: String,
-    interval: String, // 1m | 5m | 1h
+    interval: String, // 1s | 15s | 30s | 1m | 5m | 15m | 1h | 4h
     since: Option<DateTime<Utc>>,
     before: Option<DateTime<Utc>>,
 }
@@ -351,10 +368,17 @@ async fn list_candles(
     Query(q): Query<CandlesQuery>,
 ) -> Result<Json<Vec<Candle>>, ApiError> {
     let bucket_seconds = match q.interval.as_str() {
+        "1s" => 1,
+        "15s" => 15,
+        "30s" => 30,
         "1m" => 60,
         "5m" => 300,
+        "15m" => 900,
         "1h" => 3600,
-        _ => return Err(ApiError::BadRequest("interval must be 1m | 5m | 1h")),
+        "4h" => 14_400,
+        _ => return Err(ApiError::BadRequest(
+            "interval must be 1s | 15s | 30s | 1m | 5m | 15m | 1h | 4h",
+        )),
     };
 
     // Default window: last 24h if neither bound given.
@@ -365,12 +389,19 @@ async fn list_candles(
     let mut ctx = RequestCtx::begin(&state.pool).await?;
     let rows: Vec<Candle> = sqlx::query_as(
         "WITH all_events AS (
+            -- Use MARGINAL post-trade price (the pool's new spot price after
+            -- the trade settles) instead of execution price (avg-along-curve
+            -- for that specific trade). For a large trade the two diverge
+            -- significantly — execution price is the trader's experience,
+            -- marginal price is what the chart should show because it
+            -- represents where the pool/curve actually stands afterward.
+            --
+            -- Constant-product AMMs (both torch's virtual reserves and
+            -- deep_pool's pool) have spot price = sol_reserves / tokens.
             SELECT
                 created_at,
-                CASE WHEN tokens_out > 0
-                     THEN sol_in::float8 / tokens_out
-                     WHEN tokens_in > 0
-                     THEN sol_out::float8 / tokens_in
+                CASE WHEN virtual_token_after > 0
+                     THEN virtual_sol_after::float8 / virtual_token_after
                      ELSE NULL END AS price,
                 (sol_in + sol_out)::float8 AS volume_sol
             FROM trades
@@ -379,10 +410,8 @@ async fn list_candles(
             UNION ALL
             SELECT
                 s.created_at,
-                CASE WHEN s.is_buy AND s.amount_out_net > 0
-                     THEN s.amount_in_net::float8 / s.amount_out_net
-                     WHEN NOT s.is_buy AND s.amount_in_net > 0
-                     THEN s.amount_out_net::float8 / s.amount_in_net
+                CASE WHEN s.token_reserve_after > 0
+                     THEN s.sol_reserve_after::float8 / s.token_reserve_after
                      ELSE NULL END AS price,
                 (CASE WHEN s.is_buy
                       THEN s.amount_in_net

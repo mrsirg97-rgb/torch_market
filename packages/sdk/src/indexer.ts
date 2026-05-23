@@ -120,6 +120,24 @@ export interface IndexerCandle {
   volume: number | null
 }
 
+export interface UserPnlByMint {
+  mint: string
+  tokens_remaining: number
+  cost_basis_remaining: number // lamports spent on remaining tokens
+  realized_pnl: number // lamports — signed; can be negative
+  total_buy_volume: number // lamports
+  total_sell_volume: number // lamports
+  trade_count: number
+}
+
+export interface UserPnlSummary {
+  wallet: string
+  by_mint: UserPnlByMint[]
+  total_realized_pnl: number
+  total_volume: number
+  total_trade_count: number
+}
+
 // ============================================================================
 // Public query shapes for indexer-only readers
 // ============================================================================
@@ -137,7 +155,7 @@ export interface TradeHistoryQuery {
 export interface CandlesQuery {
   indexer: string
   mint: string
-  interval: '1m' | '5m' | '1h'
+  interval: '1s' | '15s' | '30s' | '1m' | '5m' | '15m' | '1h' | '4h'
   since?: Date
   before?: Date
 }
@@ -298,4 +316,22 @@ export async function getCandles(query: CandlesQuery): Promise<IndexerCandle[]> 
     query.indexer,
     `/api/candles?${params.toString()}`,
   )
+}
+
+/**
+ * Realized PnL for a wallet across all mints they've traded, computed via
+ * FIFO cost basis over their full bonding-curve and DEX swap history. The
+ * indexer aggregates server-side; this is a thin HTTP wrapper.
+ *
+ * Unrealized PnL is NOT computed server-side — clients should multiply
+ * `tokens_remaining` by the current marginal spot price (available from
+ * the markets/pools endpoints) and subtract `cost_basis_remaining`.
+ *
+ * Indexer-only — no RPC equivalent.
+ */
+export async function getUserPnl(
+  indexer: string,
+  wallet: string,
+): Promise<UserPnlSummary> {
+  return indexerFetch<UserPnlSummary>(indexer, `/api/user-pnl/${wallet}`)
 }

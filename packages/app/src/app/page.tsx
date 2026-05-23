@@ -13,7 +13,10 @@ import { UserStatsStrip } from '@/components/portfolio/UserStatsStrip'
 import { useTokens } from '@/hooks/useTokens'
 import { useHoldings, totalBalance } from '@/hooks/useHoldings'
 import { useMarginPositions } from '@/hooks/useMarginPositions'
+import { useUserPnl } from '@/hooks/useUserPnl'
 import { shortenAddress, TOKEN_MULTIPLIER } from '@/lib/constants'
+
+const LAMPORTS_PER_SOL = 1_000_000_000
 
 // Wallet connect button — client-only to avoid SSR mismatch
 const WalletMultiButton = dynamic(
@@ -46,6 +49,7 @@ export default function Home() {
 
   const { tokens } = useTokens({ enabled: !!publicKey })
   const balances = useHoldings(tokens)
+  const { pnl } = useUserPnl()
 
   const heldMarkets = useMemo(
     () => tokens.filter((t) => totalBalance(balances, t.mint) > BigInt(0)),
@@ -72,6 +76,20 @@ export default function Home() {
     [positionValues],
   )
 
+  // Unrealized PnL per mint = current value − cost basis of remaining tokens.
+  // Cost basis comes from indexer's FIFO accumulator (cost_basis_remaining,
+  // in lamports). Skipped when no indexer data (cards render without PnL).
+  const unrealizedByMint = useMemo(() => {
+    const map = new Map<string, number>()
+    if (!pnl) return map
+    for (const entry of pnl.by_mint) {
+      const currentValueSol = positionValues.get(entry.mint) ?? 0
+      const costBasisSol = entry.cost_basis_remaining / LAMPORTS_PER_SOL
+      map.set(entry.mint, currentValueSol - costBasisSol)
+    }
+    return map
+  }, [pnl, positionValues])
+
   const createdMarkets = useMemo(() => {
     if (!publicKey) return []
     const wallet = publicKey.toString()
@@ -86,7 +104,7 @@ export default function Home() {
       />
 
       <main className="px-4 sm:px-6 lg:px-8 pb-16">
-        <div className="max-w-3xl mx-auto">
+        <div className="max-w-6xl mx-auto">
           {!publicKey ? (
             <ConnectPrompt />
           ) : (
@@ -104,78 +122,95 @@ export default function Home() {
                 </p>
               </div>
 
-              <UserStatsStrip portfolioValueSol={portfolioValueSol} />
+              {/* Desktop: two-column dashboard. Left rail = stats + vault +
+                  rewards (the "health" stack). Right column = positions +
+                  margin (the "what you're holding" stack). Mobile: single
+                  column, order preserved as left-then-right would be in
+                  desktop. */}
+              <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-6 lg:gap-8">
+                {/* Left rail */}
+                <div className="flex flex-col gap-8 order-1 lg:order-none">
+                  <section>
+                    <SectionTitle title="overview" />
+                    <UserStatsStrip portfolioValueSol={portfolioValueSol} />
+                  </section>
 
-              <RewardsStrip />
+                  <section>
+                    <SectionTitle title="vault" />
+                    <VaultStrip />
+                  </section>
 
-              {/* Positions */}
-              <section className="mb-8">
-                <SectionTitle
-                  title="positions"
-                  hint={heldMarkets.length > 0 ? `${heldMarkets.length}` : undefined}
-                />
-                {heldMarkets.length === 0 ? (
-                  <p className="text-sm" style={{ color: 'var(--muted)' }}>
-                    no positions yet.{' '}
-                    <Link
-                      href="/markets"
-                      className="underline underline-offset-4"
-                      style={{ color: 'var(--accent)' }}
-                    >
-                      browse markets
-                    </Link>
-                  </p>
-                ) : (
-                  <div className="flex flex-col gap-2">
-                    {heldMarkets.map((t) => {
-                      const entry = balances.get(t.mint)
-                      const value = positionValues.get(t.mint) ?? 0
-                      const pct = portfolioValueSol > 0 ? (value / portfolioValueSol) * 100 : 0
-                      return (
-                        <TokenCardPortfolio
-                          key={t.mint}
-                          token={t}
-                          userBalance={entry ? entry.wallet + entry.vault : undefined}
-                          walletBalance={entry?.wallet}
-                          vaultBalance={entry?.vault}
-                          valueSol={value}
-                          portfolioPct={pct}
-                        />
-                      )
-                    })}
-                  </div>
-                )}
-              </section>
+                  <section>
+                    <SectionTitle title="protocol rewards" />
+                    <RewardsStrip />
+                  </section>
+                </div>
 
-              {/* Margin positions — only if any */}
-              {(marginPositions.length > 0 || marginLoading) && (
-                <section className="mb-8">
-                  <SectionTitle title="margin" hint={`${marginPositions.length}`} />
-                  <MarginPositionsList
-                    positions={marginPositions}
-                    tokens={heldMarkets}
-                    loading={marginLoading}
-                  />
-                </section>
-              )}
+                {/* Right column */}
+                <div className="flex flex-col gap-8 order-2 lg:order-none">
+                  <section>
+                    <SectionTitle
+                      title="positions"
+                      hint={heldMarkets.length > 0 ? `${heldMarkets.length}` : undefined}
+                    />
+                    {heldMarkets.length === 0 ? (
+                      <p className="text-sm" style={{ color: 'var(--muted)' }}>
+                        no positions yet.{' '}
+                        <Link
+                          href="/markets"
+                          className="underline underline-offset-4"
+                          style={{ color: 'var(--accent)' }}
+                        >
+                          browse markets
+                        </Link>
+                      </p>
+                    ) : (
+                      <div className="flex flex-col gap-2">
+                        {heldMarkets.map((t) => {
+                          const entry = balances.get(t.mint)
+                          const value = positionValues.get(t.mint) ?? 0
+                          const pct =
+                            portfolioValueSol > 0 ? (value / portfolioValueSol) * 100 : 0
+                          return (
+                            <TokenCardPortfolio
+                              key={t.mint}
+                              token={t}
+                              userBalance={entry ? entry.wallet + entry.vault : undefined}
+                              walletBalance={entry?.wallet}
+                              vaultBalance={entry?.vault}
+                              valueSol={value}
+                              portfolioPct={pct}
+                              unrealizedPnlSol={unrealizedByMint.get(t.mint)}
+                            />
+                          )
+                        })}
+                      </div>
+                    )}
+                  </section>
 
-              {/* Created markets */}
-              {createdMarkets.length > 0 && (
-                <section className="mb-8">
-                  <SectionTitle title="launched" hint={`${createdMarkets.length}`} />
-                  <div className="flex flex-col gap-2">
-                    {createdMarkets.map((t) => (
-                      <TokenCardPortfolio key={t.mint} token={t} />
-                    ))}
-                  </div>
-                </section>
-              )}
+                  {(marginPositions.length > 0 || marginLoading) && (
+                    <section>
+                      <SectionTitle title="margin" hint={`${marginPositions.length}`} />
+                      <MarginPositionsList
+                        positions={marginPositions}
+                        tokens={heldMarkets}
+                        loading={marginLoading}
+                      />
+                    </section>
+                  )}
 
-              {/* Vault */}
-              <section className="mb-8">
-                <SectionTitle title="vault" />
-                <VaultStrip />
-              </section>
+                  {createdMarkets.length > 0 && (
+                    <section>
+                      <SectionTitle title="launched" hint={`${createdMarkets.length}`} />
+                      <div className="flex flex-col gap-2">
+                        {createdMarkets.map((t) => (
+                          <TokenCardPortfolio key={t.mint} token={t} />
+                        ))}
+                      </div>
+                    </section>
+                  )}
+                </div>
+              </div>
             </>
           )}
         </div>

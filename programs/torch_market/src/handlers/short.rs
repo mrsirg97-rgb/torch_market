@@ -65,7 +65,6 @@ fn check_short_caps(
     short_config: &ShortConfig,
     treasury_lock_token_balance: u64,
     tokens_to_borrow: u64,
-    user_collateral: u64,
     user_currently_borrowed: u64,
 ) -> Result<()> {
     let new_total_tokens_lent = short_config
@@ -82,11 +81,17 @@ fn check_short_caps(
     let user_total_tokens_borrowed = user_currently_borrowed
         .checked_add(tokens_to_borrow)
         .ok_or(TorchMarketError::MathOverflow)?;
-    let max_user_borrow =
-        math::calc_user_borrow_cap(max_lendable_tokens, user_collateral, treasury.sol_balance)
-            .ok_or(TorchMarketError::MathOverflow)?;
+    // Per-user short cap is decoupled from treasury size — it's a flat
+    // supply-share cap: 2% of TOTAL_SUPPLY (= MAX_WALLET_TOKENS, the same
+    // anti-whale constant the bonding curve uses for buys). This gives the
+    // protocol a unified policy: "no wallet, by any means (buying / borrowing
+    // / shorting), can hold or short more than 2% of supply."
+    //
+    // The global utilization check above (line ~79) bounds total outstanding
+    // shorts; this check bounds per-user exposure. The two are independent
+    // and serve different purposes.
     require!(
-        user_total_tokens_borrowed <= max_user_borrow,
+        user_total_tokens_borrowed <= MAX_WALLET_TOKENS,
         TorchMarketError::UserShortCapExceeded
     );
     Ok(())
@@ -248,7 +253,6 @@ pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
             &ctx.accounts.short_config,
             lock_token_balance,
             args.tokens_to_borrow,
-            user_collateral,
             ctx.accounts.short_position.tokens_borrowed,
         )?;
 
@@ -371,7 +375,6 @@ pub fn open_short_via_vault(
             &ctx.accounts.short_config,
             lock_token_balance,
             args.tokens_to_borrow,
-            user_collateral,
             ctx.accounts.short_position.tokens_borrowed,
         )?;
 
@@ -451,6 +454,12 @@ pub fn close_short(ctx: Context<CloseShort>, token_amount: u64) -> Result<()> {
         .ok_or(TorchMarketError::MathOverflow)?;
     let is_full_close = token_amount >= total_owed;
     let actual_return = if is_full_close { total_owed } else { token_amount };
+    // Gross-up so treasury_lock receives the FULL net amount after the
+    // Token-2022 transfer fee withhold (0.07% per transfer). Without this,
+    // the token pool depletes 0.14% per cycle (both borrow + return hit fees).
+    // Borrower covers the ~0.07% extra on close. See v20.0.0 design note.
+    let return_gross = math::gross_up_for_transfer_fee(actual_return)
+        .ok_or(TorchMarketError::MathOverflow)?;
     let mint_key = ctx.accounts.mint.key();
 
     transfer_checked(
@@ -463,7 +472,7 @@ pub fn close_short(ctx: Context<CloseShort>, token_amount: u64) -> Result<()> {
                 authority: ctx.accounts.shorter.to_account_info(),
             },
         ),
-        actual_return,
+        return_gross,
         TOKEN_DECIMALS,
     )?;
 
@@ -545,6 +554,10 @@ pub fn close_short_via_vault(
         .ok_or(TorchMarketError::MathOverflow)?;
     let is_full_close = token_amount >= total_owed;
     let actual_return = if is_full_close { total_owed } else { token_amount };
+    // See close_short comment: gross-up so treasury_lock receives the full
+    // net amount post-Token-2022 transfer fee.
+    let return_gross = math::gross_up_for_transfer_fee(actual_return)
+        .ok_or(TorchMarketError::MathOverflow)?;
     let mint_key = ctx.accounts.mint.key();
 
     let creator_key = ctx.accounts.torch_vault.creator;
@@ -562,7 +575,7 @@ pub fn close_short_via_vault(
             },
             vault_signer_seeds,
         ),
-        actual_return,
+        return_gross,
         TOKEN_DECIMALS,
     )?;
 
@@ -785,6 +798,10 @@ pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
     let mint_key = ctx.accounts.mint.key();
 
     if computed.actual_tokens_covered > 0 {
+        // Same gross-up principle as close_short: liquidator covers the
+        // transfer fee so treasury_lock receives the full debt-cover net.
+        let cover_gross = math::gross_up_for_transfer_fee(computed.actual_tokens_covered)
+            .ok_or(TorchMarketError::MathOverflow)?;
         transfer_checked(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
@@ -795,7 +812,7 @@ pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
                     authority: ctx.accounts.liquidator.to_account_info(),
                 },
             ),
-            computed.actual_tokens_covered,
+            cover_gross,
             TOKEN_DECIMALS,
         )?;
     }
@@ -861,6 +878,10 @@ pub fn liquidate_short_via_vault(ctx: Context<LiquidateShortViaVault>) -> Result
     let mint_key = ctx.accounts.mint.key();
 
     if computed.actual_tokens_covered > 0 {
+        // Same gross-up principle: liquidator's vault covers fee so
+        // treasury_lock receives the full debt-cover net.
+        let cover_gross = math::gross_up_for_transfer_fee(computed.actual_tokens_covered)
+            .ok_or(TorchMarketError::MathOverflow)?;
         let creator_key = ctx.accounts.torch_vault.creator;
         let vault_bump = ctx.accounts.torch_vault.bump;
         let vault_seeds = &[TORCH_VAULT_SEED, creator_key.as_ref(), &[vault_bump]];
@@ -876,7 +897,7 @@ pub fn liquidate_short_via_vault(ctx: Context<LiquidateShortViaVault>) -> Result
                 },
                 vault_signer_seeds,
             ),
-            computed.actual_tokens_covered,
+            cover_gross,
             TOKEN_DECIMALS,
         )?;
     }

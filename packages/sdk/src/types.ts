@@ -38,6 +38,13 @@ export interface TokenSummary {
   holders: number | null
   created_at: number
   last_activity_at: number
+  // Optional enrichment fields populated when an indexer is available.
+  // The RPC fallback leaves these undefined; consumers can backfill via
+  // per-mint metadata fetches (see useTokens.ts enrichment loop).
+  image?: string
+  creator?: string
+  bonding_target?: number
+  tier?: 'spark' | 'flame' | 'torch'
 }
 
 export interface TokenDetail {
@@ -162,7 +169,18 @@ export interface BorrowQuoteResult {
   collateral_value_sol: number
   ltv_max_sol: number
   pool_available_sol: number
+  /** Per-user cap from the formula: max_lendable × collateral_share × 23 / TOTAL_SUPPLY.
+   *  Real cap is `min(per_user_cap_sol, per_user_absolute_cap_sol)`. */
   per_user_cap_sol: number
+  /** Per-user absolute ceiling: max_lendable × MAX_USER_BORROW_SHARE_BPS / 10000.
+   *  Caps any single borrower at 20% of lendable regardless of collateral size.
+   *  Tighter than the formula whenever user_collateral / supply > ~4.35%. */
+  per_user_absolute_cap_sol: number
+  /** True when treasury has accumulated enough SOL fees to clear the unlock gate.
+   *  When false, the program will reject any borrow with `LendingNotYetUnlocked`. */
+  lending_unlocked: boolean
+  /** Gate threshold in lamports (configurable, default mainnet 100 SOL). */
+  lending_unlock_threshold_sol: number
   interest_rate_bps: number
   liquidation_threshold_bps: number
 }
@@ -564,6 +582,14 @@ export interface LendingInfo {
   liquidation_bonus_bps: number
   utilization_cap_bps: number
   borrow_share_multiplier: number
+  /** Absolute per-user borrow ceiling in bps of max_lendable. 2000 = 20%. */
+  max_user_borrow_share_bps: number
+  /** Treasury SOL gate (lamports) — lending refuses borrows below this. */
+  lending_unlock_threshold_lamports: number
+  /** True when treasury.sol_balance >= the gate. */
+  lending_unlocked: boolean
+  /** Current treasury sol_balance in lamports — useful for UI progress. */
+  treasury_sol_lamports: number
   total_sol_lent: number | null
   active_loans: number | null
   treasury_sol_available: number

@@ -103,6 +103,26 @@ pub fn calc_transfer_fee(amount: u64) -> Option<u64> {
     Some(fee.min(MAX_TRANSFER_FEE))
 }
 
+// Gross-up for Token-2022 transfer fee: given a desired NET amount the
+// recipient should receive, return the GROSS amount the sender must send.
+// Used on short close/liquidate paths where treasury_lock_token_account
+// must receive the full debt amount (no depletion) — borrower covers the
+// transfer fee on their own repayment.
+//
+// gross = ceil(net × 10000 / (10000 − TRANSFER_FEE_BPS))
+//
+// Net received after fee = floor(gross × (10000 − fee_bps) / 10000), so the
+// ceiling on the gross ensures the net rounds up to at least `net`.
+pub fn gross_up_for_transfer_fee(net: u64) -> Option<u64> {
+    let denom = 10_000u128.checked_sub(TRANSFER_FEE_BPS as u128)?;
+    if denom == 0 {
+        return None;
+    }
+    let num = (net as u128).checked_mul(10_000)?;
+    let gross = num.checked_add(denom - 1)?.checked_div(denom)?;
+    gross.try_into().ok()
+}
+
 // ============================================================================
 // Long lending (borrow SOL against tokens)
 // ============================================================================
@@ -299,12 +319,20 @@ pub fn apply_bps(value: u64, bps: u16) -> Option<u64> {
 // ============================================================================
 
 // Per-user borrow cap: `max_lendable × user_collateral × BORROW_SHARE_MULTIPLIER
-// / denominator`. The denominator is what each caller treats as "everyone's
-// collateral pool":
+// / denominator`, clamped to `max_lendable × MAX_USER_BORROW_SHARE_BPS / 10000`.
+//
+// The denominator is what each caller treats as "everyone's collateral pool":
 //   - Long lending  → TOTAL_SUPPLY (collateral is tokens; cap each user against
 //     a share of total supply).
 //   - Short selling → treasury.sol_balance (collateral is SOL; cap each user
 //     against a share of treasury SOL).
+//
+// The clamp is the load-bearing safety: without it, a user with > ~4.35% of
+// total supply as collateral could take the entire lendable amount, since
+// BORROW_SHARE_MULTIPLIER × user_share crosses 1.0. The clamp makes the
+// per-user cap actually mean "at most N% of lendable per user" regardless
+// of collateral size.
+//
 // `denominator == 0` is the no-pool case and returns 0 (no borrow allowed).
 pub fn calc_user_borrow_cap(
     max_lendable: u64,
@@ -314,12 +342,14 @@ pub fn calc_user_borrow_cap(
     if denominator == 0 {
         return Some(0);
     }
-    (max_lendable as u128)
+    let formula_cap: u64 = (max_lendable as u128)
         .checked_mul(user_collateral as u128)?
         .checked_mul(BORROW_SHARE_MULTIPLIER as u128)?
         .checked_div(denominator as u128)?
         .try_into()
-        .ok()
+        .ok()?;
+    let absolute_cap = apply_bps(max_lendable, MAX_USER_BORROW_SHARE_BPS)?;
+    Some(formula_cap.min(absolute_cap))
 }
 
 // ============================================================================

@@ -368,6 +368,13 @@ fn log_decode_failure(
     program: &str,
     e: crate::error::DecodeError,
 ) {
+    // Silently skip non-event inner ixs — these are regular CPIs (e.g.,
+    // torch program CPI'ing into deep_pool::create_pool, which carries
+    // the create_pool instruction discriminator, NOT EVENT_IX_TAG_LE).
+    // They're not decode failures, just instructions we don't care about.
+    if matches!(e, crate::error::DecodeError::NotAnEvent) {
+        return;
+    }
     crate::metrics::METRICS
         .decode_errors_total
         .with_label_values(&[program])

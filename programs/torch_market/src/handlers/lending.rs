@@ -69,6 +69,16 @@ fn check_borrow_caps(
     loan_borrowed_before: u64,
     user_collateral: u64,
 ) -> Result<()> {
+    // Treasury-SOL gate: lending unlocks only once the protocol has
+    // accumulated enough activity-driven fees to make borrows meaningful.
+    // `sol_balance` is principal accounting (not the live PDA balance) —
+    // it doesn't fluctuate with normal borrow/repay, so once the threshold
+    // is crossed the gate stays open. See docs/lending-unlock.md.
+    require!(
+        treasury.sol_balance >= MIN_TREASURY_SOL_FOR_LENDING,
+        TorchMarketError::LendingNotYetUnlocked,
+    );
+
     let new_total_lent = treasury
         .total_sol_lent
         .checked_add(sol_to_borrow)

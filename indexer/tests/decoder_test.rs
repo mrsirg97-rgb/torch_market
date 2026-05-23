@@ -243,14 +243,17 @@ fn truncated_data_returns_too_short() {
 }
 
 #[test]
-fn wrong_tag_returns_unknown_discriminator() {
+fn wrong_tag_returns_not_an_event() {
     let discs = TorchDiscriminators::compute();
     // 16 bytes of arbitrary data — has length but no event tag.
+    // This is the shape of a regular CPI ix (e.g., torch invoking
+    // deep_pool::create_pool), which carries an ix discriminator
+    // rather than EVENT_IX_TAG_LE in its first 8 bytes.
     let mut bad = vec![0xffu8; 16];
     bad[0] = 0x00; // doesn't match EVENT_IX_TAG_LE
     match try_decode_torch_event(&bad, &discs) {
-        Err(DecodeError::UnknownDiscriminator) => {}
-        other => panic!("expected UnknownDiscriminator, got {:?}", other),
+        Err(DecodeError::NotAnEvent) => {}
+        other => panic!("expected NotAnEvent, got {:?}", other),
     }
 }
 

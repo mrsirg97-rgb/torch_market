@@ -238,6 +238,10 @@ const toTokenSummary = (raw: RawToken, meta?: MintMetadata): TokenSummary => {
 // initial-render state. `image_url` is preserved if the indexer's metadata
 // fetcher has populated it — that's a strict improvement over RPC, which
 // has no image at all without a per-mint arweave fetch.
+//
+// Populates the optional enrichment fields (image, creator, bonding_target,
+// tier) so the frontend's per-mint enrichment loop can skip mints the
+// indexer already enriched — the major perf win at scale.
 const indexerRowToTokenSummary = (
   row: import('./indexer').IndexerMarketRow,
   meta?: MintMetadata,
@@ -245,6 +249,7 @@ const indexerRowToTokenSummary = (
   const virtualSol = BigInt(row.virtual_sol)
   const virtualTokens = BigInt(row.virtual_token)
   const realSol = BigInt(row.real_sol)
+  const solTarget = BigInt(row.sol_target)
 
   const price = calculatePrice(virtualSol, virtualTokens)
   const priceInSol = (price * TOKEN_MULTIPLIER) / LAMPORTS_PER_SOL
@@ -279,10 +284,18 @@ const indexerRowToTokenSummary = (
     status,
     price_sol: priceInSol,
     market_cap_sol: marketCapSol,
-    progress_percent: calculateBondingProgress(realSol),
+    // Pass sol_target so progress is correct for non-default tiers
+    // (spark uses 10 SOL, flame 30, torch 100; default fallback is 200).
+    progress_percent: calculateBondingProgress(realSol, solTarget),
     holders: null,
     created_at: Math.floor(new Date(row.created_at).getTime() / 1000),
     last_activity_at: row.last_activity_slot,
+    // Enrichment fields — populated when present, undefined otherwise so
+    // the frontend can detect and skip per-mint enrichment.
+    image: row.image_url ?? undefined,
+    creator: row.creator,
+    bonding_target: row.sol_target,
+    tier: row.tier,
   }
 }
 
@@ -1024,6 +1037,43 @@ const LIQUIDATION_THRESHOLD_BPS = 6500 // 65%
 const LIQUIDATION_BONUS_BPS = 1000 // 10%
 const LENDING_UTILIZATION_CAP_BPS = 8000 // 80% (V4.0, was 70%)
 const BORROW_SHARE_MULTIPLIER = 23 // Per-user cap: max borrow = 23x collateral share of supply (V10.2.5, was 5x)
+
+/**
+ * Token-2022 transfer fee on this protocol's mint (7 bps = 0.07%). Mirrors
+ * the on-chain `TRANSFER_FEE_BPS` constant.
+ */
+export const TRANSFER_FEE_BPS = 7
+
+/**
+ * v20.0.0: gross-up a NET token amount by the Token-2022 transfer fee so
+ * the recipient receives the full net after withholding. Mirror of the
+ * on-chain `math::gross_up_for_transfer_fee` helper.
+ *
+ * Used on the short close+liquidate flows: the on-chain program transfers
+ * `gross_up_for_transfer_fee(token_amount)` from the borrower so
+ * treasury_lock receives the full `token_amount` net (token pool stable).
+ * Frontends should call this to compute the wallet balance required to
+ * fully close a position.
+ *
+ * Formula matches the on-chain ceiling division:
+ *   gross = ceil(net × 10000 / (10000 − TRANSFER_FEE_BPS))
+ *
+ * @param net - desired net token amount the recipient should receive
+ * @returns gross token amount the sender must transfer
+ */
+export const grossUpForTransferFee = (net: number): number => {
+  const denom = 10_000 - TRANSFER_FEE_BPS
+  return Math.ceil((net * 10_000) / denom)
+}
+// V20.0.0: absolute per-user ceiling. min(formula × 23 / supply, max_lendable × 0.2)
+// for any collateral size. Without this, a user with > ~4.35% of supply could
+// take the entire lendable amount.
+const MAX_USER_BORROW_SHARE_BPS = 2000 // 20% of max_lendable
+// V20.0.0: lending unlock gate on treasury.sol_balance. Mainnet only — devnet
+// builds the program with 1 SOL gate, simnet with 0. SDK defaults to mainnet
+// (100 SOL); frontend can override per network via the optional parameter
+// on getBorrowQuote / getLendingInfo.
+const DEFAULT_LENDING_UNLOCK_THRESHOLD_LAMPORTS = 100_000_000_000 // 100 SOL
 const EPOCH_DURATION_SLOTS = 1_512_000 // 7 days at 400ms/slot — matches on-chain EPOCH_DURATION_SLOTS
 
 // Project simple-linear interest forward to the given slot, matching the on-chain
@@ -1070,12 +1120,17 @@ const getDepthMaxLtvBps = (poolSol: number): number => {
 /**
  * Get lending info for a migrated token.
  *
- * Returns interest rates, LTV limits, and active loan statistics.
- * Lending is available on all migrated tokens with treasury SOL.
+ * Returns interest rates, LTV limits, and active loan statistics, including
+ * the v20 lending-unlock gate state.
+ *
+ * @param lendingUnlockThresholdLamports - override the gate threshold (default
+ *   = mainnet 100 SOL). Frontend passes 1 SOL for devnet, 0 for simnet to
+ *   match the deployed program build.
  */
 export const getLendingInfo = async (
   connection: Connection,
   mintStr: string,
+  lendingUnlockThresholdLamports: number = DEFAULT_LENDING_UNLOCK_THRESHOLD_LAMPORTS,
 ): Promise<LendingInfo> => {
   const mint = new PublicKey(mintStr)
 
@@ -1144,6 +1199,10 @@ export const getLendingInfo = async (
     liquidation_bonus_bps: LIQUIDATION_BONUS_BPS,
     utilization_cap_bps: LENDING_UTILIZATION_CAP_BPS,
     borrow_share_multiplier: BORROW_SHARE_MULTIPLIER,
+    max_user_borrow_share_bps: MAX_USER_BORROW_SHARE_BPS,
+    lending_unlock_threshold_lamports: lendingUnlockThresholdLamports,
+    lending_unlocked: treasurySol >= lendingUnlockThresholdLamports,
+    treasury_sol_lamports: treasurySol,
     total_sol_lent: totalSolLent,
     active_loans: activeLoans,
     treasury_sol_available: Math.max(
