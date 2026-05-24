@@ -1141,6 +1141,14 @@ export const getLendingInfo = async (
   if (!bondingCurve.migrated) throw new Error('Token not yet migrated, lending not available')
 
   const treasurySol = treasury ? Number(treasury.sol_balance.toString()) : 0
+  // Available SOL = gross treasury minus short collateral parked in escrow.
+  // This is the protocol-earned float that's actually lendable, and the value
+  // the on-chain gate (check_borrow_caps) uses. Mirroring it here keeps the
+  // SDK gate read consistent with on-chain semantics.
+  const shortReserved = treasury
+    ? Number(treasury.short_collateral_reserved.toString())
+    : 0
+  const availableSol = Math.max(0, treasurySol - shortReserved)
 
   // Fetch pool SOL depth for depth-band max LTV
   let poolSol = 0
@@ -1201,13 +1209,14 @@ export const getLendingInfo = async (
     borrow_share_multiplier: BORROW_SHARE_MULTIPLIER,
     max_user_borrow_share_bps: MAX_USER_BORROW_SHARE_BPS,
     lending_unlock_threshold_lamports: lendingUnlockThresholdLamports,
-    lending_unlocked: treasurySol >= lendingUnlockThresholdLamports,
+    lending_unlocked: availableSol >= lendingUnlockThresholdLamports,
     treasury_sol_lamports: treasurySol,
+    treasury_sol_available_lamports: availableSol,
     total_sol_lent: totalSolLent,
     active_loans: activeLoans,
     treasury_sol_available: Math.max(
       0,
-      Math.floor((treasurySol * LENDING_UTILIZATION_CAP_BPS) / 10000) - (totalSolLent ?? 0),
+      Math.floor((availableSol * LENDING_UTILIZATION_CAP_BPS) / 10000) - (totalSolLent ?? 0),
     ),
     ...(warnings.length > 0 ? { warnings } : {}),
   }

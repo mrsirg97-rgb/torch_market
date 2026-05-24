@@ -167,6 +167,35 @@ fn borrow_lending_not_yet_unlocked() {
 }
 
 #[test]
+#[cfg(not(feature = "simnet"))]
+fn borrow_gate_excludes_short_collateral() {
+    // V20C-1 regression. The gate must compare AVAILABLE SOL (sol_balance −
+    // short_collateral_reserved) against the threshold, not gross balance.
+    //
+    // Set up the trap state: gross sol_balance comfortably above the gate
+    // (150 SOL), but 100 SOL of that is short collateral parked in escrow.
+    // Available = 50 SOL, below the 100 SOL mainnet gate — borrow must
+    // still fail with LendingNotYetUnlocked.
+    //
+    // Pre-fix, the gate would have cleared on the gross value and the
+    // borrow would have proceeded to the utilization-cap check (which
+    // then would have rejected it for a different reason). With the fix,
+    // the gate fires correctly and the right error is surfaced.
+    let (mut env, t, borrower) = migrated();
+    let mut tr = env.get_treasury(&t);
+    tr.sol_balance = 150 * LAMPORTS_PER_SOL;
+    tr.short_collateral_reserved = 100 * LAMPORTS_PER_SOL;
+    tr.short_selling_enabled = true;
+    env.poke_anchor(t.treasury, tr);
+
+    let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
+    expect_err!(
+        env.borrow(&borrower, &t, bal, 100_000_000),
+        TorchMarketError::LendingNotYetUnlocked
+    );
+}
+
+#[test]
 fn borrow_lending_cap_exceeded() {
     // Production-realistic: gate cleared, but treasury's lending utilization
     // cap is exhausted because total_sol_lent is already near max_lendable.

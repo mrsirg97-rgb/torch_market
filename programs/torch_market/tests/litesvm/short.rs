@@ -23,16 +23,15 @@ use crate::{
     harness::{Env, TokenCtx},
 };
 use torch_market::{
-    constants::*, errors::TorchMarketError, math::calc_transfer_fee,
+    constants::*, errors::TorchMarketError,
     token_2022_utils::TOKEN_2022_PROGRAM_ID,
 };
 
-// Token-2022 transfer-fee aware: `position.tokens_borrowed` is the NET amount
-// the shorter actually received after the open transfer (gross - fee). All
-// debt-accounting tests reason in net.
-fn net(gross: u64) -> u64 {
-    gross - calc_transfer_fee(gross).expect("fee fits u64")
-}
+// `position.tokens_borrowed` records the GROSS amount the lock sent at open
+// (v20-current lock-conservation design). The shorter received `gross − fee`
+// net but owes the full gross back on close; the close-side gross-up makes
+// the cycle net-positive for the lock. See handlers/short.rs::open_short
+// comment for the full rationale.
 
 fn migrated() -> (Env, TokenCtx, Keypair) {
     let mut env = Env::new();
@@ -58,7 +57,7 @@ fn open_short_happy() {
 
     let pos = env.get_short(&t, &shorter.pubkey()).expect("short pos");
     assert_eq!(pos.sol_collateral, LAMPORTS_PER_SOL);
-    assert_eq!(pos.tokens_borrowed, net(MIN_SHORT_TOKENS));
+    assert_eq!(pos.tokens_borrowed, MIN_SHORT_TOKENS);
     let tr = env.get_treasury(&t);
     assert_eq!(tr.short_collateral_reserved, LAMPORTS_PER_SOL);
 }
@@ -170,7 +169,7 @@ fn open_short_via_vault_happy() {
         .expect("open_short_via_vault");
 
     let pos = env.get_short(&t, &vault_owner.pubkey()).expect("short pos");
-    assert_eq!(pos.tokens_borrowed, net(MIN_SHORT_TOKENS));
+    assert_eq!(pos.tokens_borrowed, MIN_SHORT_TOKENS);
     let v = env.get_torch_vault(&vault.vault);
     assert_eq!(v.sol_balance, LAMPORTS_PER_SOL); // 2 - 1 collateral
     assert_eq!(v.total_spent, LAMPORTS_PER_SOL);
@@ -192,9 +191,9 @@ fn close_short_partial() {
     env.close_short(&shorter, &t, MIN_SHORT_TOKENS / 2)
         .expect("partial close");
     let pos = env.get_short(&t, &shorter.pubkey()).expect("pos still");
-    // Position recorded net (gross - fee) on open; partial close subtracts
-    // gross of the close request from that net balance.
-    assert_eq!(pos.tokens_borrowed, net(MIN_SHORT_TOKENS) - MIN_SHORT_TOKENS / 2);
+    // Position records gross at open; partial close subtracts the close
+    // request amount from tokens_borrowed (after interest-first).
+    assert_eq!(pos.tokens_borrowed, MIN_SHORT_TOKENS - MIN_SHORT_TOKENS / 2);
     assert_eq!(pos.sol_collateral, LAMPORTS_PER_SOL); // unchanged on partial
 }
 
@@ -230,7 +229,7 @@ fn close_short_interest_first() {
     env.close_short(&shorter, &t, 1000)
         .expect("interest-only close");
     let pos = env.get_short(&t, &shorter.pubkey()).expect("pos");
-    assert_eq!(pos.tokens_borrowed, net(MIN_SHORT_TOKENS), "principal untouched");
+    assert_eq!(pos.tokens_borrowed, MIN_SHORT_TOKENS, "principal untouched");
     assert!(
         pos.accrued_interest > 0,
         "interest remains after small partial pay"
@@ -283,7 +282,7 @@ fn close_short_via_vault_happy() {
         .expect("close_short_via_vault");
 
     let pos = env.get_short(&t, &first_buyer.pubkey()).expect("pos");
-    assert_eq!(pos.tokens_borrowed, net(MIN_SHORT_TOKENS) - MIN_SHORT_TOKENS / 2);
+    assert_eq!(pos.tokens_borrowed, MIN_SHORT_TOKENS - MIN_SHORT_TOKENS / 2);
 }
 
 // ============================================================================

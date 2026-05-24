@@ -72,7 +72,7 @@ export interface TokenMessage {
   sender_badge_url?: string
 }
 
-interface UseTokenResult {
+export interface UseTokenResult {
   // Validity
   isValidMint: boolean
   mint: PublicKey | null

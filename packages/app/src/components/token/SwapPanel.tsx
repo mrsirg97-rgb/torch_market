@@ -622,7 +622,7 @@ export function SwapPanel({
                   <button
                     key={bps}
                     onClick={() => setSlippageBps(bps)}
-                    className={`flex-1 py-2 text-sm rounded-lg font-medium transition-colors cursor-pointer border ${
+                    className={`flex-1 py-1.5 text-xs rounded-lg font-medium transition-colors cursor-pointer border ${
                       slippageBps === bps
                         ? 'border-accent text-white bg-white/5'
                         : 'border-transparent bg-white/10 text-white/70 hover:bg-white/20'
@@ -918,7 +918,7 @@ export function SwapPanel({
                   <button
                     key={bps}
                     onClick={() => setSlippageBps(bps)}
-                    className={`flex-1 py-2 text-sm rounded-lg font-medium transition-colors cursor-pointer border ${
+                    className={`flex-1 py-1.5 text-xs rounded-lg font-medium transition-colors cursor-pointer border ${
                       slippageBps === bps
                         ? 'border-accent text-white bg-white/5'
                         : 'border-transparent bg-white/10 text-white/70 hover:bg-white/20'

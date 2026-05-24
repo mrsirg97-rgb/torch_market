@@ -6,7 +6,7 @@
 
 ## Abstract
 
-We present a lending model for constant-product AMM pools where the maximum permissible loan-to-value ratio is a pure function of pool liquidity depth. Combined with per-user borrow caps ($\mu = 23$) proportional to total token supply and a global utilization ceiling, the system creates a graduated risk regime: fresh tokens are structurally protected (3% effective LTV, 95% drop to liquidate), while mature tokens with deep treasuries graduate into functional margin markets (20-45% LTV, 31-69% drop to liquidate). This graduation is emergent from the interaction of three independent caps, not from any single mechanism. Short positions do not share this protective property due to the asymmetric nature of upward price movement, and remain liquidatable by design. No oracles, no keepers, and no stored baseline are required. The pool itself is the sole source of truth. Economic simulation confirms the model under adversarial conditions including cascade liquidations.
+We present a lending model for constant-product AMM pools where the maximum permissible loan-to-value ratio is a pure function of pool liquidity depth. Combined with per-user borrow caps ($\mu = 23$) proportional to total token supply, an absolute 20%-of-lendable per-user ceiling, a global utilization ceiling, and a treasury-activity unlock gate keyed on the protocol's earned SOL, the system creates a graduated risk regime: fresh tokens are structurally protected (3% effective LTV, 95% drop to liquidate), while mature tokens with deep treasuries graduate into functional margin markets (20-45% LTV, 31-69% drop to liquidate). This graduation is emergent from the interaction of independent caps, not from any single mechanism. Short positions do not share this protective property due to the asymmetric nature of upward price movement, and remain liquidatable by design. The 300M token short pool is preserved across cycles by Token-2022 gross-up accounting on every close. No oracles, no keepers, and no stored baseline are required. The pool itself is the sole source of truth. Economic simulation confirms the model under adversarial conditions including cascade liquidations.
 
 ---
 
@@ -103,15 +103,24 @@ This allows individual tokens to have stricter limits than the depth band permit
 
 ### 3.1 Definition
 
-For a user with $c$ tokens of collateral, the maximum SOL they may borrow is:
+The per-user borrow cap is the minimum of two terms — a formula cap that scales with the user's share of total supply, and an absolute ceiling at 20% of lendable SOL:
 
-$$B_{\max}(c) = \frac{M \cdot c \cdot \mu}{S}$$
+$$B_{\max}(c) = \min\left( \frac{M \cdot c \cdot \mu}{S}, \; \frac{M \cdot \beta}{10000} \right)$$
 
 where:
-- $M$ = maximum lendable SOL (utilization cap applied to treasury balance)
+- $M$ = maximum lendable SOL (utilization cap applied to available treasury balance)
 - $c$ = user's collateral in base token units
-- $\mu = 23$ = borrow share multiplier
+- $\mu = 23$ = borrow share multiplier (formula cap)
+- $\beta = 2000$ bps = `MAX_USER_BORROW_SHARE_BPS` (absolute cap, 20% of $M$)
 - $S = 10^{15}$ = total token supply (1 billion tokens at 6 decimals)
+
+### 3.1.1 Why the absolute cap is load-bearing
+
+The formula cap scales linearly with collateral. Without an upper clamp, a user with $c/S \geq 1/\mu \approx 4.35\%$ of total supply could borrow the entire lendable pool. The absolute cap binds whenever the formula would exceed 20% of $M$, i.e. when:
+
+$$\frac{c}{S} > \frac{\beta / 10000}{\mu} = \frac{0.2}{23} \approx 0.870\%$$
+
+In practice, the absolute cap dominates for any meaningful borrower (anyone holding more than ~0.87% of supply, which is well below the 2% bonding-curve wallet cap). The formula cap provides graceful protection for small holders; the absolute cap is the hard ceiling for whales. Together they guarantee at least five simultaneous concentrated borrowers can be served, and that no single borrower can starve the others.
 
 ### 3.2 Interpretation
 
@@ -170,19 +179,47 @@ This graduation is emergent, not designed. It arises from the interaction of thr
 
 ---
 
-## 4. Global Utilization Cap
+## 4. Global Utilization Cap and Activity Gate
 
-### 4.1 Definition
+### 4.1 Available SOL
+
+Define the protocol's **available SOL** as gross treasury minus short collateral parked in escrow:
+
+$$T_{\text{avail}} = T_{\text{sol}} - T_{\text{short}}$$
+
+Short collateral is the shorter's own SOL, held to backstop the token debt. It is not protocol-earned float and must not be lent out or counted toward activity gating.
+
+### 4.2 Utilization Cap
 
 Total SOL lent across all positions is bounded by:
 
-$$\sum_i b_i \leq \frac{T_{\text{sol}} \cdot U}{10000}$$
+$$\sum_i b_i \leq \frac{T_{\text{avail}} \cdot U}{10000}$$
 
-where $T_{\text{sol}}$ is treasury SOL balance (excluding short collateral), $U = 8000$ bps (80%), and $b_i$ is user $i$'s borrowed amount.
+where $U = 8000$ bps (80%) and $b_i$ is user $i$'s borrowed amount.
 
-### 4.2 Treasury Solvency
+### 4.2.1 Treasury Solvency
 
-This guarantees $T_{\text{sol}} - \sum b_i \geq 0.2 \cdot T_{\text{sol}}$. Even if every borrower defaults simultaneously, 20% of treasury SOL remains unlent. Combined with seized collateral from liquidations, the treasury maintains positive balance under total default.
+This guarantees $T_{\text{avail}} - \sum b_i \geq 0.2 \cdot T_{\text{avail}}$. Even if every borrower defaults simultaneously, 20% of available SOL remains unlent. Combined with seized collateral from liquidations, the treasury maintains positive balance under total default.
+
+### 4.3 Activity Unlock Gate
+
+Long borrows are additionally gated by a minimum available-SOL threshold:
+
+$$T_{\text{avail}} \geq G$$
+
+where $G$ is set per build feature:
+
+| Build | $G$ |
+|---|---|
+| `simnet` (local tests) | 0 |
+| `devnet` | 1 SOL |
+| (default — mainnet) | 100 SOL |
+
+The gate proves the protocol has accumulated meaningful organic float before opening the lending side. It grows from: (a) bonding-curve treasury splits, (b) bond-completion buy fees, (c) post-migration transfer-fee harvest swapped to SOL, (d) interest paid on closed long positions, (e) ratio-gated buyback proceeds. Crucially, it does NOT grow from short collateral, which is escrowed user funds.
+
+The short side has no equivalent gate: shorts borrow tokens from the static 300M `TreasuryLock` (independent of $T_{\text{avail}}$), and every short cycle adds 4× transfer fees + interest to the harvest pool — they are the mechanism that grows $T_{\text{avail}}$ in the first place. Pre-unlock, the protocol funnels users toward shorts to build up the SOL float that ultimately unlocks longs.
+
+Kani harness `verify_lending_gate_excludes_short_collateral` proves that the gate state depends only on $T_{\text{avail}}$, regardless of how much short collateral is parked. See [docs/lending-unlock.md](./lending-unlock.md).
 
 ---
 
@@ -371,7 +408,52 @@ For community tokens (no creator fee split), 100% of harvested fees and bonding 
 
 ---
 
-## 8. Invariants
+## 8. Short Pool Stability
+
+The 300M-token `TreasuryLock` is the short pool: tokens lent out to shorters and returned on close. Token-2022 imposes a 0.07% transfer fee on every transfer ($f = 7$ bps). The protocol must keep the lock balance stable across cycles regardless of hold duration — otherwise short cycles below the interest-coverage threshold would slowly drain the pool.
+
+### 8.1 Record-Gross Design
+
+The lock conservation property requires that the **gross amount sent from the lock** equals the **debt the borrower owes back** — not the net the borrower received. So on open, `position.tokens_borrowed = args.tokens_to_borrow` (gross), even though the shorter's wallet only credits with $\text{gross} - \lceil \text{gross} \cdot f / 10000 \rceil = \text{net}$ after the Token-2022 withhold.
+
+This makes the borrower responsible for the open-leg fee gap: they received $\text{net}$ tokens at open, but owe back $\text{gross}$ at close (plus interest). The gap is funded by buying tokens on the DEX before close, or out of any wallet balance they otherwise hold. The economic cost is real (~0.07% on the round-trip vs. ~0.07% under the old net-recording design — same total) but it is now visible to the borrower as a fee they pay at close, rather than absorbed silently by the lock.
+
+### 8.2 Gross-Up Accounting on Close
+
+On every short close and liquidation, the borrower (or liquidator) sends a grossed-up amount so the lock receives the full intended net:
+
+$$\text{gross}_\text{close} = \left\lceil \frac{(p + i) \cdot 10000}{10000 - f} \right\rceil$$
+
+The Token-2022 withhold removes $\lceil \text{gross}_\text{close} \cdot f / 10000 \rceil$, and the lock's ATA credits with $p + i$. Kani harness `verify_gross_up_preserves_net_delivery` (`kani_proofs.rs`) proves the recipient never receives less than the target net and the overshoot is bounded by 1 unit.
+
+### 8.3 Per-Cycle Lock Balance
+
+For a short cycle with gross-recorded principal $p$ and interest $i$ accrued, applied to a lock balance $L_0$:
+
+| Step | Transfer | Withhold | Lock Δ |
+|---|---|---|---|
+| Open | $p \to $ shorter | $\lceil pf/10000 \rceil$ | $-p$ |
+| Close | shorter $\to L$ ($\text{gross}_\text{close}$) | $\lceil \text{gross}_\text{close} \cdot f/10000 \rceil$ | $+p + i$ |
+| Cycle total | | | $+i$ |
+
+The lock is **strictly non-decreasing across any complete cycle**, with the net change being exactly the interest paid (modulo ±1 from the gross-up ceiling). Zero-interest cycles (open and close in the same slot) leave the lock unchanged, not negative. This holds regardless of hold duration — Kani harness `verify_short_full_close_lock_conservation` proves the invariant.
+
+### 8.4 Borrower Round-Trip Cost
+
+For a short of size $p$ tokens held over interest $i$, the borrower pays:
+
+- Open leg: 0 tokens out-of-pocket (lock pays the open transfer fee implicitly by sending gross)
+- Close leg: $\text{gross}_\text{close} - \text{net\_received\_at\_open} \approx p \cdot 0.14\% + i \cdot 1.0007$
+
+In effect, the borrower funds the *entire* round-trip transfer-fee cost (~0.14%) plus the interest with its gross-up. Compared to the prior net-recording design where the lock absorbed the open-leg fee, this is the same total fee burden — just allocated to the borrower rather than to protocol pool drain. The economic value is preserved (fees still flow to harvest → SOL treasury), and the lock balance is now a conservation invariant rather than a soft floor.
+
+### 8.5 Dynamic Cap Base
+
+`check_short_caps` reads the *current* `treasury_lock_token_account.amount` as the cap base for the global short utilization (80% of lock balance). As the lock grows from interest, the short capacity grows with it — a self-reinforcing loop where successful protocol operation expands future capacity.
+
+---
+
+## 9. Invariants
 
 The following properties hold at all times:
 
@@ -379,7 +461,7 @@ The following properties hold at all times:
 
 **I2: Pool invariant.** $k' \geq k$ after every swap. $k$ is non-decreasing (no liquidity removal; LP tokens are burned at migration).
 
-**I3: Treasury solvency.** $T_{\text{sol}} \geq \sum b_i \cdot (1 - U/10000)$. At least 20% of treasury SOL is always unlent.
+**I3: Treasury solvency.** $T_{\text{avail}} \geq \sum b_i \cdot (1 - U/10000)$. At least 20% of available SOL is always unlent.
 
 **I4: Position isolation.** Each user has at most one `LoanPosition` and one `ShortPosition` per token. No cross-collateralization exists.
 
@@ -387,11 +469,15 @@ The following properties hold at all times:
 
 **I6: Cap independence.** The per-user borrow cap $B_{\max}(c)$ is independent of other users' positions. One user's borrow does not affect another user's cap (only the global utilization ceiling creates interaction).
 
+**I7: Gate independence from short collateral.** The lending unlock gate compares $T_{\text{avail}} = T_{\text{sol}} - T_{\text{short}}$ against the threshold. Opening or closing any short position adds and removes equal amounts to both $T_{\text{sol}}$ and $T_{\text{short}}$, leaving $T_{\text{avail}}$ unchanged. The gate state depends only on protocol-earned float (Kani: `verify_lending_gate_excludes_short_collateral`).
+
+**I8: Short pool conservation.** The `TreasuryLock` token balance is non-decreasing across any complete short cycle (open + close), regardless of hold duration. Net change per cycle is exactly the interest paid (modulo ±1 from gross-up ceiling). Zero-interest cycles leave the balance unchanged, not negative. Proven by `verify_short_full_close_lock_conservation`.
+
 ---
 
-## 9. Attack Analysis
+## 10. Attack Analysis
 
-### 9.1 Price Pump and Borrow
+### 10.1 Price Pump and Borrow
 
 **Attack:** Buy tokens to inflate price, borrow SOL at inflated collateral value, let price revert.
 
@@ -401,19 +487,19 @@ Even at maximum depth-band LTV (50%), the attacker can borrow at most $0.5 \cdot
 
 **With per-user cap:** The attacker's maximum borrow is further limited to $B_{\max}(c) \ll 0.5 \cdot V(c)$, making the attack strictly unprofitable.
 
-### 9.2 Price Dump and Liquidation Hunting
+### 10.2 Price Dump and Liquidation Hunting
 
 **Attack:** Sell tokens to crash price, liquidate other users' positions, collect bonus.
 
 **Defense:** With effective LTV at 0.29% (per-user cap dominated), a 99.6% price crash is needed. This would require the attacker to sell enough tokens to remove 99.6% of pool SOL — approximately the entire pool. The attacker would receive far less SOL than they spend in tokens due to constant-product slippage.
 
-### 9.3 Sybil Borrowing
+### 10.3 Sybil Borrowing
 
 **Attack:** Use many wallets to circumvent per-user cap.
 
-**Defense:** Each wallet needs real token collateral. Total borrowing across all sybil wallets is still bounded by the global utilization cap ($0.8 \cdot T_{\text{sol}}$). The per-user cap prevents any single wallet from taking a disproportionate share, but the utilization cap is the hard ceiling regardless.
+**Defense:** Each wallet needs real token collateral. Total borrowing across all sybil wallets is still bounded by the global utilization cap ($0.8 \cdot T_{\text{avail}}$). The per-user cap prevents any single wallet from taking a disproportionate share, but the utilization cap is the hard ceiling regardless. The absolute 20%-of-lendable per-user clamp ($\beta = 2000$ bps) means even a whale must split across at least five wallets to monopolize lending, and each wallet pays its own gas + rent.
 
-### 9.4 Interest Accrual Liquidation
+### 10.4 Interest Accrual Liquidation
 
 **Attack:** Open position, wait for interest to push LTV past liquidation threshold.
 
@@ -427,9 +513,15 @@ $$\text{Epochs} = \frac{(6500 - 5000)}{200} = 7.5 \text{ epochs} \approx 52 \tex
 
 Still nearly 2 months, and this assumes zero price movement.
 
+### 10.5 Gate Bypass via Short Collateral
+
+**Attack:** Open a 100 SOL short on a fresh post-migration token to inflate `treasury.sol_balance` past the 100 SOL lending gate, then borrow against the freshly "unlocked" pool.
+
+**Defense:** The gate compares $T_{\text{avail}} = T_{\text{sol}} - T_{\text{short}}$ against the threshold (see §4.3). Opening a short of size $s$ increments both $T_{\text{sol}}$ and $T_{\text{short}}$ by $s$, leaving $T_{\text{avail}}$ unchanged. The gate state is invariant under any short collateral movement — Kani-proven by `verify_lending_gate_excludes_short_collateral`. This was a real semantic bug in an earlier v20 build (V20C-1) and is now closed.
+
 ---
 
-## 10. Comparison to Traditional DeFi Lending
+## 11. Comparison to Traditional DeFi Lending
 
 | Property | Torch Market | Aave/Compound |
 |----------|-------------|---------------|
@@ -446,17 +538,20 @@ The fundamental difference: traditional DeFi lending maximizes capital efficienc
 
 ---
 
-## 11. Conclusion
+## 12. Conclusion
 
 The depth-anchored risk model creates a lending system where:
 
 1. Maximum LTV adapts to pool manipulation resistance (no stored state)
 2. Per-user caps ($\mu = 23$) create graduated leverage — 3% at fresh treasury, scaling to 45% at depth band ceiling
-3. Fresh tokens are structurally protected; mature tokens graduate into functional margin markets
-4. Treasury grows perpetually from transfer fees (PVP bonding multiplier + price-correlated harvesting) without protocol extraction
-5. No oracles, keepers, or governance are required
-6. The liquidation engine is functional and validated — not decorative
+3. An absolute 20%-of-lendable per-user clamp ($\beta = 2000$ bps) ensures no single whale can monopolize lending
+4. The activity unlock gate ($T_{\text{avail}} \geq 100$ SOL on mainnet) keys on protocol-earned float, not gross balance — short collateral cannot cosmetically unlock the gate
+5. Fresh tokens are structurally protected; mature tokens graduate into functional margin markets
+6. Treasury grows perpetually from transfer fees (PVP bonding multiplier + price-correlated harvesting) without protocol extraction
+7. The 300M short pool is preserved (and grows) across cycles via Token-2022 gross-up accounting
+8. No oracles, keepers, or governance are required
+9. The liquidation engine is functional and validated — not decorative
 
 The result is a permissionless, self-sustaining lending protocol with a natural lifecycle: tokens begin with near-zero liquidation risk (per-user cap dominance) and graduate into real margin markets as treasury depth proves sustained demand. Short positions remain liquidatable at any stage due to the asymmetric nature of upward price risk.
 
-The safety of the system is not a parameter choice — it is a mathematical consequence of the supply split ($y/S \approx 0.15$), the constant-product invariant, and the depth-based LTV ceiling. These properties are immutable post-deployment and hold for all valid inputs, as verified by 72 Kani proof harnesses and economic simulation under adversarial conditions.
+The safety of the system is not a parameter choice — it is a mathematical consequence of the supply split ($y/S \approx 0.15$), the constant-product invariant, the depth-based LTV ceiling, and the cap interactions. These properties are immutable post-deployment and hold for all valid inputs, as verified by 84 Kani proof harnesses and economic simulation under adversarial conditions.

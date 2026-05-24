@@ -448,21 +448,7 @@ export function PriceChart({ mint, priceInSol, solRaised, solPriceUsd, priceHist
   return (
     <div className="p-4 h-full w-full flex flex-col">
       <div className="flex items-center justify-between mb-4">
-        <div className="flex gap-1">
-          {TIME_INTERVALS.map(({ label, value }) => (
-            <button
-              key={value}
-              onClick={() => setSelectedInterval(value)}
-              className={`px-2 py-1 text-xs rounded-lg font-medium transition-colors cursor-pointer border ${
-                selectedInterval === value
-                  ? 'border-accent text-white bg-white/5'
-                  : 'border-transparent bg-white/10 text-white/70 hover:bg-white/20'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <TimeframeDropdown value={selectedInterval} onChange={setSelectedInterval} />
         <span
           className={`text-sm font-mono ${priceChange >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}
         >
@@ -508,6 +494,74 @@ export function PriceChart({ mint, priceInSol, solRaised, solPriceUsd, priceHist
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// Timeframe dropdown — mirrors FilterDropdown's visual pattern (glass
+// backdrop, fixed-inset close layer, chevron rotation) so the chart
+// selector reads consistently with the markets-page filter UX.
+function TimeframeDropdown({
+  value,
+  onChange,
+}: {
+  value: TimeInterval
+  onChange: (v: TimeInterval) => void
+}) {
+  const [isOpen, setIsOpen] = useState(false)
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="btn text-xs px-3 py-2 inline-flex items-center gap-2 min-w-[80px] justify-between"
+      >
+        <span>{value}</span>
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className={`transition-transform ${isOpen ? 'rotate-180' : ''}`}
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {isOpen && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />
+          <div
+            className="absolute top-full left-0 mt-1 overflow-hidden z-20 min-w-[100px] rounded-xl"
+            style={{
+              background: 'color-mix(in srgb, var(--background) 60%, transparent)',
+              backdropFilter: 'blur(8px)',
+              WebkitBackdropFilter: 'blur(8px)',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
+            }}
+          >
+            {TIME_INTERVALS.map(({ label, value: tf }) => (
+              <button
+                key={tf}
+                onClick={() => {
+                  onChange(tf)
+                  setIsOpen(false)
+                }}
+                className={`w-full px-3 py-2 text-xs text-left flex items-center hover:bg-white/10 transition-colors cursor-pointer ${
+                  value === tf ? 'bg-white/5 text-white' : 'text-white/70'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }

@@ -239,13 +239,19 @@ pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
         args.tokens_to_borrow,
     )?;
 
-    // Token-2022 transfer-fee aware: record the NET amount the shorter
-    // actually receives (and therefore owes). Mirrors the borrow path in
-    // handlers/lending.rs:233-254. Without this, position.tokens_borrowed
-    // would be the gross transfer amount while the shorter only ever held
-    // gross × (1 - fee_bps/10000), making full close arithmetically
-    // unreachable.
-    let net_tokens_borrowed = if args.tokens_to_borrow > 0 {
+    // Record the GROSS amount the lock sent, not the NET the shorter
+    // received. The borrower acquired `net = gross × (1 − fee_bps/10000)`
+    // tokens on this leg; they owe the full `gross` back on close (plus
+    // interest, all grossed up at close). This conserves the lock balance
+    // perfectly: lock loses `gross` on open, receives `gross + interest`
+    // net on close → net cycle = +interest, lock never leaks.
+    //
+    // Borrower must acquire the `gross − net` fee gap from elsewhere (the
+    // DEX) to close. That ~0.07% cost is the open-leg transfer fee they
+    // implicitly absorbed at open; making it explicit on close gives them
+    // the standard "you owe what you borrowed" semantic and decouples
+    // protocol token conservation from short hold duration.
+    let tokens_borrowed = if args.tokens_to_borrow > 0 {
         ctx.accounts.treasury_lock_token_account.reload()?;
         let lock_token_balance = ctx.accounts.treasury_lock_token_account.amount;
         check_short_caps(
@@ -255,9 +261,6 @@ pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
             args.tokens_to_borrow,
             ctx.accounts.short_position.tokens_borrowed,
         )?;
-
-        ctx.accounts.shorter_token_account.reload()?;
-        let before = ctx.accounts.shorter_token_account.amount;
 
         let mint_key = ctx.accounts.mint.key();
         let lock_bump = ctx.accounts.treasury_lock.bump;
@@ -277,13 +280,7 @@ pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
             args.tokens_to_borrow,
             TOKEN_DECIMALS,
         )?;
-
-        ctx.accounts.shorter_token_account.reload()?;
-        ctx.accounts
-            .shorter_token_account
-            .amount
-            .checked_sub(before)
-            .ok_or(TorchMarketError::MathOverflow)?
+        args.tokens_to_borrow
     } else {
         0
     };
@@ -303,7 +300,7 @@ pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
         short_config_bump,
         user_collateral,
         args.sol_collateral,
-        net_tokens_borrowed,
+        tokens_borrowed,
     )?;
 
     emit_cpi!(ShortOpened {
@@ -364,10 +361,10 @@ pub fn open_short_via_vault(
         args.tokens_to_borrow,
     )?;
 
-    // Token-2022 transfer-fee aware: record the NET amount the vault
-    // actually receives (and therefore the position owes). Mirrors the
-    // pattern in open_short above.
-    let net_tokens_borrowed = if args.tokens_to_borrow > 0 {
+    // Record GROSS (lock-sent), not NET (vault-received). See open_short
+    // comment for the rationale: this conserves lock balance independent
+    // of hold duration; the borrower covers the open-leg fee gap on close.
+    let tokens_borrowed = if args.tokens_to_borrow > 0 {
         ctx.accounts.treasury_lock_token_account.reload()?;
         let lock_token_balance = ctx.accounts.treasury_lock_token_account.amount;
         check_short_caps(
@@ -377,9 +374,6 @@ pub fn open_short_via_vault(
             args.tokens_to_borrow,
             ctx.accounts.short_position.tokens_borrowed,
         )?;
-
-        ctx.accounts.vault_token_account.reload()?;
-        let before = ctx.accounts.vault_token_account.amount;
 
         let mint_key = ctx.accounts.mint.key();
         let lock_bump = ctx.accounts.treasury_lock.bump;
@@ -399,13 +393,7 @@ pub fn open_short_via_vault(
             args.tokens_to_borrow,
             TOKEN_DECIMALS,
         )?;
-
-        ctx.accounts.vault_token_account.reload()?;
-        ctx.accounts
-            .vault_token_account
-            .amount
-            .checked_sub(before)
-            .ok_or(TorchMarketError::MathOverflow)?
+        args.tokens_to_borrow
     } else {
         0
     };
@@ -425,7 +413,7 @@ pub fn open_short_via_vault(
         short_config_bump,
         user_collateral,
         args.sol_collateral,
-        net_tokens_borrowed,
+        tokens_borrowed,
     )?;
 
     emit_cpi!(ShortOpened {

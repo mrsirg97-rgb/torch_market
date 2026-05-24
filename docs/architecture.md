@@ -122,7 +122,7 @@ programs/torch_market/src/
 ├── migration.rs         # Migration handler implementation (DeepPool CPI flow)
 ├── pool_validation.rs   # DeepPool PDA derivation + reserve reading + depth-band LTV helpers
 ├── token_2022_utils.rs  # Token-2022 transfer-fee + metadata extension helpers
-└── kani_proofs.rs       # 72 formal verification harnesses (cfg(kani))
+└── kani_proofs.rs       # 84 formal verification harnesses (cfg(kani))
 ```
 
 ---
@@ -541,14 +541,50 @@ fn get_depth_max_ltv_bps(pool_sol: u64) -> u16 {
 
 Pool depth IS the manipulation-resistance signal. Deeper pools = harder to move price = higher leverage permitted. No oracle, no keeper, no stored baseline.
 
-### Per-user borrow cap
+### Per-user borrow cap (longs)
 
-`max_user_borrow = lendable_pool * (user_collateral / divisor) * 23`
+```rust
+formula_cap   = max_lendable * (user_collateral / TOTAL_SUPPLY) * 23
+absolute_cap  = max_lendable * MAX_USER_BORROW_SHARE_BPS / 10_000   // 20%
+max_user_borrow = min(formula_cap, absolute_cap)
+```
 
-- Long divisor: `TOTAL_SUPPLY` (collateral is tokens, fixed denominator)
-- Short divisor: `treasury.sol_balance` (collateral is SOL, dynamic denominator)
+The formula cap scales with the user's share of total supply. The absolute cap clamps any single borrower at 20% of lendable SOL regardless of collateral size — without it, a user with > ~4.35% of supply (`TOTAL_SUPPLY / 23`) as collateral could take the entire lendable amount, defeating the per-user cap. Together they guarantee at least five simultaneous concentrated borrowers can be served. See [risk.md](./risk.md) §3.
 
-The `c` cancels — the cap-implied LTV depends only on pool ratio and treasury size, not individual position size. See [risk.md](./risk.md) §3.
+### Per-user short cap
+
+Flat `MAX_WALLET_TOKENS = 2% of TOTAL_SUPPLY` — the same anti-whale constant the bonding curve uses on buys. Unified policy: "no wallet, by any means (buying / borrowing / shorting), can hold or short more than 2% of supply." Decoupled from treasury size; the global short utilization cap (80% of `treasury_lock_token_balance`) bounds aggregate exposure separately.
+
+### Lending unlock gate
+
+```rust
+available_sol = treasury.sol_balance − treasury.short_collateral_reserved
+require!(available_sol >= MIN_TREASURY_SOL_FOR_LENDING)
+```
+
+The protocol's *earned* SOL float must clear the threshold before long borrows are permitted. Short collateral is escrowed user funds, not protocol-earned, so it is explicitly excluded. The threshold is build-feature gated so test/dev environments work without organic activity:
+
+| Build feature | `MIN_TREASURY_SOL_FOR_LENDING` |
+|---|---|
+| `simnet`  | 0 SOL (unlocked from launch) |
+| `devnet`  | 1 SOL (light e2e activity) |
+| (default — mainnet) | 100 SOL |
+
+`simnet` + `devnet` together is a `compile_error!`. The gate is volume-driven, not price-driven: it grows from buy fees + 4× transfer fees per short cycle + interest, not from oracle-pumpable signals. The short side has no equivalent gate because shorts borrow from the static 300M `TreasuryLock`, not from SOL treasury. See [docs/lending-unlock.md](./lending-unlock.md).
+
+### Token-2022 lock conservation
+
+The 300M `TreasuryLock` is preserved across short cycles by recording **gross** as the debt principal (not net received), and applying gross-up on close + liquidate so the lock always receives the full debt back.
+
+```rust
+// Open: lock sends gross, borrower receives net = gross − fee_open.
+position.tokens_borrowed = args.tokens_to_borrow;  // gross
+
+// Close: borrower pays gross_up(gross + interest); lock receives gross + interest.
+gross_close = ceil((tokens_borrowed + interest) × 10_000 / (10_000 − TRANSFER_FEE_BPS))
+```
+
+Per-cycle lock change: `+interest`, regardless of hold duration. The borrower funds the open-leg fee gap at close time (acquiring `gross − net ≈ 0.07%` extra tokens from elsewhere), making round-trip transfer-fee cost (~0.14%) visible to the borrower rather than absorbed by the lock. Kani harnesses `verify_short_open_records_gross_amount` + `verify_short_full_close_lock_conservation` + `verify_gross_up_preserves_net_delivery` prove the invariant.
 
 ### Interest accrual
 
@@ -618,15 +654,15 @@ Ratio-gated: only sells when `(pool_sol/pool_tokens) >= 1.2 * baseline_ratio`. S
 | Sign swaps as `user` from PDAs (`torch_vault`, `treasury`) via `invoke_signed` | Verifies `sol_source: Signer` constraint |
 | Burn 100% of LP at migration → pool PDA's own LP ATA → permanently locked | Mints LP per `create_pool`; doesn't enforce burn |
 
-DeepPool has its own audit and 16 separate Kani proofs covering swap math (K invariant, fee conservation, LP proportionality). Total verification across composed system: **88 proof harnesses** (72 torch + 16 deep_pool).
+DeepPool has its own audit and 16 separate Kani proofs covering swap math (K invariant, fee conservation, LP proportionality). Total verification across composed system: **100 proof harnesses** (84 torch + 16 deep_pool).
 
 ---
 
 ## Verification Surface
 
-- **72 Kani proof harnesses** (`kani_proofs.rs`, gated by `cfg(kani)`). Cover all fee calculations, bonding curve pricing, lending math, short math, depth-band boundaries, migration arithmetic, interest accrual state transitions, treasury ratio gating, DeepPool CPI accounting. Math harnesses import directly from `math.rs` — every property is proven against the exact code that runs on-chain, not a replica.
-- **33 proptest properties × 5,000 cases** (`tests/math_proptests.rs`). Random-input sweep across the full u64 space; complements Kani's bounded model checking.
-- **100 litesvm integration tests** (`programs/torch_market/tests/litesvm/`). In-process BPF execution against the real torch_market and deep_pool `.so` binaries; ~6s for the full suite. See [litesvm.md](./litesvm.md).
+- **84 Kani proof harnesses** (`kani_proofs.rs`, gated by `cfg(kani)`). Cover all fee calculations, bonding curve pricing, lending math, short math, depth-band boundaries, migration arithmetic, interest accrual state transitions, treasury ratio gating, DeepPool CPI accounting, Token-2022 gross-up correctness, and the available-SOL lending-gate invariant. Math harnesses import directly from `math.rs` — every property is proven against the exact code that runs on-chain, not a replica.
+- **42 proptest properties × 5,000 cases** (`tests/math_proptests.rs`). Random-input sweep across the full u64 space; complements Kani's bounded model checking.
+- **105 litesvm integration tests** (`programs/torch_market/tests/litesvm/`). In-process BPF execution against the real torch_market and deep_pool `.so` binaries; ~7s for the full suite. See [litesvm.md](./litesvm.md).
 - **SDK e2e tests** (`packages/sdk/tests/test_e2e.ts`, `test_devnet_e2e.ts`). Run against Surfpool mainnet fork or devnet for SDK roundtrip and mainnet-state coverage.
 - **Independent audit** (Claude Opus 4.7, see [audit.md](./audit.md)): 0 critical / 0 high / 0 medium / 0 low findings. 24 exploit classes covered in the adversarial redhat pass.
 
@@ -654,7 +690,8 @@ Honest about what V20 does not do:
 | V11 | Margin risk guards (depth-adaptive LTV, min pool liquidity floor); short selling |
 | **V20.0.0** | **Raydium → DeepPool migration.** Removed all WSOL handling, byte-level Raydium pool parsing, vote vault. New Kani proofs (69, 72, 73) for DeepPool CPI accounting. |
 | **V20 torch_next** | TorchVault + TorchVaultSol split for DeepPool v3.1 compatibility. BondingCurve shrink (243 bytes/curve). Dead-constraint cleanup. New program ID. 7 additional redhat exploit classes (#18-24, all mitigated). |
-| V20 (interest accrual fix, current branch) | `apply_interest_accrual` post-condition strengthened: `last_update_slot` advances on every call including zero-debt. Prevents phantom interest on re-borrowed positions. +2 Kani harnesses (71-72) + 2 proptest properties. |
+| V20 (interest accrual fix) | `apply_interest_accrual` post-condition strengthened: `last_update_slot` advances on every call including zero-debt. Prevents phantom interest on re-borrowed positions. +2 Kani harnesses + 2 proptest properties. |
+| **V20 (current, deep_pool integration)** | (1) Lending unlock gate (`MIN_TREASURY_SOL_FOR_LENDING`) keyed on AVAILABLE SOL (`sol_balance − short_collateral_reserved`), not gross — short collateral cannot cosmetically unlock the gate (V20C-1 fix). (2) Absolute per-user borrow ceiling at 20% of lendable (`MAX_USER_BORROW_SHARE_BPS = 2000`) clamps the formula cap. (3) Per-user short cap unified to flat `MAX_WALLET_TOKENS` (2% supply), matching the bonding-curve anti-whale rule. (4) Token-2022 gross-up on every short close + liquidate so the 300M `TreasuryLock` never bleeds across cycles. (5) New error `LendingNotYetUnlocked`. +12 Kani harnesses (now 84) + 9 proptest properties (now 42). |
 
 ---
 
@@ -663,9 +700,10 @@ Honest about what V20 does not do:
 - [whitepaper.md](./whitepaper.md) — protocol intent, parameters, economic design
 - [risk.md](./risk.md) — formal analysis of the depth-anchored risk model
 - [deeppool.md](./deeppool.md) — DeepPool integration detail
-- [verification.md](./verification.md) — Kani harness catalog (all 72)
-- [properties.md](./properties.md) — proptest property catalog (all 33)
-- [audit.md](./audit.md) — V20.0.0 internal security audit + redhat findings
+- [lending-unlock.md](./lending-unlock.md) — treasury-gated lending unlock design
+- [verification.md](./verification.md) — Kani harness catalog (all 84)
+- [properties.md](./properties.md) — proptest property catalog (all 42)
+- [audit.md](./audit.md) — V20-current internal security audit + redhat findings
 - [sdk.md](./sdk.md) — TypeScript SDK reference
 
 ---

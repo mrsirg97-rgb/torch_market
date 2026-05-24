@@ -586,10 +586,16 @@ export interface LendingInfo {
   max_user_borrow_share_bps: number
   /** Treasury SOL gate (lamports) — lending refuses borrows below this. */
   lending_unlock_threshold_lamports: number
-  /** True when treasury.sol_balance >= the gate. */
+  /** True when treasury available SOL (sol_balance − short_collateral_reserved)
+   *  is ≥ the gate. Short collateral is escrowed user funds, not protocol
+   *  float, so it is excluded from the gate. */
   lending_unlocked: boolean
-  /** Current treasury sol_balance in lamports — useful for UI progress. */
+  /** Gross treasury sol_balance in lamports (includes short collateral). */
   treasury_sol_lamports: number
+  /** Protocol-earned float: sol_balance − short_collateral_reserved. This is
+   *  the figure the on-chain gate (and the UI progress bar) compares against
+   *  `lending_unlock_threshold_lamports`. */
+  treasury_sol_available_lamports: number
   total_sol_lent: number | null
   active_loans: number | null
   treasury_sol_available: number

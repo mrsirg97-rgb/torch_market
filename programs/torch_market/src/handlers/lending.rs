@@ -69,16 +69,6 @@ fn check_borrow_caps(
     loan_borrowed_before: u64,
     user_collateral: u64,
 ) -> Result<()> {
-    // Treasury-SOL gate: lending unlocks only once the protocol has
-    // accumulated enough activity-driven fees to make borrows meaningful.
-    // `sol_balance` is principal accounting (not the live PDA balance) —
-    // it doesn't fluctuate with normal borrow/repay, so once the threshold
-    // is crossed the gate stays open. See docs/lending-unlock.md.
-    require!(
-        treasury.sol_balance >= MIN_TREASURY_SOL_FOR_LENDING,
-        TorchMarketError::LendingNotYetUnlocked,
-    );
-
     let new_total_lent = treasury
         .total_sol_lent
         .checked_add(sol_to_borrow)
@@ -88,10 +78,26 @@ fn check_borrow_caps(
     } else {
         0
     };
+    // Available SOL: protocol-earned float, excluding short collateral parked
+    // in escrow. Used both for the unlock gate and the utilization cap so the
+    // two checks share one definition of "actually-lendable SOL."
     let available_sol = treasury
         .sol_balance
         .checked_sub(short_reserved)
         .ok_or(TorchMarketError::MathOverflow)?;
+
+    // Treasury-SOL gate: lending unlocks only once the protocol has
+    // accumulated enough activity-driven fees to make borrows meaningful.
+    // Gates on AVAILABLE SOL (sol_balance − short_collateral_reserved), not
+    // gross balance — short collateral is the shorter's own SOL parked in
+    // escrow, not protocol-earned float. Without this exclusion, a single
+    // 100 SOL short would cosmetically "unlock" lending against an earned
+    // balance below the threshold.
+    require!(
+        available_sol >= MIN_TREASURY_SOL_FOR_LENDING,
+        TorchMarketError::LendingNotYetUnlocked,
+    );
+
     let max_lendable = math::apply_bps(available_sol, treasury.lending_utilization_cap_bps)
         .ok_or(TorchMarketError::MathOverflow)?;
     require!(

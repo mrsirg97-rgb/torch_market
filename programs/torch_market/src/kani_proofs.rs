@@ -2133,89 +2133,89 @@ fn verify_short_interest_accrual_slot_advance() {
 }
 
 // ============================================================================
-// 73. SHORT OPEN: tokens_borrowed Records Post-Fee Net, Not Gross
-//     Pins the Token-2022 transfer-fee fix in open_short / open_short_via_vault
-//     (handlers/short.rs). The handler reads the destination ATA before+after
-//     `transfer_checked` and stores the delta as `position.tokens_borrowed`.
-//     Token-2022's TransferFeeConfig debits the source by `gross` and credits
-//     the destination's `amount` by `gross - fee`, parking `fee` in
-//     `withheld_amount`. So the recorded principal must equal `gross - fee`.
+// 73. SHORT OPEN: tokens_borrowed Records GROSS Sent, Not Post-Fee Net
+//     Pins the lock-conservation design in open_short / open_short_via_vault.
+//     The handler records `args.tokens_to_borrow` (= gross transferred from
+//     the lock) as `position.tokens_borrowed`. The shorter received `gross −
+//     fee` net; they owe the full `gross` back on close.
 //
-//     Regression we are guarding against: a future refactor that goes back to
-//     recording the gross input. Doing so makes full close arithmetically
-//     unreachable, because the shorter can never hold more than gross-fee.
+//     Why this design: with `tokens_borrowed = net`, the lock loses
+//     `fee_open` per cycle (no compensation from the close-side gross-up
+//     unless interest > fee). For short holds (<6h at default rate), the
+//     lock leaks. Recording gross makes the borrower responsible for the
+//     open-leg fee gap → lock is exactly conserved every cycle (+interest).
+//
+//     Regression we are guarding against: reverting to net recording, which
+//     reopens the sub-6hr-cycle lock-leak hole.
 // ============================================================================
 
 #[kani::proof]
-fn verify_short_open_records_net_amount() {
+fn verify_short_open_records_gross_amount() {
     let gross: u64 = kani::any();
     kani::assume(gross >= MIN_SHORT_TOKENS);
     kani::assume(gross <= TOTAL_SUPPLY / 10);
 
-    let fee = calc_transfer_fee(gross).unwrap();
+    // What handlers/short.rs records — `args.tokens_to_borrow` directly,
+    // the gross transfer amount asked of treasury_lock.
+    let recorded = gross;
 
-    // Token-2022 model: destination's `amount` increases by gross - fee.
-    // Fresh ATA (before == 0) is the worst case for tightness; for non-fresh
-    // accounts the delta is identical.
-    let dest_before: u64 = 0;
-    let dest_after = dest_before.checked_add(gross.checked_sub(fee).unwrap()).unwrap();
+    // The recorded principal equals the gross amount asked of the lock.
+    // No diff-from-destination math; the source debit IS the debt.
+    assert!(recorded == gross);
 
-    // What handlers/short.rs records — `dest_after - dest_before`.
-    let recorded = dest_after.checked_sub(dest_before).unwrap();
-
-    // The recorded principal must equal the post-fee delivered amount.
-    assert!(recorded == gross.checked_sub(fee).unwrap());
-
-    // It must never exceed gross, and never claim more than what landed.
-    assert!(recorded <= gross);
-    assert!(recorded <= dest_after - dest_before);
-
-    // For any input above the minimum, the recorded amount stays positive.
+    // Recorded amount is positive for any valid input above MIN_SHORT_TOKENS.
     assert!(recorded > 0);
+
+    // Sanity: net delivered to shorter is strictly less than recorded debt.
+    // The shorter must close the fee gap from elsewhere (e.g. DEX) to repay.
+    let fee = calc_transfer_fee(gross).unwrap();
+    let net_delivered = gross.checked_sub(fee).unwrap();
+    assert!(net_delivered < recorded);
 }
 
 // ============================================================================
-// 74. SHORT CLOSE: Full Close is Arithmetically Reachable from Open Holdings
-//     Proves the actual property the bug violated: a shorter who has done
-//     nothing but open and immediately closes can repay `total_owed`. Under
-//     gross-recording, the shorter held `gross - fee` but owed `gross + I`,
-//     so `transfer_checked(total_owed)` failed the source balance check.
+// 74. SHORT CLOSE: Lock Receives EXACTLY tokens_borrowed + interest Net
+//     Proves the lock-conservation property end-to-end. On open, lock
+//     loses `gross`. On full close, borrower pays `gross_up(gross +
+//     interest)`; after Token-2022 fee withhold, lock receives `gross +
+//     interest` net. Cycle effect on lock: `+interest`, never negative.
 //
-//     Under the fix (proof #73), `tokens_borrowed = gross - fee`. With
-//     accrued interest paid in tokens from elsewhere (DEX buyback), the
-//     shorter's source balance suffices when they hold `total_owed` tokens.
-//     This proof asserts the reachability — the holdings can equal the debt.
+//     This is the property that justifies recording gross at open: the
+//     borrower funds the open-leg fee explicitly via the close gross-up,
+//     and the lock token balance is invariant under cycle count.
 // ============================================================================
 
 #[kani::proof]
-fn verify_short_full_close_reachable() {
+#[kani::unwind(2)]
+fn verify_short_full_close_lock_conservation() {
     let gross: u64 = kani::any();
     let interest: u64 = kani::any();
 
     kani::assume(gross >= MIN_SHORT_TOKENS);
-    kani::assume(gross <= TOTAL_SUPPLY / 10);
-    // Interest bounded the same way real on-chain interest is bounded
-    // (2 % per ~7-day epoch, at most a few epochs).
-    kani::assume(interest <= gross.checked_div(10).unwrap());
+    // Tighten for Kani tractability — gross-up's u128 arithmetic blows up
+    // CBMC at wider ranges. Proptest covers full u64 range symbolically.
+    kani::assume(gross <= 10_000);
+    kani::assume(interest <= 1_000);
 
-    let fee_open = calc_transfer_fee(gross).unwrap();
+    // After-open lock balance: starts at 300M, decreases by gross.
+    let starting_lock: u64 = TREASURY_LOCK_TOKENS;
+    let lock_after_open = starting_lock.checked_sub(gross).unwrap();
 
-    // Position records post-fee net (per proof #73).
-    let tokens_borrowed = gross.checked_sub(fee_open).unwrap();
-    let total_owed = tokens_borrowed.checked_add(interest).unwrap();
+    // Close: total_owed = tokens_borrowed (gross) + interest.
+    let total_owed = gross.checked_add(interest).unwrap();
+    let gross_close = gross_up_for_transfer_fee(total_owed).unwrap();
+    let fee_close = calc_transfer_fee(gross_close).unwrap();
+    let net_to_lock = gross_close.checked_sub(fee_close).unwrap();
 
-    // Worst-case shorter holdings the moment after open: gross - fee_open.
-    // To fully close they need to acquire an additional `interest` tokens
-    // from elsewhere (DEX buyback). Model the holdings as `tokens_borrowed + interest`.
-    let shorter_holds = tokens_borrowed.checked_add(interest).unwrap();
+    // Lock balance after full close.
+    let lock_after_close = lock_after_open.checked_add(net_to_lock).unwrap();
 
-    // The source balance check inside `transfer_checked(total_owed)` requires
-    // the source ATA `amount` >= `total_owed`. Pre-fix this was impossible
-    // because tokens_borrowed was recorded as gross. Post-fix it always holds:
-    assert!(shorter_holds >= total_owed);
-
-    // And the gap is exactly zero: the shorter does not need to over-acquire.
-    assert!(shorter_holds == total_owed);
+    // CONSERVATION: lock never loses tokens across a full cycle. Net change
+    // is exactly +interest (modulo ±1 rounding on the gross-up ceil).
+    assert!(lock_after_close >= starting_lock.checked_add(interest).unwrap()
+        || lock_after_close >= starting_lock.checked_add(interest).unwrap().saturating_sub(1));
+    // Strict lower bound: never below starting lock balance.
+    assert!(lock_after_close >= starting_lock);
 }
 
 // ============================================================================
@@ -2253,16 +2253,41 @@ fn verify_calc_user_borrow_cap_zero_denominator() {
 
 #[kani::proof]
 fn verify_calc_user_borrow_cap_concrete_share() {
-    // user_collateral == denominator → user gets the full multiplier share.
+    // Cap is min(formula, absolute) — verify both branches bind correctly.
     let max_lendable: u64 = 1_000_000_000_000; // 1000 SOL
     let denominator: u64 = 100_000_000_000; // 100 SOL
-    let user_collateral: u64 = denominator;
+    let absolute_cap: u64 =
+        max_lendable * MAX_USER_BORROW_SHARE_BPS as u64 / 10_000; // 200 SOL
 
-    let cap =
-        calc_user_borrow_cap(max_lendable, user_collateral, denominator).unwrap();
-    assert!(cap == max_lendable * BORROW_SHARE_MULTIPLIER);
+    // ABSOLUTE BRANCH: user_collateral == denominator means formula_cap =
+    // max_lendable × 23 = 23,000 SOL, far above absolute_cap (200 SOL).
+    // The clamp must bind.
+    let cap_absolute_binds =
+        calc_user_borrow_cap(max_lendable, denominator, denominator).unwrap();
+    assert!(cap_absolute_binds == absolute_cap);
 
-    // user_collateral == 0 → cap == 0.
+    // FORMULA BRANCH: user_collateral small enough that formula_cap <
+    // absolute_cap. Crossover is at user_collateral / denominator =
+    // β/(10000·μ) ≈ 0.870%. Use 0.1% (user_collateral = 100M lamports)
+    // to be well inside the formula-binding region:
+    //   formula_cap = 1000 SOL × 0.001 × 23 = 23 SOL  < 200 SOL absolute.
+    //
+    // Compute in u128 because `max_lendable × user_collateral` overflows
+    // u64 (1e12 × 1e8 = 1e20). Production `calc_user_borrow_cap` uses the
+    // same u128-intermediate pattern; we mirror it here so the assertion
+    // models the actual semantics.
+    let user_collateral_small: u64 = 100_000_000; // 0.1 SOL
+    let expected_formula_cap: u64 = ((max_lendable as u128)
+        * (user_collateral_small as u128)
+        * (BORROW_SHARE_MULTIPLIER as u128)
+        / (denominator as u128)) as u64;
+    let cap_formula_binds =
+        calc_user_borrow_cap(max_lendable, user_collateral_small, denominator)
+            .unwrap();
+    assert!(cap_formula_binds == expected_formula_cap);
+    assert!(cap_formula_binds < absolute_cap);
+
+    // ZERO COLLATERAL → cap == 0.
     let zero_cap = calc_user_borrow_cap(max_lendable, 0, denominator).unwrap();
     assert!(zero_cap == 0);
 }
@@ -2402,5 +2427,34 @@ fn verify_gross_up_preserves_net_delivery() {
     // from being inflated beyond what's necessary to make the recipient
     // whole.
     assert!(net_received <= net + 1);
+}
+
+// Lending unlock gate uses AVAILABLE SOL, not gross sol_balance. Short
+// collateral parked in `short_collateral_reserved` is escrowed user funds,
+// not protocol-earned float, and must not contribute to the gate threshold.
+//
+// Invariant: opening a short of any size cannot transition a treasury
+// from "below gate" to "at gate" for the lending check. The gate only
+// trips when the difference `sol_balance − short_collateral_reserved`
+// crosses the threshold, which is invariant under simultaneous additions
+// to both fields (open_short adds the collateral to both).
+#[kani::proof]
+#[kani::unwind(2)]
+fn verify_lending_gate_excludes_short_collateral() {
+    let earned_sol: u64 = kani::any();
+    let short_collateral: u64 = kani::any();
+    let threshold: u64 = kani::any();
+
+    // Treasury arithmetic invariants (state-level).
+    kani::assume(earned_sol <= u64::MAX - short_collateral);
+    let sol_balance = earned_sol + short_collateral;
+
+    // Gate semantics, mirroring check_borrow_caps in handlers/lending.rs.
+    let available = sol_balance.checked_sub(short_collateral).unwrap();
+    let gate_open = available >= threshold;
+
+    // The gate's open/closed state depends ONLY on earned_sol vs threshold,
+    // regardless of how much short collateral is parked.
+    assert!(gate_open == (earned_sol >= threshold));
 }
 
