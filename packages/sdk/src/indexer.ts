@@ -111,6 +111,28 @@ export interface IndexerShortRow {
   updated_at: string
 }
 
+/** Post-migration DEX swap row (deep_pool `swaps` table). One row per
+ *  `SwapExecuted` event emitted by the deep_pool program. The indexer
+ *  resolves pool_id → token_mint via the cached pools cache. */
+export interface IndexerSwapRow {
+  swap_id: number
+  pool_id: number
+  user_pk: string
+  sol_source: string
+  is_buy: boolean
+  amount_in_gross: number
+  amount_in_net: number
+  amount_out_gross: number
+  amount_out_net: number
+  fee: number
+  sol_reserve_after: number
+  token_reserve_after: number
+  slot: number
+  signature: string
+  inner_ix_idx: number
+  created_at: string
+}
+
 export interface IndexerCandle {
   bucket_start: string
   open: number | null
@@ -158,6 +180,17 @@ export interface CandlesQuery {
   interval: '1s' | '15s' | '30s' | '1m' | '5m' | '15m' | '1h' | '4h'
   since?: Date
   before?: Date
+}
+
+export interface SwapsQuery {
+  indexer: string
+  /** Filter to a single token's pool. The indexer resolves pool_id from this. */
+  tokenMint?: string
+  poolId?: number
+  user?: string
+  since?: Date
+  before?: Date
+  limit?: number
 }
 
 // ============================================================================
@@ -315,6 +348,28 @@ export async function getCandles(query: CandlesQuery): Promise<IndexerCandle[]> 
   return indexerFetch<IndexerCandle[]>(
     query.indexer,
     `/api/candles?${params.toString()}`,
+  )
+}
+
+/**
+ * Post-migration DEX swap rows (deep_pool `swaps` table). Use this alongside
+ * `getTrades` (which queries the bonding-curve `trades` table) to assemble
+ * the full lifetime trade history for a mint.
+ *
+ * Indexer-only.
+ */
+export async function getSwaps(query: SwapsQuery): Promise<IndexerSwapRow[]> {
+  const params = new URLSearchParams()
+  if (query.tokenMint) params.set('token_mint', query.tokenMint)
+  if (query.poolId != null) params.set('pool_id', String(query.poolId))
+  if (query.user) params.set('user', query.user)
+  if (query.since) params.set('since', query.since.toISOString())
+  if (query.before) params.set('before', query.before.toISOString())
+  if (query.limit != null) params.set('limit', String(query.limit))
+  const qs = params.toString()
+  return indexerFetch<IndexerSwapRow[]>(
+    query.indexer,
+    qs ? `/api/swaps?${qs}` : '/api/swaps',
   )
 }
 

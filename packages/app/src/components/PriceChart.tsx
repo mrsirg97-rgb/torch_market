@@ -151,7 +151,7 @@ export function PriceChart({ mint, priceInSol, solRaised, solPriceUsd, priceHist
   const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null)
   const priceLineRef = useRef<ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']> | null>(null)
-  const [selectedInterval, setSelectedInterval] = useState<TimeInterval>('5m')
+  const [selectedInterval, setSelectedInterval] = useState<TimeInterval>('30s')
   const [hoveredCandle, setHoveredCandle] = useState<{
     open: number; high: number; low: number; close: number
   } | null>(null)
@@ -310,9 +310,10 @@ export function PriceChart({ mint, priceInSol, solRaised, solPriceUsd, priceHist
         // `barSpacing` keeps every candle the same pixel width regardless
         // of how many candles are loaded. `rightOffset` reserves blank
         // space on the right so the newest candle isn't flush against the
-        // edge.
-        barSpacing: 6,
-        rightOffset: 12,
+        // edge. Keep `BAR_SPACING_PX` below in sync — the centering math
+        // uses it to compute whitespace padding.
+        barSpacing: 18,
+        rightOffset: 4,
       },
       handleScale: {
         axisPressedMouseMove: true,
@@ -400,7 +401,14 @@ export function PriceChart({ mint, priceInSol, solRaised, solPriceUsd, priceHist
     // array we hand it.
     const timeScale = chartRef.current.timeScale()
     const chartWidthPx = timeScale.width()
-    const BAR_SPACING_PX = 6
+    // Must match `barSpacing` set on timeScale options above.
+    const BAR_SPACING_PX = 18
+    // `rightOffset` shifts the right edge of the visible window N bars
+    // PAST the last data point. We subtract it from the right whitespace
+    // padding so the candles stay visually centered — without this, the
+    // rightOffset stacks on top of the centering math and pushes the
+    // data left.
+    const RIGHT_OFFSET_BARS = 4
     const barsThatFit = Math.floor(chartWidthPx / BAR_SPACING_PX)
     const dataLen = candleData.length
 
@@ -408,7 +416,7 @@ export function PriceChart({ mint, priceInSol, solRaised, solPriceUsd, priceHist
     let paddedVolumes: (HistogramData<Time> | WhitespaceData<Time>)[] = volumeData
 
     if (dataLen > 0 && dataLen < barsThatFit) {
-      const totalPad = barsThatFit - dataLen
+      const totalPad = Math.max(0, barsThatFit - dataLen - RIGHT_OFFSET_BARS)
       const leftPad = Math.floor(totalPad / 2)
       const rightPad = totalPad - leftPad
       const intervalSec = getIntervalSeconds(selectedInterval)
@@ -465,7 +473,9 @@ export function PriceChart({ mint, priceInSol, solRaised, solPriceUsd, priceHist
           </div>
         )}
         {(() => {
-          // Show hovered candle OHLC, or fall back to latest candle
+          // Show hovered candle OHLC, or fall back to latest candle.
+          // The current close acts as the live-price readout — no separate
+          // price tooltip; the "C" value covers it.
           const candle = hoveredCandle ?? (currentPrice
             ? { open: currentPrice.price, high: currentPrice.price, low: currentPrice.price, close: currentPrice.price }
             : null)
@@ -473,7 +483,7 @@ export function PriceChart({ mint, priceInSol, solRaised, solPriceUsd, priceHist
           const isUp = candle.close >= candle.open
           const fmt = (v: number) => solPriceUsd ? `$${v.toFixed(8)}` : v.toFixed(8)
           return (
-            <div className="absolute left-2 top-2 flex items-center gap-3 text-[11px] font-mono pointer-events-none">
+            <div className="absolute left-2 top-2 flex flex-col sm:flex-row sm:items-center gap-x-3 text-[10px] sm:text-[11px] font-mono pointer-events-none">
               <span className="text-white/40">O <span className={isUp ? 'text-[#22c55e]' : 'text-[#ef4444]'}>{fmt(candle.open)}</span></span>
               <span className="text-white/40">H <span className="text-white/70">{fmt(candle.high)}</span></span>
               <span className="text-white/40">L <span className="text-white/70">{fmt(candle.low)}</span></span>
@@ -481,18 +491,6 @@ export function PriceChart({ mint, priceInSol, solRaised, solPriceUsd, priceHist
             </div>
           )
         })()}
-        {currentPrice && (
-          <div
-            className={`absolute right-2 top-2 px-2 py-1 text-xs font-mono rounded ${
-              (hoveredCandle ? hoveredCandle.close >= hoveredCandle.open : currentPrice.isUp)
-                ? 'bg-[#22c55e]' : 'bg-[#ef4444]'
-            } text-white transition-all`}
-          >
-            {solPriceUsd
-              ? `$${(hoveredCandle?.close ?? currentPrice.price).toFixed(8)}`
-              : `${(hoveredCandle?.close ?? currentPrice.price).toFixed(8)} SOL`}
-          </div>
-        )}
       </div>
     </div>
   )

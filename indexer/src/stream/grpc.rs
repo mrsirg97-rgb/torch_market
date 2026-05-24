@@ -27,7 +27,7 @@ use yellowstone_grpc_proto::prelude::{
 };
 
 use crate::constants::MEMO_PROGRAM_ID;
-use crate::contracts::{AnyEvent, BlockBatch, DecodedEvent, TorchEvent};
+use crate::contracts::{AnyEvent, BlockBatch, DecodedEvent, DeepPoolEvent, TorchEvent};
 use crate::stream::decoder::{
     try_decode_deep_pool_event, try_decode_torch_event, DeepPoolDiscriminators, TorchDiscriminators,
 };
@@ -310,12 +310,20 @@ pub fn decode_block_transaction(
         }
     }
 
-    // Memo attribution: attach to the FIRST BondingCurveTrade in the tx.
-    // Memos without a torch trade are dropped per the gating policy.
+    // Memo attribution: attach to the FIRST trade-like event in the tx —
+    // either a BondingCurveTrade (pre-migration) or a deep_pool SwapExecuted
+    // (post-migration). Either qualifies the tx as a torch-token trade, so
+    // memos attached to either should be surfaced as messages. Memos without
+    // any trade context are dropped per the gating policy.
     if let Some(memo) = memo_text {
         let mut attached = false;
         for de in tx_events.iter_mut() {
-            if matches!(de.event, AnyEvent::Torch(TorchEvent::BondingCurveTrade(_))) {
+            let is_trade = matches!(
+                &de.event,
+                AnyEvent::Torch(TorchEvent::BondingCurveTrade(_))
+                    | AnyEvent::DeepPool(DeepPoolEvent::SwapExecuted(_))
+            );
+            if is_trade {
                 de.memo = Some(memo.clone());
                 attached = true;
                 break;
@@ -325,7 +333,7 @@ pub fn decode_block_transaction(
             debug!(
                 slot,
                 sig = %signature,
-                "memo present but no torch trade; dropping per gating policy"
+                "memo present but no trade event; dropping per gating policy"
             );
         }
     }

@@ -334,6 +334,7 @@ async fn write_deep_pool_event(
         warn!(slot = de.slot, sig = %de.signature, %pubkey, "unknown pool; skipping deep_pool event");
         return Ok(());
     };
+    let now = translate::ts(de);
     match ev {
         DeepPoolEvent::PoolCreated(_) => unreachable!("handled in phase 2"),
         DeepPoolEvent::SwapExecuted(s) => {
@@ -352,6 +353,33 @@ async fn write_deep_pool_event(
             )
             .await?;
             out.reserves.extend(inserted_reserves);
+
+            // Memo attribution for post-migration trades. The grpc decoder
+            // attaches memos to either BondingCurveTrade or SwapExecuted,
+            // so DEX trades carry messages too. Look up token_mint from the
+            // pool — direct SQL since pool_cache is pubkey-keyed and most
+            // swaps don't carry memos (cheap when it skips).
+            if let Some(memo_text) = &de.memo {
+                let mint: Option<String> =
+                    sqlx::query_scalar("SELECT token_mint FROM pools WHERE pool_id = $1")
+                        .bind(pool_id)
+                        .fetch_optional(&mut **tx)
+                        .await?;
+                if let Some(mint) = mint {
+                    let row = NewMessageRow {
+                        mint,
+                        sender: translate::b58(&s.user),
+                        memo_text: memo_text.clone(),
+                        action_kind: Some(if s.buy { "buy" } else { "sell" }.to_string()),
+                        slot: de.slot,
+                        signature: de.signature.clone(),
+                        inner_ix_idx: de.inner_ix_idx,
+                        created_at: now,
+                    };
+                    let inserted = message::set(tx, &[row]).await?;
+                    out.messages.extend(inserted);
+                }
+            }
         }
         DeepPoolEvent::LiquidityAdded(la) => {
             lp_supply_cache.insert(pool_id, la.lp_supply_after as i64);

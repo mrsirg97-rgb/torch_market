@@ -1,5 +1,5 @@
 import { Connection, PublicKey, ParsedTransactionWithMeta } from '@solana/web3.js'
-import { getBondingCurvePda, getDeepPoolAccounts } from 'torchsdk'
+import { getBondingCurvePda, getDeepPoolAccounts, getTrades, getSwaps } from 'torchsdk'
 import {
   LAMPORTS_PER_SOL,
   TOKEN_MULTIPLIER,
@@ -224,15 +224,87 @@ export async function fetchDeepPoolPriceHistory(
 }
 
 /**
+ * Map an indexer BondingCurveTrade row to the in-app PricePoint shape.
+ * Price is derived from virtual reserves *after* the trade — the post-state
+ * marginal price, same convention as the candle aggregation.
+ */
+function indexerTradeToPricePoint(r: {
+  created_at: string
+  is_buy: boolean
+  sol_in: number
+  sol_out: number
+  trader: string
+  virtual_sol_after: number
+  virtual_token_after: number
+}): PricePoint {
+  const timestamp = Math.floor(new Date(r.created_at).getTime() / 1000)
+  const volume = (r.sol_in + r.sol_out) / LAMPORTS_PER_SOL
+  const price =
+    r.virtual_token_after > 0
+      ? (r.virtual_sol_after / r.virtual_token_after) * TOKEN_MULTIPLIER / LAMPORTS_PER_SOL
+      : 0
+  return { timestamp, price, volume, isBuy: r.is_buy, trader: r.trader }
+}
+
+/** Map an indexer DEX SwapExecuted row to PricePoint. Post-trade marginal
+ *  price from `sol_reserve_after / token_reserve_after`. Volume is the
+ *  user-facing SOL leg of the trade: amount_in for buys, amount_out for sells. */
+function indexerSwapToPricePoint(r: {
+  created_at: string
+  is_buy: boolean
+  user_pk: string
+  amount_in_net: number
+  amount_out_net: number
+  sol_reserve_after: number
+  token_reserve_after: number
+}): PricePoint {
+  const timestamp = Math.floor(new Date(r.created_at).getTime() / 1000)
+  const volumeLamports = r.is_buy ? r.amount_in_net : r.amount_out_net
+  const price =
+    r.token_reserve_after > 0
+      ? (r.sol_reserve_after / r.token_reserve_after) * TOKEN_MULTIPLIER / LAMPORTS_PER_SOL
+      : 0
+  return {
+    timestamp,
+    price,
+    volume: volumeLamports / LAMPORTS_PER_SOL,
+    isBuy: r.is_buy,
+    trader: r.user_pk,
+  }
+}
+
+/**
  * Fetch combined price history: bonding curve trades + DeepPool trades.
  * Returns a unified PricePoint[] with bonding history first, then DeepPool.
+ *
+ * Indexer-first when `indexerUrl` is provided — single HTTP fetch per side
+ * vs. 200-signature RPC walks. Falls back to RPC scanning when no indexer
+ * is configured or the indexer call errors.
  */
 export async function fetchCombinedPriceHistory(
   connection: Connection,
   mintAddress: string,
   currentSolRaised: number,
   bondingTargetSol: number,
+  indexerUrl?: string,
 ): Promise<PricePoint[]> {
+  if (indexerUrl) {
+    try {
+      const [tradeRows, swapRows] = await Promise.all([
+        getTrades({ indexer: indexerUrl, mint: mintAddress, limit: 200 }),
+        getSwaps({ indexer: indexerUrl, tokenMint: mintAddress, limit: 200 }),
+      ])
+      // Indexer returns newest-first; the chart/trades-list consumers
+      // accept either order (chart sorts by time, trades view reverses).
+      // We chronologically sort so bonding precedes DEX naturally.
+      const bonding = tradeRows.map(indexerTradeToPricePoint)
+      const dex = swapRows.map(indexerSwapToPricePoint)
+      return [...bonding, ...dex].sort((a, b) => a.timestamp - b.timestamp)
+    } catch (err) {
+      if (isDev) console.error('Indexer trade fetch failed, falling back to RPC:', err)
+    }
+  }
+
   const mint = new PublicKey(mintAddress)
   const [bondingHistory, deepPoolHistory] = await Promise.all([
     fetchPriceHistory(connection, mintAddress, currentSolRaised, bondingTargetSol).catch((err) => {

@@ -13,6 +13,7 @@ import type { TokenDetail, BondingCurve } from 'torchsdk'
 import {
   getTreasuryState,
   getLendingInfo,
+  getMessages as sdkGetMessages,
   getTokenMetadata,
   getTreasuryLockPda,
   getDeepPoolAccounts,
@@ -33,7 +34,7 @@ import {
   TOKEN_2022_PROGRAM_ID,
 } from '@/lib/constants'
 import { useNetwork } from '@/lib/NetworkContext'
-import { fetchPriceHistory, fetchCombinedPriceHistory, type PricePoint } from '@/lib/trades'
+import { fetchCombinedPriceHistory, type PricePoint } from '@/lib/trades'
 
 const isDev = process.env.NODE_ENV === 'development'
 
@@ -154,7 +155,7 @@ export interface UseTokenResult {
 
 export function useToken(mintAddress: string): UseTokenResult {
   const { connection } = useConnection()
-  const { isSimnet, isDevnet, lendingGateLamports } = useNetwork()
+  const { isSimnet, isDevnet, lendingGateLamports, effectiveIndexerUrl } = useNetwork()
   const wallet = useWallet()
 
   // SDK data
@@ -499,10 +500,27 @@ export function useToken(mintAddress: string): UseTokenResult {
     }
   }, [connection, wallet.publicKey, mint, isSimnet])
 
-  // Fetch messages via server-side cached API
+  // Fetch messages — indexer-first when configured (SDK handles the
+  // indexer→RPC fallback internally), falls back to the server-side
+  // cached RPC walker route for no-indexer environments.
   const fetchMessages = useCallback(async () => {
     if (!isValidMint) return
     try {
+      if (effectiveIndexerUrl) {
+        const result = await sdkGetMessages(connection, mintAddress, 100, {
+          indexer: effectiveIndexerUrl,
+        })
+        setMessages(
+          result.messages.map((m) => ({
+            signature: m.signature,
+            sender: m.sender,
+            memo: m.memo,
+            timestamp: m.timestamp,
+          })),
+        )
+        return
+      }
+      // No indexer configured — use the server-side cached RPC route.
       const res = await fetch(`/api/v1/messages/${mintAddress}`)
       if (!res.ok) throw new Error('Failed to fetch messages')
       const data = await res.json()
@@ -510,7 +528,7 @@ export function useToken(mintAddress: string): UseTokenResult {
     } catch (err) {
       if (isDev) console.error('[Messages] Error fetching messages:', err)
     }
-  }, [mintAddress, isValidMint])
+  }, [connection, mintAddress, isValidMint, effectiveIndexerUrl])
 
   // Track if initial load is done
   const initialLoadDone = useRef(false)
@@ -630,21 +648,30 @@ export function useToken(mintAddress: string): UseTokenResult {
     }
   }, [])
 
-  // Fetch price history from real transactions once token detail is loaded
-  // Skip on devnet — public RPC rate limits make this impractical
-  // For migrated tokens: fetch both bonding curve + Raydium pool history
+  // Fetch price history once token detail is loaded.
+  //
+  // Devnet was previously hard-skipped because the RPC walker hits public
+  // rate limits hard. With the indexer-first path that constraint is gone:
+  // when an indexer URL is configured we get the full history in 2 HTTP
+  // calls (no RPC walk). Only skip devnet when there's literally no way to
+  // load history (no indexer + RPC unsafe).
   useEffect(() => {
-    if (!isValidMint || !tokenDetail || isDevnet) return
+    if (!isValidMint || !tokenDetail) return
+    if (isDevnet && !effectiveIndexerUrl) return
     let cancelled = false
 
     const isMigratedToken = tokenDetail.status === 'migrated'
 
     if (isMigratedToken) {
+      // fetchCombinedPriceHistory accepts an indexer URL — when present, it
+      // fetches bonding trades + DEX swaps in one HTTP roundtrip each
+      // instead of walking signatures via RPC.
       fetchCombinedPriceHistory(
         connection,
         mintAddress,
         tokenDetail.sol_raised,
         tokenDetail.sol_target,
+        effectiveIndexerUrl,
       )
         .then((points) => {
           if (!cancelled) setPriceHistory(points)
@@ -653,7 +680,16 @@ export function useToken(mintAddress: string): UseTokenResult {
           // Silently fail — chart shows loading state
         })
     } else {
-      fetchPriceHistory(connection, mintAddress, tokenDetail.sol_raised, tokenDetail.sol_target)
+      // Pre-migration: only bonding trades exist. fetchCombinedPriceHistory
+      // covers this case via the indexer (DEX side returns empty), so reuse
+      // it. RPC fallback inside handles no-indexer environments.
+      fetchCombinedPriceHistory(
+        connection,
+        mintAddress,
+        tokenDetail.sol_raised,
+        tokenDetail.sol_target,
+        effectiveIndexerUrl,
+      )
         .then((points) => {
           if (!cancelled) setPriceHistory(points)
         })
@@ -665,7 +701,7 @@ export function useToken(mintAddress: string): UseTokenResult {
     return () => {
       cancelled = true
     }
-  }, [isValidMint, connection, mintAddress, tokenDetail, isDevnet])
+  }, [isValidMint, connection, mintAddress, tokenDetail, isDevnet, effectiveIndexerUrl])
 
   // Fetch and refresh messages (deferred to avoid competing with initial data load)
   useEffect(() => {
