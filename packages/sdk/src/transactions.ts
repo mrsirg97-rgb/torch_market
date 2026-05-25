@@ -1888,7 +1888,6 @@ const buildVaultSwapTransaction = async (
       deepPoolTokenVault: deepPool.tokenVault,
       deepPoolEventAuthority: deepPool.eventAuthority,
       token2022Program: TOKEN_2022_PROGRAM_ID,
-      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
     })
     .instruction()
@@ -2116,7 +2115,6 @@ export const buildSwapFeesToSolTransaction = async (
         deepPoolTokenVault: deepPool.tokenVault,
         deepPoolEventAuthority: deepPool.eventAuthority,
         token2022Program: TOKEN_2022_PROGRAM_ID,
-        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
       .instruction()

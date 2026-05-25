@@ -123,6 +123,9 @@ pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) ->
 
     // sol_source = treasury (sell only): deep_pool credits lamports via direct
     // manipulation, which doesn't require sol_source to be system-owned.
+    // deep_pool v5.0.0: associated_token_program dropped from Swap context
+    // (treasury_token_account is pre-created at treasury init, enforced by
+    // the `associated_token::*` constraint on SwapFeesToSol above).
     let swap_accounts = deep_pool::cpi::accounts::Swap {
         user: ctx.accounts.treasury.to_account_info(),
         sol_source: ctx.accounts.treasury.to_account_info(),
@@ -131,7 +134,6 @@ pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) ->
         token_vault: ctx.accounts.deep_pool_token_vault.to_account_info(),
         user_token_account: ctx.accounts.treasury_token_account.to_account_info(),
         token_program: ctx.accounts.token_2022_program.to_account_info(),
-        associated_token_program: ctx.accounts.associated_token_program.to_account_info(),
         system_program: ctx.accounts.system_program.to_account_info(),
         event_authority: ctx.accounts.deep_pool_event_authority.to_account_info(),
         program: ctx.accounts.deep_pool_program.to_account_info(),

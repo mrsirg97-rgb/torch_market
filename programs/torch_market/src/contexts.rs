@@ -531,7 +531,6 @@ pub struct SwapFeesToSol<'info> {
     /// CHECK: Token-2022 program for project tokens
     #[account(address = TOKEN_2022_PROGRAM_ID)]
     pub token_2022_program: AccountInfo<'info>,
-    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 
@@ -1398,7 +1397,6 @@ pub struct VaultSwap<'info> {
     /// CHECK: Validated by address constraint
     #[account(address = TOKEN_2022_PROGRAM_ID)]
     pub token_2022_program: AccountInfo<'info>,
-    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 

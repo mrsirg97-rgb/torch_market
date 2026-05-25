@@ -60,6 +60,10 @@ pub fn vault_swap(
             .checked_add(amount_in)
             .ok_or(TorchMarketError::MathOverflow)?;
 
+        // deep_pool v5.0.0: Swap context no longer takes associated_token_program
+        // (init_if_needed dropped from user_token_account — vault ATA must
+        // pre-exist, enforced by the `associated_token::*` constraint on
+        // VaultSwap.vault_token_account above).
         let swap_accounts = deep_pool::cpi::accounts::Swap {
             user: ctx.accounts.torch_vault.to_account_info(),
             sol_source: ctx.accounts.vault_sol.to_account_info(),
@@ -68,7 +72,6 @@ pub fn vault_swap(
             token_vault: ctx.accounts.deep_pool_token_vault.to_account_info(),
             user_token_account: ctx.accounts.vault_token_account.to_account_info(),
             token_program: ctx.accounts.token_2022_program.to_account_info(),
-            associated_token_program: ctx.accounts.associated_token_program.to_account_info(),
             system_program: ctx.accounts.system_program.to_account_info(),
             event_authority: ctx.accounts.deep_pool_event_authority.to_account_info(),
             program: ctx.accounts.deep_pool_program.to_account_info(),
@@ -106,6 +109,7 @@ pub fn vault_swap(
 
         // sol_source = torch_vault: deep_pool credits lamports via direct
         // manipulation on sell, which is owner-agnostic. No need for vault_sol.
+        // deep_pool v5.0.0: associated_token_program dropped from Swap context.
         let swap_accounts = deep_pool::cpi::accounts::Swap {
             user: ctx.accounts.torch_vault.to_account_info(),
             sol_source: ctx.accounts.torch_vault.to_account_info(),
@@ -114,7 +118,6 @@ pub fn vault_swap(
             token_vault: ctx.accounts.deep_pool_token_vault.to_account_info(),
             user_token_account: ctx.accounts.vault_token_account.to_account_info(),
             token_program: ctx.accounts.token_2022_program.to_account_info(),
-            associated_token_program: ctx.accounts.associated_token_program.to_account_info(),
             system_program: ctx.accounts.system_program.to_account_info(),
             event_authority: ctx.accounts.deep_pool_event_authority.to_account_info(),
             program: ctx.accounts.deep_pool_program.to_account_info(),

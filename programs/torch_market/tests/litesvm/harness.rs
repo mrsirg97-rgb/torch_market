@@ -18,9 +18,9 @@ use solana_sdk::{
     native_token::LAMPORTS_PER_SOL,
     signature::Keypair,
     signer::Signer,
-    system_program,
     transaction::{Transaction, TransactionError},
 };
+use solana_sdk::system_program;
 
 use torch_market::{
     constants::*,
@@ -912,7 +912,6 @@ impl Env {
                 deep_pool_token_vault: t.deep_pool_token_vault,
                 deep_pool_event_authority: pool_validation::derive_deep_pool_event_authority(),
                 token_2022_program: TOKEN_2022_PROGRAM_ID,
-                associated_token_program: spl_associated_token_account_id(),
                 system_program: system_program::ID,
             }
             .to_account_metas(None),
