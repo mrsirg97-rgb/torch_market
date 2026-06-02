@@ -27,6 +27,15 @@ DO $$ BEGIN
     CREATE TYPE position_health AS ENUM ('healthy', 'at_risk', 'liquidatable', 'none');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+-- [V21] Unified leverage: one Position struct on-chain, side = long | short.
+DO $$ BEGIN
+    CREATE TYPE position_side AS ENUM ('long', 'short');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+    CREATE TYPE position_event_kind AS ENUM ('open', 'close', 'liquidate');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
 DO $$ BEGIN
     CREATE TYPE metadata_status AS ENUM ('ok', 'not_found', 'error');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
@@ -215,49 +224,73 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS messages_mint_slot_idx     ON messages(mint, slot DESC);
 CREATE INDEX IF NOT EXISTS messages_sender_slot_idx   ON messages(sender, slot DESC);
 
--- Current state of every open loan position. UPSERTed on every borrow,
--- repay, liquidate, etc. is_active=false marks the row as historical
--- (we never DELETE — the row remains as the audit trail).
-CREATE TABLE IF NOT EXISTS loans (
+-- [V21] Unified leverage positions. One Position struct on-chain (side = long |
+-- short); a user can hold many per (mint, owner) distinguished by position_index.
+-- Current-state, UPSERTed on every open/close/liquidate; is_active=false marks the
+-- row historical (we never DELETE — the row is the audit trail). `owner` may be a
+-- wallet or a torch_vault PDA (owner_is_vault). `collateral_amount`/`debt_amount`
+-- are unit-by-side (mirrors the on-chain generic fields):
+--   long  → collateral = tokens,   debt = lamports, vault_balance = tokens
+--   short → collateral = lamports,  debt = tokens,   vault_balance = lamports
+CREATE TABLE IF NOT EXISTS positions (
     mint                        TEXT NOT NULL REFERENCES markets(mint),
-    borrower                    TEXT NOT NULL,
+    owner                       TEXT NOT NULL,
+    side                        position_side NOT NULL,
+    position_index              INTEGER NOT NULL,
     collateral_amount           BIGINT NOT NULL,
-    borrowed_amount             BIGINT NOT NULL,
+    debt_amount                 BIGINT NOT NULL,
+    open_fee_sol                BIGINT NOT NULL,
+    vault_balance               BIGINT NOT NULL,
     accrued_interest_stored     BIGINT NOT NULL,
     last_update_slot            BIGINT NOT NULL,
-    -- Snapshot at last write. API recomputes live interest using on-chain math.
+    -- Snapshot at last write. API recomputes live health against the deep_pool TWAP mark.
     health                      position_health NOT NULL,
     is_active                   BOOLEAN NOT NULL,
+    owner_is_vault              BOOLEAN NOT NULL,
     created_at                  TIMESTAMPTZ NOT NULL,
     updated_at                  TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (mint, borrower)
+    PRIMARY KEY (mint, owner, side, position_index)
 );
 
-CREATE INDEX IF NOT EXISTS loans_mint_active_idx
-    ON loans(mint, health, updated_at DESC) WHERE is_active = true;
-CREATE INDEX IF NOT EXISTS loans_borrower_idx
-    ON loans(borrower, updated_at DESC);
+CREATE INDEX IF NOT EXISTS positions_mint_active_idx
+    ON positions(mint, side, health, updated_at DESC) WHERE is_active = true;
+CREATE INDEX IF NOT EXISTS positions_owner_idx
+    ON positions(owner, updated_at DESC) WHERE is_active = true;
 
--- Current state of every open short position. Same UPSERT shape as loans.
--- tokens_borrowed is NET (post-fee), consistent with the on-chain fix.
-CREATE TABLE IF NOT EXISTS shorts (
+-- [V21] Append-only leverage event log (the analog of `trades`). Preserves the
+-- per-event data — especially liquidation analytics (bad_debt, twap_ltv, bonus_bps,
+-- seized) — that the current-state `positions` table can't retain. NULL columns are
+-- kind-specific (e.g. liquidation fields are NULL on open/close).
+CREATE TABLE IF NOT EXISTS position_events (
     mint                        TEXT NOT NULL REFERENCES markets(mint),
-    shorter                     TEXT NOT NULL,
-    sol_collateral              BIGINT NOT NULL,
-    tokens_borrowed             BIGINT NOT NULL,
-    accrued_interest_stored     BIGINT NOT NULL,
-    last_update_slot            BIGINT NOT NULL,
-    health                      position_health NOT NULL,
-    is_active                   BOOLEAN NOT NULL,
+    owner                       TEXT NOT NULL,
+    side                        position_side NOT NULL,
+    position_index              INTEGER NOT NULL,
+    kind                        position_event_kind NOT NULL,
+    liquidator                  TEXT,            -- liquidate only
+    sol_in                      BIGINT,          -- open/close legs
+    sol_out                     BIGINT,
+    tokens_in                   BIGINT,
+    tokens_out                  BIGINT,
+    interest_paid               BIGINT,          -- close / liquidate
+    principal_paid              BIGINT,
+    surplus_sol                 BIGINT,          -- close
+    bad_debt                    BIGINT,          -- liquidate
+    twap_ltv                    BIGINT,
+    bonus_bps                   INTEGER,
+    seized                      BIGINT,          -- sol_seized (short) / tokens_seized (long)
+    residual                    BIGINT,          -- residual to borrower (short)
+    fully_resolved              BOOLEAN,         -- fully_closed / fully_liquidated
+    slot                        BIGINT NOT NULL,
+    signature                   TEXT NOT NULL,
+    inner_ix_idx                INTEGER NOT NULL,
     created_at                  TIMESTAMPTZ NOT NULL,
-    updated_at                  TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (mint, shorter)
+    UNIQUE (signature, inner_ix_idx)
 );
 
-CREATE INDEX IF NOT EXISTS shorts_mint_active_idx
-    ON shorts(mint, health, updated_at DESC) WHERE is_active = true;
-CREATE INDEX IF NOT EXISTS shorts_shorter_idx
-    ON shorts(shorter, updated_at DESC);
+CREATE INDEX IF NOT EXISTS position_events_mint_slot_idx  ON position_events(mint, slot DESC);
+CREATE INDEX IF NOT EXISTS position_events_owner_slot_idx ON position_events(owner, slot DESC);
+CREATE INDEX IF NOT EXISTS position_events_kind_slot_idx  ON position_events(kind, slot DESC);
 
 -- Migration events (bonding curve → DeepPool). One row per mint.
 -- Written atomically with the corresponding `pools` row insert.

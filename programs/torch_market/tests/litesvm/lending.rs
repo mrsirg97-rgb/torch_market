@@ -8,10 +8,10 @@
 use solana_sdk::{native_token::LAMPORTS_PER_SOL, signature::Keypair, signer::Signer};
 
 use crate::{
-    expect_err,
+    expect_anchor_err, expect_err,
     harness::{Env, TokenCtx},
 };
-use torch_market::{constants::*, errors::TorchMarketError};
+use torch_market::{constants::*, errors::TorchMarketError, state::PositionSide};
 
 // `migrated()` — bare post-migration state. Three-period fixture model:
 //
@@ -62,9 +62,9 @@ fn migrated() -> (Env, TokenCtx, Keypair) {
 // would be a useful complement (TODO).
 fn lending_ready() -> (Env, TokenCtx, Keypair) {
     let (mut env, t, borrower) = migrated();
-    let mut tr = env.get_treasury(&t);
-    tr.sol_balance = 200 * LAMPORTS_PER_SOL;
-    env.poke_anchor(t.treasury, tr);
+    // V21: treasury SOL is the System-owned treasury_sol_vault's lamports (derived,
+    // no tracked field) — fund it directly to clear the lending gate.
+    env.airdrop(&t.treasury_sol_vault, 200 * LAMPORTS_PER_SOL);
     env.poke_pool_sol(&t, 500 * LAMPORTS_PER_SOL);
     env.poke_token_amount(t.deep_pool_token_vault, 100_000_000_000_000); // 100M tokens
     (env, t, borrower)
@@ -83,27 +83,31 @@ fn token_balance(
 }
 
 // ============================================================================
-// Borrow (9)
+// open_long (9: 8 active + 1 ignored vault stub)
 // ============================================================================
 
 #[test]
-fn borrow_happy() {
+fn open_long_happy() {
     let (mut env, t, borrower) = lending_ready();
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    let borrow_amount = 500_000_000; // 0.5 SOL — well within all caps
-    env.borrow(&borrower, &t, bal / 2, borrow_amount)
-        .expect("borrow");
+    // V21: deposit token collateral (index 0, min_out=1). The handler sizes the
+    // SOL borrow (collateral × LTV, clamped) and atomically buys tokens into the
+    // position vault. No user borrow amount.
+    env.open_long(&borrower, &t, 0, bal / 2, 1).expect("open_long");
 
-    let loan = env.get_loan(&t, &borrower.pubkey()).expect("loan exists");
-    assert_eq!(loan.borrowed_amount, borrow_amount);
-    assert!(loan.collateral_amount > 0);
+    let pos = env
+        .get_position(&t, &borrower.pubkey(), POSITION_SIDE_LONG, 0)
+        .expect("position exists");
+    assert_eq!(pos.side, PositionSide::Long);
+    assert!(pos.debt_amount > 0, "borrowed SOL (gross debt)");
+    assert!(pos.collateral_amount > 0, "token collateral recorded");
     let tr = env.get_treasury(&t);
-    assert_eq!(tr.total_sol_lent, borrow_amount);
-    assert_eq!(tr.active_loans, 1);
+    assert_eq!(tr.total_sol_lent_to_longs, pos.debt_amount);
+    assert_eq!(tr.active_longs, 1);
 }
 
 #[test]
-fn borrow_lending_not_enabled() {
+fn open_long_lending_not_enabled() {
     let (mut env, t, borrower) = lending_ready();
     let mut tr = env.get_treasury(&t);
     tr.lending_enabled = false;
@@ -111,14 +115,14 @@ fn borrow_lending_not_enabled() {
 
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
     expect_err!(
-        env.borrow(&borrower, &t, bal / 2, 500_000_000),
+        env.open_long(&borrower, &t, 0, bal / 2, 1),
         TorchMarketError::LendingNotEnabled
     );
 }
 
 #[test]
-fn borrow_lending_requires_migration() {
-    // Not migrated.
+fn open_long_requires_migration() {
+    // Not migrated → the bonding-curve constraint rejects.
     let mut env = Env::new();
     let creator = env.new_funded(2 * LAMPORTS_PER_SOL);
     let t = env.create_token(&creator, BONDING_TARGET_FLAME, false);
@@ -127,443 +131,463 @@ fn borrow_lending_requires_migration() {
 
     let bal = token_balance(&env, &buyer.pubkey(), &t.mint);
     expect_err!(
-        env.borrow(&buyer, &t, bal / 2, 500_000_000),
+        env.open_long(&buyer, &t, 0, bal / 2, 1),
         TorchMarketError::LendingRequiresMigration
     );
 }
 
 #[test]
-fn borrow_ltv_exceeded() {
-    // Bare migrated() — needs the LEAN post-migration pool state for the
-    // LTV math to fire on a small collateral. With lending_ready()'s
-    // pumped pool, 1M tokens would be worth ~5 SOL and 1 SOL borrow
-    // would pass LTV. Stays on migrated() where 1M tokens ≈ 0.67 SOL.
+fn open_long_lending_not_yet_unlocked() {
+    // Lending floor gate: treasury below the unlock threshold → reject.
+    // (Long-only — shorts borrow tokens from the lock, not SOL from treasury,
+    // so they don't gate on this.) Build-independent: 0.5 SOL is below the
+    // simnet/devnet gate (1) AND the mainnet gate (100), so the lock fires
+    // under every build.
     let (mut env, t, borrower) = migrated();
-    expect_err!(
-        env.borrow(&borrower, &t, 1_000_000, 1_000_000_000),
-        TorchMarketError::LtvExceeded
-    );
-}
-
-#[test]
-#[cfg(not(feature = "simnet"))]
-fn borrow_lending_not_yet_unlocked() {
-    // Verify the gate fires when treasury is below the unlock threshold.
-    // Bare migrated() naturally leaves ~5 SOL of bond fees in treasury,
-    // which is below the mainnet 100 SOL gate but ABOVE the devnet 1 SOL
-    // gate. Poke treasury to 0.5 SOL to ensure we're below both gates.
-    // Skipped on `simnet` builds because there the threshold is 0 (gate
-    // never fires).
-    let (mut env, t, borrower) = migrated();
-    let mut tr = env.get_treasury(&t);
-    tr.sol_balance = 500_000_000; // 0.5 SOL — below both devnet (1) and mainnet (100) gates
-    env.poke_anchor(t.treasury, tr);
+    // 0.5 SOL physical in the vault — below every gate (simnet/devnet 1, mainnet 100).
+    env.poke_lamports(&t.treasury_sol_vault, 500_000_000);
 
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
     expect_err!(
-        env.borrow(&borrower, &t, bal, 100_000_000),
+        env.open_long(&borrower, &t, 0, bal, 1),
         TorchMarketError::LendingNotYetUnlocked
     );
 }
 
 #[test]
-#[cfg(not(feature = "simnet"))]
-fn borrow_gate_excludes_short_collateral() {
-    // V20C-1 regression. The gate must compare AVAILABLE SOL (sol_balance −
-    // short_collateral_reserved) against the threshold, not gross balance.
-    //
-    // Set up the trap state: gross sol_balance comfortably above the gate
-    // (150 SOL), but 100 SOL of that is short collateral parked in escrow.
-    // Available = 50 SOL, below the 100 SOL mainnet gate — borrow must
-    // still fail with LendingNotYetUnlocked.
-    //
-    // Pre-fix, the gate would have cleared on the gross value and the
-    // borrow would have proceeded to the utilization-cap check (which
-    // then would have rejected it for a different reason). With the fix,
-    // the gate fires correctly and the right error is surfaced.
-    let (mut env, t, borrower) = migrated();
-    let mut tr = env.get_treasury(&t);
-    tr.sol_balance = 150 * LAMPORTS_PER_SOL;
-    tr.short_collateral_reserved = 100 * LAMPORTS_PER_SOL;
-    tr.short_selling_enabled = true;
-    env.poke_anchor(t.treasury, tr);
-
-    let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    expect_err!(
-        env.borrow(&borrower, &t, bal, 100_000_000),
-        TorchMarketError::LendingNotYetUnlocked
-    );
-}
-
-#[test]
-fn borrow_lending_cap_exceeded() {
-    // Production-realistic: gate cleared, but treasury's lending utilization
-    // cap is exhausted because total_sol_lent is already near max_lendable.
-    // We simulate that by poking lending_utilization_cap_bps to 1 bp so
-    // max_lendable = 200 SOL × 0.01% = 0.02 SOL. A 0.5 SOL borrow attempt
-    // tips total_lent past max_lendable → fires LendingCapExceeded.
-    //
-    // The deeper-pool collateral (set in migrated()) lets the 0.5 SOL
-    // borrow pass the LTV gate, so this test isolates the utilization
-    // cap from other concerns.
+fn open_long_lending_cap_exceeded() {
+    // Gate cleared, but the pool's lending capacity is effectively exhausted:
+    // poke the utilization cap to 1 bp so max_lendable ≈ 0.02 SOL → global
+    // headroom < MIN_BORROW_AMOUNT → LendingCapExceeded (the explicit reject we
+    // kept distinct from the dust floor).
     let (mut env, t, borrower) = lending_ready();
     let mut tr = env.get_treasury(&t);
-    tr.lending_utilization_cap_bps = 1; // 0.01% → max_lendable ≈ 0.02 SOL
+    tr.lending_utilization_cap_bps = 1;
     env.poke_anchor(t.treasury, tr);
 
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
     expect_err!(
-        env.borrow(&borrower, &t, bal, 500_000_000),
+        env.open_long(&borrower, &t, 0, bal / 2, 1),
         TorchMarketError::LendingCapExceeded
     );
 }
 
 #[test]
-fn borrow_user_cap_exceeded() {
-    // Production-realistic: with the deeper-pool migrated() setup, LTV is
-    // permissive enough to allow a borrow > the absolute 20% per-user cap
-    // (= max_lendable × 20% = 160 × 0.2 = 32 SOL). Borrow 33 SOL: LTV
-    // passes (collateral_value ≈ 80 SOL × 45% LTV = 36 SOL allowed), but
-    // 33 SOL > 32 SOL per-user cap → fires UserBorrowCapExceeded.
+fn open_long_clamps_to_caps() {
+    // Folds the old ltv_exceeded / user_cap_exceeded / depth_tier_zero REJECT
+    // tests. V21 sizes the borrow at the depth-band LTV and CLAMPS to the
+    // per-user absolute cap (20% of lendable) — it never rejects an "oversized"
+    // request, because there is no user borrow amount. A large collateral that
+    // would imply a borrow above the per-user cap simply opens AT the cap.
     let (mut env, t, borrower) = lending_ready();
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    expect_err!(
-        env.borrow(&borrower, &t, bal, 33 * LAMPORTS_PER_SOL),
-        TorchMarketError::UserBorrowCapExceeded
-    );
+
+    // Compute the expected cap from the DERIVED treasury balance BEFORE the borrow
+    // (treasury_sol_vault lamports − rent; the airdrop + bonding fees, not a round
+    // 200 SOL). Mirror the handler's apply_bps order (multiply then ÷10_000).
+    let tr = env.get_treasury(&t);
+    let available = env.treasury_sol(&t);
+    let max_lendable = available * tr.lending_utilization_cap_bps as u64 / 10_000;
+    let absolute_cap = max_lendable * MAX_USER_BORROW_SHARE_BPS as u64 / 10_000;
+
+    // Full token balance as collateral → implied borrow exceeds the per-user cap;
+    // handler clamps. Position opens; debt == the absolute cap.
+    env.open_long(&borrower, &t, 0, bal, 1)
+        .expect("open_long clamps, does not reject");
+
+    let pos = env
+        .get_position(&t, &borrower.pubkey(), POSITION_SIDE_LONG, 0)
+        .expect("position exists");
+    assert_eq!(pos.debt_amount, absolute_cap, "borrow clamped to per-user cap");
 }
 
 #[test]
-fn borrow_below_min_amount() {
+fn open_long_below_min_amount() {
+    // Tiny collateral → sized borrow falls below MIN_BORROW_AMOUNT → BorrowTooSmall
+    // (the dust floor, distinct from the pool-exhausted LendingCapExceeded above).
     let (mut env, t, borrower) = lending_ready();
-    let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    // sol_to_borrow > 0 but below MIN_BORROW_AMOUNT (0.1 SOL).
+    // TUNE: collateral small enough that collateral×LTV < MIN_BORROW_AMOUNT.
     expect_err!(
-        env.borrow(&borrower, &t, bal, MIN_BORROW_AMOUNT - 1),
+        env.open_long(&borrower, &t, 0, 1_000, 1),
         TorchMarketError::BorrowTooSmall
     );
 }
 
 #[test]
-fn borrow_partial_deposit_only() {
-    // collateral > 0, sol_to_borrow = 0. Handler skips the borrow branch.
-    let (mut env, t, borrower) = lending_ready();
-    let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    let deposit = bal / 3;
-    env.borrow(&borrower, &t, deposit, 0).expect("deposit-only");
-
-    let loan = env.get_loan(&t, &borrower.pubkey()).expect("loan exists");
-    assert_eq!(loan.borrowed_amount, 0);
-    assert!(loan.collateral_amount > 0);
-}
-
-#[test]
-fn borrow_pool_too_thin_blocks_new_position() {
-    // Pool < MIN_POOL_SOL_LENDING (5 SOL after rent_exempt overhead) → depth
-    // tier returns 0, check_borrow_ltv raises PoolTooThin. New positions blocked
-    // at thin pools, even though liquidations of existing positions are allowed.
-    // Bare migrated() — lending_ready() would have a pumped pool that
-    // contradicts the "thin pool" we're trying to test.
+fn open_long_pool_too_thin() {
+    // Pool < MIN_POOL_SOL_LENDING → depth tier 0 LTV → PoolTooThin. New positions
+    // blocked at thin pools (liquidations of existing ones still allowed).
     let (mut env, t, borrower) = migrated();
+    env.airdrop(&t.treasury_sol_vault, 200 * LAMPORTS_PER_SOL); // clear the lending floor first
     env.poke_pool_sol(&t, MIN_POOL_SOL_LENDING - 1);
+
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
     expect_err!(
-        env.borrow(&borrower, &t, bal / 2, 200_000_000),
+        env.open_long(&borrower, &t, 0, bal / 2, 1),
         TorchMarketError::PoolTooThin
     );
 }
 
 #[test]
-fn borrow_depth_tier_zero_caps_ltv_lower() {
-    // Poke deep_pool to tier 0 (≥5 SOL, <50 SOL → DEPTH_LTV_0 = 25%).
-    // A borrow that would pass at tier 1 (35%) must fail here.
-    // Bare migrated() — this test relies on the natural pool_tokens left
-    // by migration (~149.78M per comment below), since lending_ready()
-    // overrides token vault to 100M which would skew the LTV math.
-    let (mut env, t, borrower) = migrated();
-    env.poke_pool_sol(&t, 30 * LAMPORTS_PER_SOL); // 30 SOL → tier 0
-
-    // At pool=30 SOL, pool_tokens=149.78M, ~16.19M tokens collateral:
-    //   collateral_value ≈ 16.19M * 30 / 149.78M = 3.24 SOL
-    //   tier 0 max debt = 3.24 * 0.25 = 0.81 SOL
-    //   tier 1 max debt = 3.24 * 0.35 = 1.13 SOL
-    // Borrowing 1 SOL exceeds tier 0 (25%) but would fit at tier 1 (35%).
-    let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    expect_err!(
-        env.borrow(&borrower, &t, bal, LAMPORTS_PER_SOL),
-        TorchMarketError::LtvExceeded
-    );
-}
-
-#[test]
-fn borrow_via_vault_happy() {
-    let (mut env, t, borrower) = lending_ready();
-    // borrower already has tokens from bonding; create vault, link borrower,
-    // move tokens into vault ATA, borrow via vault.
-    let vault_owner = env.new_funded(5 * LAMPORTS_PER_SOL);
-    let vault = env.create_vault(&vault_owner);
-    env.link_wallet(&vault_owner, &vault, borrower.pubkey())
-        .expect("link");
-
-    // Move borrower's tokens into vault ATA via withdraw_tokens... actually easier:
-    // do the borrow with the BORROWER's tokens. But borrow_via_vault transfers
-    // from vault_token_account. So tokens must be in vault. Simplest path: have
-    // a vault-linked buyer do a fresh buy via vault (post-migration via deep_pool,
-    // which we don't have a helper for). Skip — borrow direct from vault using
-    // an already-vault-held token balance is non-trivial without a swap helper.
-    //
-    // Instead: use vault for the borrow ix but pass collateral_amount=0 to skip
-    // the token transfer. Borrow happens, SOL goes to vault.
-    let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    env.borrow(&borrower, &t, bal / 2, 0)
-        .expect("deposit collateral first");
-    // Now collateral is in collateral_vault under borrower's loan_position.
-    // borrow_via_vault with same borrower → adds 0 collateral, borrows SOL to vault.
-    env.deposit_vault(&vault_owner, &vault, 100_000_000)
-        .expect("seed vault rent");
-    env.borrow_via_vault(&borrower, &vault, &t, 0, 200_000_000)
-        .expect("borrow_via_vault");
-
-    let loan = env.get_loan(&t, &borrower.pubkey()).expect("loan");
-    assert_eq!(loan.borrowed_amount, 200_000_000);
-    let v = env.get_torch_vault(&vault.vault);
-    assert!(v.sol_balance > 100_000_000); // initial deposit + borrowed SOL
-    assert!(v.total_received >= 200_000_000);
-}
-
-// ============================================================================
-// Repay (6)
-// ============================================================================
-
-#[test]
-fn repay_partial() {
+fn open_long_via_vault_happy() {
+    // VAULT-OWNED long: collateral tokens come from the vault's token ATA (not a
+    // wallet), the borrow is from the treasury, and the position is vault-seeded.
+    // `owner` (the vault creator) is an auto-linked wallet → valid signer.
     let (mut env, t, borrower) = lending_ready();
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    env.borrow(&borrower, &t, bal / 2, 500_000_000)
-        .expect("borrow");
+    let owner = env.new_funded(5 * LAMPORTS_PER_SOL);
+    let vault = env.create_vault(&owner);
+    env.fund_vault_tokens(&owner, &vault, &t, bal); // stock vault collateral
 
-    env.repay(&borrower, &t, 200_000_000)
-        .expect("partial repay");
+    env.open_long_via_vault(&owner, &vault, &t, 0, bal / 2, 1)
+        .expect("open_long_via_vault");
 
-    let loan = env.get_loan(&t, &borrower.pubkey()).expect("loan");
-    // 0 slots elapsed → no interest accrued. All payment goes to principal.
-    assert_eq!(loan.borrowed_amount, 300_000_000);
-    assert_eq!(loan.accrued_interest, 0);
-}
-
-#[test]
-fn repay_full_returns_collateral() {
-    let (mut env, t, borrower) = lending_ready();
-    let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    let coll_before = bal;
-    env.borrow(&borrower, &t, bal / 2, 500_000_000)
-        .expect("borrow");
-    let after_borrow = token_balance(&env, &borrower.pubkey(), &t.mint);
-    assert!(after_borrow < coll_before);
-
-    // Send way more than owed — handler clamps to total_owed.
-    env.repay(&borrower, &t, 10 * LAMPORTS_PER_SOL)
-        .expect("full repay");
-
-    // Tier B: loan PDA closed on full repay.
-    assert!(
-        env.get_loan(&t, &borrower.pubkey()).is_none(),
-        "loan PDA closed"
-    );
-
-    let after_repay = token_balance(&env, &borrower.pubkey(), &t.mint);
-    assert!(
-        after_repay > after_borrow,
-        "collateral returned to borrower"
-    );
-
+    let pos = env
+        .get_position(&t, &vault.vault, POSITION_SIDE_LONG, 0)
+        .expect("vault-owned position exists");
+    assert_eq!(pos.side, PositionSide::Long);
+    assert_eq!(pos.user, vault.vault, "position owned by the vault");
+    assert!(pos.debt_amount > 0, "borrowed SOL (gross debt)");
+    assert!(pos.collateral_amount > 0, "token collateral recorded");
     let tr = env.get_treasury(&t);
-    assert_eq!(tr.active_loans, 0);
+    assert_eq!(tr.total_sol_lent_to_longs, pos.debt_amount);
+    assert_eq!(tr.active_longs, 1);
+}
+
+// ============================================================================
+// close_long (6: 5 active + 1 ignored vault stub)
+// ============================================================================
+
+#[test]
+fn close_long_partial() {
+    let (mut env, t, borrower) = lending_ready();
+    let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
+    env.open_long(&borrower, &t, 0, bal / 2, 1).expect("open");
+    let before = env
+        .get_position(&t, &borrower.pubkey(), POSITION_SIDE_LONG, 0)
+        .expect("pos");
+
+    // V21: partial close by FRACTION. Sells half the vault tokens, repays half
+    // the SOL debt → treasury; position stays open. 0 slots → no interest.
+    env.close_long(&borrower, &t, 0, 5_000, 0).expect("partial close");
+
+    let after = env
+        .get_position(&t, &borrower.pubkey(), POSITION_SIDE_LONG, 0)
+        .expect("pos still open");
+    let repaid = before.debt_amount - after.debt_amount;
+    assert!(
+        repaid >= before.debt_amount / 2 - 1 && repaid <= before.debt_amount / 2 + 1,
+        "≈half the SOL debt repaid"
+    );
+    assert!(after.debt_amount > 0, "still open after partial");
 }
 
 #[test]
-fn repay_interest_first() {
+fn close_long_full_returns_surplus() {
+    // V21 full close SELLS all vault tokens, repays debt → treasury, and returns
+    // the SOL SURPLUS (not the original collateral tokens) to the borrower. The
+    // position PDA + token vault are closed.
     let (mut env, t, borrower) = lending_ready();
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    env.borrow(&borrower, &t, bal / 2, LAMPORTS_PER_SOL)
-        .expect("borrow"); // 1 SOL
+    env.open_long(&borrower, &t, 0, bal / 2, 1).expect("open");
 
-    // Warp slots to accrue interest. At 200 bps/epoch on 1 SOL: ~33 lamports/slot.
-    // 100k slots → ~3.3M lamports ≈ 0.0033 SOL interest.
-    env.warp_to_slot(env.current_slot() + 100_000);
+    let lamports_before = env.svm.get_account(&borrower.pubkey()).unwrap().lamports;
+    env.close_long(&borrower, &t, 0, 10_000, 0).expect("full close");
 
-    // Repay 0.001 SOL — entirely interest, no principal touched.
-    env.repay(&borrower, &t, 1_000_000)
-        .expect("interest-only repay");
+    assert!(
+        env.get_position(&t, &borrower.pubkey(), POSITION_SIDE_LONG, 0)
+            .is_none(),
+        "position closed on full close"
+    );
+    let lamports_after = env.svm.get_account(&borrower.pubkey()).unwrap().lamports;
+    assert!(
+        lamports_after > lamports_before,
+        "SOL surplus + reclaimed rent returned to borrower"
+    );
+    let tr = env.get_treasury(&t);
+    assert_eq!(tr.active_longs, 0);
+}
 
-    let loan = env.get_loan(&t, &borrower.pubkey()).expect("loan");
+#[test]
+fn close_long_interest_first() {
+    let (mut env, t, borrower) = lending_ready();
+    let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
+    env.open_long(&borrower, &t, 0, bal / 2, 1).expect("open");
+    let opened = env
+        .get_position(&t, &borrower.pubkey(), POSITION_SIDE_LONG, 0)
+        .expect("pos");
+
+    // Warp to accrue SOL-denominated interest, then close a tiny fraction.
+    // Interest credits before principal, so a 1% close leaves debt_amount intact.
+    // At 150 bps/epoch over ~1.512M slots/epoch, ~1.5M slots accrues ~1.49%
+    // interest, so a 1% close is fully absorbed by interest (principal untouched).
+    env.warp_to_slot(env.current_slot() + 1_500_000);
+    env.close_long(&borrower, &t, 0, 100, 0)
+        .expect("tiny interest-first close");
+
+    let pos = env
+        .get_position(&t, &borrower.pubkey(), POSITION_SIDE_LONG, 0)
+        .expect("pos");
     assert_eq!(
-        loan.borrowed_amount, LAMPORTS_PER_SOL,
-        "principal untouched"
+        pos.debt_amount, opened.debt_amount,
+        "principal untouched (interest paid first)"
     );
-    // accrued_interest = accrued - 1M (small positive remainder)
-    assert!(loan.accrued_interest > 0);
-    assert!(loan.accrued_interest < 5_000_000);
 }
 
 #[test]
-fn repay_no_active_loan() {
+fn close_long_no_active_loan() {
+    // V21 can't open a debt-0 long, and a full close removes the Position PDA —
+    // so the handler's `NoActiveLoan` guard is unreachable as a custom error.
+    // Re-closing a closed position fails at account resolution with Anchor's
+    // AccountNotInitialized (the PDA is gone).
     let (mut env, t, borrower) = lending_ready();
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    // Open a deposit-only "loan" (borrowed_amount = 0). Then try to repay.
-    env.borrow(&borrower, &t, bal / 2, 0).expect("deposit only");
+    env.open_long(&borrower, &t, 0, bal / 2, 1).expect("open");
+    env.close_long(&borrower, &t, 0, 10_000, 0).expect("full close");
 
-    // Context constraint: `loan_position.borrowed_amount > 0`.
+    expect_anchor_err!(
+        env.close_long(&borrower, &t, 0, 10_000, 0),
+        crate::harness::ANCHOR_ACCOUNT_NOT_INITIALIZED
+    );
+}
+
+#[test]
+fn close_long_zero_amount() {
+    let (mut env, t, borrower) = lending_ready();
+    let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
+    env.open_long(&borrower, &t, 0, bal / 2, 1).expect("open");
+    // repay_fraction_bps = 0 → context constraint rejects.
     expect_err!(
-        env.repay(&borrower, &t, 100_000_000),
-        TorchMarketError::NoActiveLoan
+        env.close_long(&borrower, &t, 0, 0, 0),
+        TorchMarketError::ZeroAmount
     );
 }
 
 #[test]
-fn repay_zero_amount() {
+fn close_long_via_vault_happy() {
+    // Open + full-close a vault-owned long. The SOL surplus must return to the
+    // VAULT (vault_sol), NOT the linked wallet that signed the close — the signer
+    // only reclaims its own position + token-vault rent.
     let (mut env, t, borrower) = lending_ready();
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    env.borrow(&borrower, &t, bal / 2, 500_000_000)
-        .expect("borrow");
+    let owner = env.new_funded(5 * LAMPORTS_PER_SOL);
+    let vault = env.create_vault(&owner);
+    env.fund_vault_tokens(&owner, &vault, &t, bal);
+    env.open_long_via_vault(&owner, &vault, &t, 0, bal / 2, 1)
+        .expect("open");
 
-    expect_err!(env.repay(&borrower, &t, 0), TorchMarketError::ZeroAmount);
-}
+    let vault_sol_before = env.vault_sol(&vault);
+    env.close_long_via_vault(&owner, &vault, &t, 0, 10_000, 0)
+        .expect("close_long_via_vault");
 
-#[test]
-fn repay_via_vault_happy() {
-    let (mut env, t, borrower) = lending_ready();
-    let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    env.borrow(&borrower, &t, bal / 2, 500_000_000)
-        .expect("borrow");
-
-    // Vault holds SOL to repay with.
-    let vault_owner = env.new_funded(5 * LAMPORTS_PER_SOL);
-    let vault = env.create_vault(&vault_owner);
-    env.link_wallet(&vault_owner, &vault, borrower.pubkey())
-        .expect("link");
-    env.deposit_vault(&vault_owner, &vault, LAMPORTS_PER_SOL)
-        .expect("fund vault");
-
-    env.repay_via_vault(&borrower, &vault, &t, 200_000_000)
-        .expect("repay_via_vault");
-
-    let loan = env.get_loan(&t, &borrower.pubkey()).expect("loan");
-    assert_eq!(loan.borrowed_amount, 300_000_000);
-
-    let v = env.get_torch_vault(&vault.vault);
-    assert_eq!(v.total_spent, 200_000_000);
+    assert!(
+        env.get_position(&t, &vault.vault, POSITION_SIDE_LONG, 0)
+            .is_none(),
+        "position closed on full close"
+    );
+    assert!(
+        env.vault_sol(&vault) > vault_sol_before,
+        "SOL surplus returned to vault_sol, not the signer wallet"
+    );
+    let tr = env.get_treasury(&t);
+    assert_eq!(tr.active_longs, 0);
 }
 
 // ============================================================================
-// Liquidate (5)
+// liquidate_long (6: 5 active + 1 ignored vault stub)
 // ============================================================================
 
 #[test]
-fn liquidate_happy() {
+fn liquidate_long_happy() {
     let (mut env, t, borrower) = lending_ready();
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    // Open a near-max LTV loan, then drop pool to push it underwater.
-    env.borrow(&borrower, &t, bal, 2 * LAMPORTS_PER_SOL)
-        .expect("borrow");
+    // Open a long, drop the token price (pool_sol down) so the vault tokens are
+    // worth less than the SOL debt (LTV breaches 65%), warm the TWAP AFTER the
+    // drop so the mark breaches too, then liquidate.
+    env.open_long(&borrower, &t, 0, bal, 1).expect("open");
+    let before = env
+        .get_position(&t, &borrower.pubkey(), POSITION_SIDE_LONG, 0)
+        .expect("pos");
 
-    // Pool sol drop: 500 SOL → 7 SOL. With lending_ready()'s fixed
-    // pool_tokens = 100M, collateral_value = 19M × 7/100M ≈ 1.33 SOL.
-    // Debt 2 SOL → LTV ≈ 150% >> liquidation_threshold (65%).
-    // 7 SOL > MIN_POOL_SOL_LENDING (5 SOL), so liquidate isn't blocked.
-    env.poke_pool_sol(&t, 7 * LAMPORTS_PER_SOL);
+    let cranker = env.new_funded(2 * LAMPORTS_PER_SOL);
+    // TUNE: moderate drop → underwater but SOLVENT (vault still covers the 50% slice
+    // + bonus) so this is a partial liquidation, position stays open.
+    env.poke_pool_sol(&t, 120 * LAMPORTS_PER_SOL);
+    env.warm_twap(&cranker, &t);
 
-    let liquidator = env.new_funded(5 * LAMPORTS_PER_SOL);
-    env.liquidate(&liquidator, borrower.pubkey(), &t)
+    let liquidator = env.new_funded(25 * LAMPORTS_PER_SOL);
+    env.liquidate_long(&liquidator, borrower.pubkey(), &t, 0)
         .expect("liquidate");
 
-    let loan = env
-        .get_loan(&t, &borrower.pubkey())
-        .expect("loan still exists");
-    // Partial liquidation at default close_bps=50%: debt covered halved.
-    assert!(loan.borrowed_amount < 2 * LAMPORTS_PER_SOL);
+    let after = env
+        .get_position(&t, &borrower.pubkey(), POSITION_SIDE_LONG, 0)
+        .expect("pos");
+    assert!(after.debt_amount < before.debt_amount, "debt reduced");
+    assert!(after.debt_amount > 0, "partial: position still open");
 }
 
 #[test]
-fn liquidate_not_liquidatable() {
+fn liquidate_long_not_liquidatable() {
     let (mut env, t, borrower) = lending_ready();
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    env.borrow(&borrower, &t, bal / 2, 200_000_000)
-        .expect("conservative borrow"); // 0.2 SOL on ~6 SOL collateral → ~3% LTV
+    env.open_long(&borrower, &t, 0, bal / 2, 1).expect("open");
 
-    // No pool manipulation — position is healthy.
+    let cranker = env.new_funded(2 * LAMPORTS_PER_SOL);
+    env.warm_twap(&cranker, &t); // warm at healthy price; LTV well below 65%
+
     let liquidator = env.new_funded(LAMPORTS_PER_SOL);
     expect_err!(
-        env.liquidate(&liquidator, borrower.pubkey(), &t),
+        env.liquidate_long(&liquidator, borrower.pubkey(), &t, 0),
         TorchMarketError::NotLiquidatable
     );
 }
 
 #[test]
-fn liquidate_partial_capped_at_close_bps() {
+fn liquidate_long_partial_capped_at_close_bps() {
     let (mut env, t, borrower) = lending_ready();
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    env.borrow(&borrower, &t, bal, 2 * LAMPORTS_PER_SOL)
-        .expect("borrow");
+    env.open_long(&borrower, &t, 0, bal, 1).expect("open");
+    let before = env
+        .get_position(&t, &borrower.pubkey(), POSITION_SIDE_LONG, 0)
+        .unwrap();
 
-    let before = env.get_loan(&t, &borrower.pubkey()).unwrap();
-    env.poke_pool_sol(&t, 7 * LAMPORTS_PER_SOL);
+    let cranker = env.new_funded(2 * LAMPORTS_PER_SOL);
+    env.poke_pool_sol(&t, 120 * LAMPORTS_PER_SOL); // TUNE: underwater but solvent → partial
+    env.warm_twap(&cranker, &t);
 
-    let liquidator = env.new_funded(5 * LAMPORTS_PER_SOL);
-    env.liquidate(&liquidator, borrower.pubkey(), &t)
+    let liquidator = env.new_funded(25 * LAMPORTS_PER_SOL);
+    env.liquidate_long(&liquidator, borrower.pubkey(), &t, 0)
         .expect("liquidate");
 
-    let after = env.get_loan(&t, &borrower.pubkey()).unwrap();
-    let debt_covered = before.borrowed_amount - after.borrowed_amount;
-    // close_bps = 50%, so at most 50% of total debt is covered in one call.
-    assert!(debt_covered <= before.borrowed_amount / 2 + 1_000_000);
+    let after = env
+        .get_position(&t, &borrower.pubkey(), POSITION_SIDE_LONG, 0)
+        .unwrap();
+    let covered = before.debt_amount - after.debt_amount;
+    // DEFAULT_LIQUIDATION_CLOSE_BPS = 50%: at most half the debt per call.
+    assert!(covered <= before.debt_amount / 2 + 1_000_000, "≤50% per call");
+    assert!(after.debt_amount > 0, "still has debt after partial");
+}
+
+#[test]
+fn liquidate_long_full_with_bad_debt() {
+    // Crush the token price so the vault is worth far less than the debt: the seize
+    // is collateral-capped (insolvent), so the position is FULLY resolved in one
+    // liquidation — the entire residual debt is written off, the position + token
+    // vault are closed, and total_sol_lent_to_longs drops to reflect the loss.
+    // (Pre-fix this left an un-liquidatable debt tail + inflated the counter forever.)
+    let (mut env, t, borrower) = lending_ready();
+    let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
+    env.open_long(&borrower, &t, 0, bal, 1).expect("open");
+    let lent_before = env.get_treasury(&t).total_sol_lent_to_longs;
+    assert!(lent_before > 0);
+
+    let cranker = env.new_funded(2 * LAMPORTS_PER_SOL);
+    env.poke_pool_sol(&t, 6 * LAMPORTS_PER_SOL); // TUNE: deep crush → insolvent
+    env.warm_twap(&cranker, &t);
+
+    let liquidator = env.new_funded(25 * LAMPORTS_PER_SOL);
+    env.liquidate_long(&liquidator, borrower.pubkey(), &t, 0)
+        .expect("liquidate");
+
+    // Position fully resolved: PDA closed, no un-liquidatable tail.
     assert!(
-        after.borrowed_amount > 0,
-        "position still has debt after partial"
+        env.get_position(&t, &borrower.pubkey(), POSITION_SIDE_LONG, 0)
+            .is_none(),
+        "insolvent position fully liquidated + closed (no stuck tail)"
+    );
+    // Token vault closed (account gone).
+    let vault = get_associated_token_address_2022_local(
+        &long_position_pda(&t, &borrower.pubkey(), 0),
+        &t.mint,
+    );
+    assert!(env.svm.get_account(&vault).is_none(), "token vault closed");
+    // The full debt was written off the global counter (returns to truth).
+    let tr = env.get_treasury(&t);
+    assert_eq!(tr.active_longs, 0, "active_longs decremented");
+    assert!(
+        tr.total_sol_lent_to_longs < lent_before,
+        "residual debt written off the lent counter"
     );
 }
 
 #[test]
-fn liquidate_full_with_bad_debt() {
-    // Crush the pool so the value of all collateral is less than current debt:
-    // → seizure takes all collateral, leaves bad_debt > 0, position cleared.
+fn liquidate_long_warmup_fail_closed() {
+    // D-10: no warm TWAP (ring < 2 obs) → liquidation fails closed even though
+    // the position is underwater at spot. The manipulation guard: an atomic spot
+    // crush can't manufacture a liquidation without a warm ring.
     let (mut env, t, borrower) = lending_ready();
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    env.borrow(&borrower, &t, bal, 2 * LAMPORTS_PER_SOL)
-        .expect("borrow");
-    // Pool drop: 100 SOL → 6 SOL (above MIN_POOL_SOL_LENDING after rent_exempt).
-    // Collateral value at that ratio ≈ 0.65 SOL, way below 2 SOL debt × 1.1 bonus.
-    env.poke_pool_sol(&t, 6 * LAMPORTS_PER_SOL);
+    env.open_long(&borrower, &t, 0, bal, 1).expect("open");
 
-    let liquidator = env.new_funded(5 * LAMPORTS_PER_SOL);
-    env.liquidate(&liquidator, borrower.pubkey(), &t)
-        .expect("liquidate");
+    env.poke_pool_sol(&t, 7 * LAMPORTS_PER_SOL); // underwater at spot, ring NOT warmed
 
-    let loan = env.get_loan(&t, &borrower.pubkey()).unwrap();
-    // Bad-debt branch zeroes out remaining debt + interest after seizing all collateral.
-    assert_eq!(loan.collateral_amount, 0);
-    // borrowed_amount and accrued_interest are zeroed by bad_debt cleanup.
-    assert_eq!(loan.accrued_interest, 0);
+    let liquidator = env.new_funded(25 * LAMPORTS_PER_SOL);
+    expect_err!(
+        env.liquidate_long(&liquidator, borrower.pubkey(), &t, 0),
+        TorchMarketError::NotLiquidatable
+    );
 }
 
 #[test]
-fn liquidate_via_vault_happy() {
+fn liquidate_long_via_vault_happy() {
+    // Open a VAULT-OWNED long, drop the token price so LTV breaches but the position
+    // stays SOLVENT (partial liquidation), then liquidate as an EXTERNAL actor.
+    // Liquidator pays SOL debt → seizes vault tokens; position stays open.
     let (mut env, t, borrower) = lending_ready();
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    env.borrow(&borrower, &t, bal, 2 * LAMPORTS_PER_SOL)
-        .expect("borrow");
-    env.poke_pool_sol(&t, 7 * LAMPORTS_PER_SOL);
+    let owner = env.new_funded(5 * LAMPORTS_PER_SOL);
+    let vault = env.create_vault(&owner);
+    env.fund_vault_tokens(&owner, &vault, &t, bal);
+    env.open_long_via_vault(&owner, &vault, &t, 0, bal, 1).expect("open");
+    let before = env
+        .get_position(&t, &vault.vault, POSITION_SIDE_LONG, 0)
+        .expect("pos");
 
-    let liquidator_wallet = env.new_funded(5 * LAMPORTS_PER_SOL);
-    let vault = env.create_vault(&liquidator_wallet);
-    env.deposit_vault(&liquidator_wallet, &vault, 3 * LAMPORTS_PER_SOL)
-        .expect("fund vault");
+    let cranker = env.new_funded(2 * LAMPORTS_PER_SOL);
+    env.poke_pool_sol(&t, 120 * LAMPORTS_PER_SOL); // TUNE: underwater but solvent → partial
+    env.warm_twap(&cranker, &t);
 
-    env.liquidate_via_vault(&liquidator_wallet, &vault, borrower.pubkey(), &t)
-        .expect("liquidate_via_vault");
+    let liquidator = env.new_funded(25 * LAMPORTS_PER_SOL);
+    env.liquidate_long_via_vault(&liquidator, &vault, &t, 0)
+        .expect("liquidate_long_via_vault");
 
-    let v = env.get_torch_vault(&vault.vault);
-    assert!(v.total_spent > 0); // vault paid the debt-cover SOL
+    let after = env
+        .get_position(&t, &vault.vault, POSITION_SIDE_LONG, 0)
+        .expect("pos");
+    assert!(after.debt_amount < before.debt_amount, "debt reduced");
+    assert!(after.debt_amount > 0, "partial: position still open");
+    // Liquidator received seized tokens.
+    let seized = token_balance(&env, &liquidator.pubkey(), &t.mint);
+    assert!(seized > 0, "liquidator received seized vault tokens");
+}
+
+// ---------------------------------------------------------------------------
+// helpers (long position / vault PDA derivation)
+// ---------------------------------------------------------------------------
+
+fn long_position_pda(
+    t: &TokenCtx,
+    user: &solana_sdk::pubkey::Pubkey,
+    index: u32,
+) -> solana_sdk::pubkey::Pubkey {
+    solana_sdk::pubkey::Pubkey::find_program_address(
+        &[
+            POSITION_SEED,
+            user.as_ref(),
+            t.mint.as_ref(),
+            &[POSITION_SIDE_LONG],
+            &index.to_le_bytes(),
+        ],
+        &torch_market::ID,
+    )
+    .0
+}
+
+fn get_associated_token_address_2022_local(
+    owner: &solana_sdk::pubkey::Pubkey,
+    mint: &solana_sdk::pubkey::Pubkey,
+) -> solana_sdk::pubkey::Pubkey {
+    torch_market::token_2022_utils::get_associated_token_address_2022(owner, mint)
 }
 
 // ============================================================================
@@ -607,40 +631,40 @@ fn treasury_grows_via_swap_fees_to_sol_path() {
     // sustained trading periods (Token-2022 transfer fees compound).
     env.poke_token_amount(t.treasury_token_account, 100_000_000_000_000);
 
-    let before = env.get_treasury(&t).sol_balance;
+    let before = env.treasury_sol(&t);
     let payer = env.new_funded(LAMPORTS_PER_SOL);
     env.swap_fees_to_sol(&payer, &t, 1)
         .expect("swap_fees_to_sol must succeed with staged tokens + price-ratio gate cleared");
-    let after = env.get_treasury(&t).sol_balance;
+    let after = env.treasury_sol(&t);
 
     assert!(
         after > before,
-        "swap_fees_to_sol should grow treasury.sol_balance (before={}, after={})",
+        "swap_fees_to_sol should grow the treasury_sol_vault balance (before={}, after={})",
         before,
         after,
     );
 }
 
 #[test]
-#[cfg(feature = "devnet")]
-fn devnet_lending_unlocks_naturally_after_bonding() {
-    // On devnet (gate = 1 SOL), the natural protocol fees from
+#[cfg(any(feature = "devnet", feature = "simnet"))]
+fn lending_unlocks_naturally_after_bonding() {
+    // On simnet/devnet (gate = 1 SOL), the natural protocol fees from
     // bond_to_completion are enough to clear the gate. Test the shortest
     // possible unlock path: launch → bond → migrate → lending available.
     // No state pokes, no harvest+swap — just the protocol's own
-    // accrual from sustained bonding-curve activity.
+    // accrual from sustained bonding-curve activity. Excluded on mainnet
+    // (100 SOL gate needs sustained post-launch volume — verified in prod).
     let (mut env, t, borrower) = migrated();
 
-    let tr = env.get_treasury(&t);
     assert!(
-        tr.sol_balance >= MIN_TREASURY_SOL_FOR_LENDING,
-        "devnet gate should clear from bond fees alone — got sol_balance={}, gate={}",
-        tr.sol_balance,
+        env.treasury_sol(&t) >= MIN_TREASURY_SOL_FOR_LENDING,
+        "1 SOL gate should clear from bond fees alone — got treasury_sol={}, gate={}",
+        env.treasury_sol(&t),
         MIN_TREASURY_SOL_FOR_LENDING,
     );
 
-    // Borrow against natural state — no pokes anywhere.
+    // Open a long against natural state — no pokes anywhere.
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
-    env.borrow(&borrower, &t, bal / 4, 100_000_000)
-        .expect("borrow should succeed on devnet without any state manipulation");
+    env.open_long(&borrower, &t, 0, bal / 4, 1)
+        .expect("open_long should succeed on devnet without any state manipulation");
 }

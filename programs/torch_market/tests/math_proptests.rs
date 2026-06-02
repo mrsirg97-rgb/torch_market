@@ -592,3 +592,199 @@ proptest! {
         prop_assert!(net_received <= net + 1);
     }
 }
+
+// ============================================================================
+// [V21] Per-token closed leverage
+// ============================================================================
+
+// DeepPool's input-side swap fee, mirrored locally so this integration test
+// stays self-contained (deep_pool is a normal dep of the lib, not in scope for
+// the test crate). The Kani round-trip proof uses the real
+// deep_pool::constants::SWAP_FEE_BPS, pinning correctness against drift.
+const DP_SWAP_FEE_BPS: u16 = 25;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(CASES))]
+
+    // sol_to_token_value is monotonic non-decreasing in the SOL value priced.
+    #[test]
+    fn sol_to_token_value_monotonic(
+        a in 0u64..REALISTIC_MAX,
+        b in 0u64..REALISTIC_MAX,
+        pool_sol in 1u64..1_000_000_000_000u64,
+        pool_tokens in 1_000_000u64..REALISTIC_MAX,
+    ) {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        if let (Some(vlo), Some(vhi)) = (
+            calc_sol_to_token_value(lo, pool_sol, pool_tokens),
+            calc_sol_to_token_value(hi, pool_sol, pool_tokens),
+        ) {
+            prop_assert!(vhi >= vlo);
+        }
+    }
+
+    // Round-trip: pricing the bought tokens back into SOL (calc_collateral_value,
+    // the inverse) never exceeds the SOL value spent — floor rounding only loses
+    // value, never creates it.
+    #[test]
+    fn sol_to_token_value_roundtrip_bounded(
+        sol_value in 0u64..1_000_000_000_000u64,
+        pool_sol in 1u64..1_000_000_000_000u64,
+        pool_tokens in 1_000_000u64..1_000_000_000_000_000u64,
+    ) {
+        if let Some(tokens) = calc_sol_to_token_value(sol_value, pool_sol, pool_tokens) {
+            if let Some(back) = calc_collateral_value(tokens, pool_sol, pool_tokens) {
+                prop_assert!(back <= sol_value);
+            }
+        }
+    }
+
+    // Empty SOL side → None (can't price against a zero reserve).
+    #[test]
+    fn sol_to_token_value_empty_side_none(sol_value in 0u64..u64::MAX, pool_tokens in 0u64..u64::MAX) {
+        prop_assert!(calc_sol_to_token_value(sol_value, 0, pool_tokens).is_none());
+    }
+
+    // THE close_short property over the full realistic range: the inverse quote
+    // buys enough. Running the returned amount_in through DeepPool's forward buy
+    // (mirrored here from deep_pool::math) realizes >= tokens_out. The double-ceil
+    // rounding guarantees the close never comes up short of the debt.
+    #[test]
+    fn close_pool_amount_in_sufficient(
+        pool_sol in 5_000_000_000u64..1_000_000_000_000u64,          // 5–1000 SOL
+        pool_tokens in 1_000_000_000_000u64..200_000_000_000_000u64, // 1T–200T base units
+        frac_bps in 1u64..9_000u64,                                  // order = 0.01%–90% of reserve
+    ) {
+        let tokens_out = (pool_tokens / 10_000) * frac_bps;
+        prop_assume!(tokens_out > 0 && tokens_out < pool_tokens);
+        if let Some(amount_in) =
+            calc_close_pool_amount_in(tokens_out, pool_sol, pool_tokens, DP_SWAP_FEE_BPS)
+        {
+            // Forward buy, mirroring deep_pool::math::{calc_swap_fee, calc_swap_output}.
+            let fee = (amount_in as u128 * DP_SWAP_FEE_BPS as u128 / 10_000) as u64;
+            let effective_in = amount_in - fee;
+            let realized = ((effective_in as u128 * pool_tokens as u128)
+                / (pool_sol as u128 + effective_in as u128)) as u64;
+            prop_assert!(realized >= tokens_out);
+        }
+    }
+
+    // Guards: zero tokens_out, over-fill (>= reserve), and 100% fee → None.
+    #[test]
+    fn close_pool_amount_in_none_guards(
+        pool_sol in 0u64..1_000_000_000_000u64,
+        pool_tokens in 2u64..200_000_000_000_000u64,
+        tokens_out in 1u64..u64::MAX,
+    ) {
+        prop_assert!(calc_close_pool_amount_in(0, pool_sol, pool_tokens, DP_SWAP_FEE_BPS).is_none());
+        prop_assert!(
+            calc_close_pool_amount_in(pool_tokens, pool_sol, pool_tokens, DP_SWAP_FEE_BPS).is_none()
+        );
+        // A valid in-range order with a degenerate 100% fee still returns None.
+        let valid = tokens_out % (pool_tokens - 1) + 1; // 1 ..= pool_tokens-1
+        prop_assert!(calc_close_pool_amount_in(valid, pool_sol, pool_tokens, 10_000).is_none());
+    }
+}
+
+// ============================================================================
+// [V21][D-10] TWAP liquidation pricing — DeepPool-sourced Q64.64 mark
+// ============================================================================
+//
+// The oracle moved into DeepPool (keeperless; docs/twap-oracle.md). Torch now
+// consumes a single Q64.64 SOL-per-token price and only keeps the two unit
+// conversions (twap_value_in_sol / twap_tokens_to_seize). These fuzz them on the
+// new price signature. `price_q64` is built as `(p << 64)` for an integer
+// SOL-per-token price p, so the expected values are exact (no fractional
+// rounding) and the invariants stay crisp. The ring, accumulation, ratchet, and
+// dust floor are DeepPool's and tested there.
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(CASES))]
+
+    // At an integer price p (price_q64 = p<<64), valuing `amount` tokens yields
+    // exactly amount*p. Bounds keep the product inside u64 so the floor is exact.
+    #[test]
+    fn twap_value_integer_price_exact(
+        amount in 0u64..100_000_000u64,
+        p in 1u64..=1_000u64,
+    ) {
+        let price_q64 = (p as u128) << 64;
+        let want = (amount as u128) * (p as u128);
+        prop_assert_eq!(twap_value_in_sol(amount, price_q64), Some(want as u64));
+    }
+
+    // Monotone in the token amount at a fixed mark (floor of a linear map).
+    // Compare only where both are defined; the larger amount can overflow to None.
+    #[test]
+    fn twap_value_monotonic_in_amount(
+        a in 0u64..REALISTIC_MAX,
+        b in 0u64..REALISTIC_MAX,
+        price_q64 in 1u128..(1u128 << 96),
+    ) {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        if let (Some(vlo), Some(vhi)) = (
+            twap_value_in_sol(lo, price_q64),
+            twap_value_in_sol(hi, price_q64),
+        ) {
+            prop_assert!(vhi >= vlo);
+        }
+    }
+
+    // A zero marked price has no seize basis ⇒ None, regardless of debt/bonus.
+    #[test]
+    fn twap_seize_zero_price_none(
+        debt in 0u64..u64::MAX,
+        bonus in 0u16..=10_000u16,
+    ) {
+        prop_assert!(twap_tokens_to_seize(debt, bonus, 0).is_none());
+    }
+
+    // At an integer price p, the seize is exactly debt*(10_000+bonus)/(10_000*p)
+    // floored — and the bonus only ever grows it (the at-mark seize clamp).
+    #[test]
+    fn twap_seize_integer_price_exact_and_bonus_grows(
+        debt in 0u64..10_000_000u64,
+        bonus in 0u16..=2_000u16,
+        p in 1u64..=1_000u64,
+    ) {
+        let price_q64 = (p as u128) << 64;
+        let want = (debt as u128) * (10_000 + bonus as u128) / (10_000u128 * p as u128);
+        prop_assert_eq!(twap_tokens_to_seize(debt, bonus, price_q64), Some(want as u64));
+        let no_bonus = twap_tokens_to_seize(debt, 0, price_q64).unwrap();
+        prop_assert!(want as u64 >= no_bonus);
+    }
+
+    // Round-trip: tokens seized for `debt` SOL (no bonus) at an integer price,
+    // valued back at that price, recovers ~debt within one price-unit of floor.
+    #[test]
+    fn twap_seize_value_roundtrip(
+        debt in 1u64..10_000_000u64,
+        p in 1u64..=1_000u64,
+    ) {
+        let price_q64 = (p as u128) << 64;
+        let tokens = twap_tokens_to_seize(debt, 0, price_q64).unwrap();
+        let back = twap_value_in_sol(tokens, price_q64).unwrap();
+        // tokens = floor(debt/p); back = tokens*p ≤ debt, and back + p > debt.
+        prop_assert!(back <= debt);
+        prop_assert!(back + p > debt);
+    }
+
+    // Bonus ramp: 0 at/below threshold, full at/above full-LTV, monotone and
+    // bounded by max_bonus in between. (effective_liq_bonus_bps stays in torch.)
+    #[test]
+    fn bonus_ramp_monotone_bounded(
+        ltv_a in 0u64..20_000u64,
+        ltv_b in 0u64..20_000u64,
+    ) {
+        let t = DEFAULT_LIQUIDATION_THRESHOLD_BPS;
+        let f = LIQ_FULL_BONUS_LTV_BPS;
+        let m = DEFAULT_LIQUIDATION_BONUS_BPS;
+        let (lo, hi) = if ltv_a <= ltv_b { (ltv_a, ltv_b) } else { (ltv_b, ltv_a) };
+        let blo = effective_liq_bonus_bps(lo, t, f, m);
+        let bhi = effective_liq_bonus_bps(hi, t, f, m);
+        prop_assert!(bhi >= blo);
+        prop_assert!(bhi <= m as u64);
+        if hi <= t as u64 { prop_assert_eq!(bhi, 0); }
+        if lo >= f as u64 { prop_assert_eq!(blo, m as u64); }
+    }
+}

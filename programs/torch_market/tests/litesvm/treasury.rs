@@ -43,15 +43,13 @@ fn swap_fees_to_sol_below_threshold_is_silent_noop() {
     let (mut env, t, _) = migrated();
     env.poke_token_amount(t.treasury_token_account, 10_000_000_000); // 10M raw
 
+    let sol_before = env.treasury_sol(&t);
     let tr_before = env.get_treasury(&t);
     let payer = env.new_funded(LAMPORTS_PER_SOL);
     env.swap_fees_to_sol(&payer, &t, 1)
         .expect("returns ok, no swap");
     let tr_after = env.get_treasury(&t);
-    assert_eq!(
-        tr_before.sol_balance, tr_after.sol_balance,
-        "no swap should occur"
-    );
+    assert_eq!(sol_before, env.treasury_sol(&t), "no swap should occur");
     assert_eq!(tr_before.last_buyback_slot, tr_after.last_buyback_slot);
 }
 
@@ -71,8 +69,7 @@ fn swap_fees_to_sol_cooldown_is_silent_noop() {
     env.swap_fees_to_sol(&payer, &t, 1).expect("cooldown no-op");
 
     let tr_after = env.get_treasury(&t);
-    assert_eq!(tr_after.sol_balance, env.get_treasury(&t).sol_balance);
-    assert_eq!(tr_after.last_buyback_slot, current); // unchanged
+    assert_eq!(tr_after.last_buyback_slot, current); // unchanged (cooldown no-op)
 }
 
 #[test]
@@ -95,6 +92,7 @@ fn swap_fees_to_sol_happy_splits_creator_85_15() {
         .get_account(&t.creator)
         .map(|a| a.lamports())
         .unwrap_or(0);
+    let sol_before = env.treasury_sol(&t);
     let tr_before = env.get_treasury(&t);
 
     let payer = env.new_funded(LAMPORTS_PER_SOL);
@@ -107,7 +105,7 @@ fn swap_fees_to_sol_happy_splits_creator_85_15() {
         .unwrap_or(0);
     let tr_after = env.get_treasury(&t);
     let creator_gained = creator_after - creator_before;
-    let treasury_gained = tr_after.sol_balance - tr_before.sol_balance;
+    let treasury_gained = env.treasury_sol(&t) - sol_before;
 
     assert!(creator_gained > 0, "creator gained SOL");
     assert!(treasury_gained > 0, "treasury gained SOL");

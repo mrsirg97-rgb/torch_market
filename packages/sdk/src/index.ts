@@ -19,10 +19,8 @@ export {
   getHolders,
   getMessages,
   getLendingInfo,
-  getLoanPosition,
-  getAllLoanPositions,
-  getShortPosition,
-  getAllShortPositions,
+  getPosition,
+  getAllPositions,
   getVault,
   getVaultForWallet,
   getVaultWalletLink,
@@ -36,24 +34,34 @@ export { getBuyQuote, getSellQuote, getBorrowQuote } from './quotes'
 export { TRANSFER_FEE_BPS, grossUpForTransferFee } from './tokens'
 
 // indexer-only getters + wire types
-export { getTrades, getSwaps, getCandles, getUserPnl } from './indexer'
+export { getTrades, getSwaps, getCandles, getUserPnl, getLiquidations } from './indexer'
 export type {
   IndexerMarketStatus,
   IndexerMarketTier,
   IndexerPositionHealth,
+  IndexerPositionSide,
+  IndexerPositionEventKind,
   IndexerMarketRow,
   IndexerTradeRow,
   IndexerSwapRow,
   IndexerMessageRow,
-  IndexerLoanRow,
-  IndexerShortRow,
+  IndexerPositionRow,
+  IndexerPositionEventRow,
   IndexerCandle,
   UserPnlByMint,
   UserPnlSummary,
   TradeHistoryQuery,
   SwapsQuery,
   CandlesQuery,
+  LiquidationsQuery,
 } from './indexer'
+
+// priority fees (compute-unit price) — applied to every SDK-built transaction
+export {
+  setPriorityFeeMicroLamports,
+  getPriorityFeeMicroLamports,
+  estimatePriorityFee,
+} from './transactions'
 
 // transaction builders
 export {
@@ -64,11 +72,7 @@ export {
   sendCreateToken,
   buildSellTransaction,
   buildCreateTokenTransaction,
-  buildStarTransaction,
   buildMigrateTransaction,
-  buildBorrowTransaction,
-  buildRepayTransaction,
-  buildLiquidateTransaction,
   buildClaimProtocolRewardsTransaction,
   buildReclaimFailedTokenTransaction,
   buildCreateVaultTransaction,
@@ -84,6 +88,9 @@ export {
   buildOpenShortTransaction,
   buildCloseShortTransaction,
   buildLiquidateShortTransaction,
+  buildOpenLongTransaction,
+  buildCloseLongTransaction,
+  buildLiquidateLongTransaction,
 } from './transactions'
 
 // ephemeral Agent
@@ -114,20 +121,17 @@ export type {
   DirectBuyParams,
   SellParams,
   CreateTokenParams,
-  StarParams,
   MigrateParams,
   TransactionResult,
   BuyTransactionResult,
   CreateTokenResult,
-  BorrowParams,
-  RepayParams,
-  LiquidateParams,
   ClaimProtocolRewardsParams,
   ReclaimParams,
   LendingInfo,
-  LoanPositionInfo,
-  LoanPositionWithKey,
-  AllLoanPositionsResult,
+  PositionSide,
+  PositionInfo,
+  PositionWithKey,
+  AllPositionsResult,
   TokenMessage,
   MessagesResult,
   SaidVerification,
@@ -149,12 +153,12 @@ export type {
   SwapFeesToSolParams,
   AdvanceProtocolEpochParams,
   TokenMetadataResult,
-  ShortPositionInfo,
-  ShortPositionWithKey,
-  AllShortPositionsResult,
   OpenShortParams,
   CloseShortParams,
   LiquidateShortParams,
+  OpenLongParams,
+  CloseLongParams,
+  LiquidateLongParams,
 } from './types'
 
 // constants (for advanced usage)
@@ -171,8 +175,9 @@ export {
   TREASURY_SEED,
   USER_POSITION_SEED,
   USER_STATS_SEED,
-  STAR_RECORD_SEED,
   TREASURY_LOCK_SEED,
+  POSITION_SEED,
+  TREASURY_SOL_VAULT_SEED,
 } from './constants'
 
 // PDA / account derivers (for advanced usage — e.g. reading vault-owned ATAs directly).
@@ -183,11 +188,15 @@ export {
   getBondingCurvePda,
   getProtocolTreasuryPda,
   getTokenTreasuryPda,
+  getTreasurySolVaultPda,
   getTreasuryTokenAccount,
   getTreasuryLockPda,
-  getStarRecordPda,
   getUserStatsPda,
   getUserPositionPda,
+  getPositionPda,
+  getShortVaultPda,
+  getLongSolVaultPda,
+  getPositionTokenVault,
   getTorchConfigPda,
   getDeepPoolAccounts,
   getDeepPoolPda,
@@ -202,5 +211,6 @@ export type {
   Treasury as TreasuryAccount,
   ProtocolTreasury as ProtocolTreasuryAccount,
   UserStats as UserStatsAccount,
+  Position as PositionAccount,
 } from './program'
 export type { MintMetadata } from './tokens'

@@ -101,19 +101,18 @@ fn sell_via_vault_happy() {
     env.buy_via_vault(&vault_owner, &vault, &t, 100_000_000, 0)
         .expect("buy_via_vault");
 
-    let vault_balance_pre = env.get_torch_vault(&vault.vault).sol_balance;
+    let vault_balance_pre = env.vault_sol(&vault);
     let vault_tokens = read_token_balance(&env, &vault.vault, &t.mint);
     assert!(vault_tokens > 0);
 
     env.sell_via_vault(&vault_owner, &vault, &t, vault_tokens / 2, 0)
         .expect("sell_via_vault");
 
-    let v = env.get_torch_vault(&vault.vault);
     assert!(
-        v.sol_balance > vault_balance_pre,
+        env.vault_sol(&vault) > vault_balance_pre,
         "vault should gain SOL from sell"
     );
-    assert!(v.total_received > 0);
+    assert!(env.get_torch_vault(&vault.vault).total_received > 0);
 }
 
 #[test]

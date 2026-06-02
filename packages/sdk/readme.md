@@ -202,7 +202,7 @@ torch_market/
 - [Protocol audit](../../docs/audit.md)
 - [Verification (75 Kani proofs)](../../docs/verification.md)
 - [npm](https://www.npmjs.com/package/torchsdk)
-- Program ID: `4nwTCWyR6vapTQRkV39f32xJ3uQztdjBqfhubnR6wQQC` (V20.0.0)
+- Program ID: `E5b4rBqtS5jRvjHcYZ3ZSNo2sdSPJtauQKkEacKmmjqG` (V20.0.0)
 
 ## License
 

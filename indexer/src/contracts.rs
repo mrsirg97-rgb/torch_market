@@ -142,62 +142,88 @@ pub struct VaultSwapExecuted {
     pub minimum_amount_out: u64,
 }
 
+// [V21] Leverage events. Field order MUST match the on-chain `#[event]` structs
+// (borsh is positional). Pubkeys are [u8; 32]. Note `user`/`borrower` comes FIRST
+// in V21 (V20 had `mint` first). For via_vault handlers these same events are
+// emitted with `user`/`borrower` = the torch_vault PDA.
 #[derive(borsh::BorshSerialize, BorshDeserialize, Debug, Clone)]
-pub struct LoanCreated {
-    pub mint: [u8; 32],
+pub struct OpenShortEvent {
     pub user: [u8; 32],
-    pub collateral_amount: u64,
-    pub borrowed_amount: u64,
-    pub ltv_bps: u16,
-}
-
-#[derive(borsh::BorshSerialize, BorshDeserialize, Debug, Clone)]
-pub struct LoanRepaid {
     pub mint: [u8; 32],
-    pub user: [u8; 32],
-    pub sol_repaid: u64,
-    pub interest_paid: u64,
-    pub collateral_returned: u64,
-    pub fully_repaid: bool,
-}
-
-#[derive(borsh::BorshSerialize, BorshDeserialize, Debug, Clone)]
-pub struct LoanLiquidated {
-    pub mint: [u8; 32],
-    pub borrower: [u8; 32],
-    pub liquidator: [u8; 32],
-    pub debt_covered: u64,
-    pub collateral_seized: u64,
-    pub bad_debt: u64,
-}
-
-#[derive(borsh::BorshSerialize, BorshDeserialize, Debug, Clone)]
-pub struct ShortOpened {
-    pub mint: [u8; 32],
-    pub user: [u8; 32],
-    pub sol_collateral: u64,
+    pub position_index: u32,
+    pub collateral_sol_gross: u64,
+    pub open_fee_sol: u64,
+    pub net_collateral_sol: u64,
     pub tokens_borrowed: u64,
-    pub ltv_bps: u16,
+    pub vault_sol: u64,
 }
 
 #[derive(borsh::BorshSerialize, BorshDeserialize, Debug, Clone)]
-pub struct ShortClosed {
-    pub mint: [u8; 32],
+pub struct CloseShortEvent {
     pub user: [u8; 32],
-    pub tokens_returned: u64,
-    pub interest_paid_tokens: u64,
-    pub sol_returned: u64,
+    pub mint: [u8; 32],
+    pub position_index: u32,
+    pub debt_repaid: u64,
+    pub sol_spent_on_buyback: u64,
+    pub interest_paid: u64,
+    pub principal_paid: u64,
+    pub surplus_sol_to_user: u64,
     pub fully_closed: bool,
 }
 
 #[derive(borsh::BorshSerialize, BorshDeserialize, Debug, Clone)]
-pub struct ShortLiquidated {
-    pub mint: [u8; 32],
-    pub borrower: [u8; 32],
+pub struct LiquidateShortEvent {
     pub liquidator: [u8; 32],
+    pub borrower: [u8; 32],
+    pub mint: [u8; 32],
+    pub position_index: u32,
     pub tokens_covered: u64,
     pub sol_seized: u64,
-    pub bad_debt_tokens: u64,
+    pub bad_debt: u64,
+    pub bonus_bps: u16,
+    pub twap_ltv: u64,
+    pub residual_sol_to_borrower: u64,
+    pub fully_liquidated: bool,
+}
+
+#[derive(borsh::BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub struct OpenLongEvent {
+    pub user: [u8; 32],
+    pub mint: [u8; 32],
+    pub position_index: u32,
+    pub collateral_tokens: u64,
+    pub borrowed_sol_gross: u64,
+    pub open_fee_sol: u64,
+    pub atomic_buy_sol: u64,
+    pub vault_tokens: u64,
+}
+
+#[derive(borsh::BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub struct CloseLongEvent {
+    pub user: [u8; 32],
+    pub mint: [u8; 32],
+    pub position_index: u32,
+    pub tokens_sold: u64,
+    pub sol_out: u64,
+    pub debt_repaid: u64,
+    pub interest_paid: u64,
+    pub principal_paid: u64,
+    pub surplus_sol_to_user: u64,
+    pub fully_closed: bool,
+}
+
+#[derive(borsh::BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub struct LiquidateLongEvent {
+    pub liquidator: [u8; 32],
+    pub borrower: [u8; 32],
+    pub mint: [u8; 32],
+    pub position_index: u32,
+    pub debt_covered: u64,
+    pub tokens_seized: u64,
+    pub bad_debt: u64,
+    pub bonus_bps: u16,
+    pub twap_ltv: u64,
+    pub fully_liquidated: bool,
 }
 
 #[derive(borsh::BorshSerialize, BorshDeserialize, Debug, Clone)]
@@ -235,12 +261,12 @@ pub enum TorchEvent {
     BondingCurveTrade(BondingCurveTrade),
     MigratedToDex(MigratedToDex),
     VaultSwapExecuted(VaultSwapExecuted),
-    LoanCreated(LoanCreated),
-    LoanRepaid(LoanRepaid),
-    LoanLiquidated(LoanLiquidated),
-    ShortOpened(ShortOpened),
-    ShortClosed(ShortClosed),
-    ShortLiquidated(ShortLiquidated),
+    OpenShort(OpenShortEvent),
+    CloseShort(CloseShortEvent),
+    LiquidateShort(LiquidateShortEvent),
+    OpenLong(OpenLongEvent),
+    CloseLong(CloseLongEvent),
+    LiquidateLong(LiquidateLongEvent),
     RevivalContribution(RevivalContribution),
     TokenRevived(TokenRevived),
 }
@@ -263,6 +289,11 @@ pub struct DecodedEvent {
     // here so the writer can persist to `messages` with the same atomic
     // boundary as the trade row. None for non-trade events.
     pub memo: Option<String>,
+    // [V21] True when the emitting outer instruction was a `*_via_vault`
+    // leverage variant — i.e. the position's `owner` is a TorchVault PDA, not a
+    // wallet. Resolved from the parent ix discriminator (the event payload
+    // alone can't tell). Always false for non-leverage events.
+    pub via_vault: bool,
 }
 
 // One block's worth of decoded events. The unit pushed from the gRPC
@@ -305,6 +336,23 @@ pub enum PositionHealth {
     AtRisk,
     Liquidatable,
     None,
+}
+
+#[derive(Debug, Clone, Copy, sqlx::Type, Serialize, Deserialize, PartialEq, Eq)]
+#[sqlx(type_name = "position_side", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum PositionSide {
+    Long,
+    Short,
+}
+
+#[derive(Debug, Clone, Copy, sqlx::Type, Serialize, Deserialize, PartialEq, Eq)]
+#[sqlx(type_name = "position_event_kind", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum PositionEventKind {
+    Open,
+    Close,
+    Liquidate,
 }
 
 #[derive(Debug, Clone, Copy, sqlx::Type, Serialize, Deserialize, PartialEq, Eq)]
@@ -456,31 +504,49 @@ pub struct MessageRow {
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
-pub struct LoanRow {
+pub struct PositionRow {
     pub mint: String,
-    pub borrower: String,
+    pub owner: String,
+    pub side: PositionSide,
+    pub position_index: i32,
     pub collateral_amount: i64,
-    pub borrowed_amount: i64,
+    pub debt_amount: i64,
+    pub open_fee_sol: i64,
+    pub vault_balance: i64,
     pub accrued_interest_stored: i64,
     pub last_update_slot: i64,
     pub health: PositionHealth,
     pub is_active: bool,
+    pub owner_is_vault: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
-pub struct ShortRow {
+pub struct PositionEventRow {
     pub mint: String,
-    pub shorter: String,
-    pub sol_collateral: i64,
-    pub tokens_borrowed: i64,
-    pub accrued_interest_stored: i64,
-    pub last_update_slot: i64,
-    pub health: PositionHealth,
-    pub is_active: bool,
+    pub owner: String,
+    pub side: PositionSide,
+    pub position_index: i32,
+    pub kind: PositionEventKind,
+    pub liquidator: Option<String>,
+    pub sol_in: Option<i64>,
+    pub sol_out: Option<i64>,
+    pub tokens_in: Option<i64>,
+    pub tokens_out: Option<i64>,
+    pub interest_paid: Option<i64>,
+    pub principal_paid: Option<i64>,
+    pub surplus_sol: Option<i64>,
+    pub bad_debt: Option<i64>,
+    pub twap_ltv: Option<i64>,
+    pub bonus_bps: Option<i32>,
+    pub seized: Option<i64>,
+    pub residual: Option<i64>,
+    pub fully_resolved: Option<bool>,
+    pub slot: i64,
+    pub signature: String,
+    pub inner_ix_idx: i32,
     pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
@@ -623,31 +689,49 @@ pub struct NewMessageRow {
 }
 
 #[derive(Debug, Clone)]
-pub struct NewLoanRow {
+pub struct NewPositionRow {
     pub mint: String,
-    pub borrower: String,
+    pub owner: String,
+    pub side: PositionSide,
+    pub position_index: i32,
     pub collateral_amount: i64,
-    pub borrowed_amount: i64,
+    pub debt_amount: i64,
+    pub open_fee_sol: i64,
+    pub vault_balance: i64,
     pub accrued_interest_stored: i64,
     pub last_update_slot: i64,
     pub health: PositionHealth,
     pub is_active: bool,
+    pub owner_is_vault: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
-pub struct NewShortRow {
+pub struct NewPositionEventRow {
     pub mint: String,
-    pub shorter: String,
-    pub sol_collateral: i64,
-    pub tokens_borrowed: i64,
-    pub accrued_interest_stored: i64,
-    pub last_update_slot: i64,
-    pub health: PositionHealth,
-    pub is_active: bool,
+    pub owner: String,
+    pub side: PositionSide,
+    pub position_index: i32,
+    pub kind: PositionEventKind,
+    pub liquidator: Option<String>,
+    pub sol_in: Option<i64>,
+    pub sol_out: Option<i64>,
+    pub tokens_in: Option<i64>,
+    pub tokens_out: Option<i64>,
+    pub interest_paid: Option<i64>,
+    pub principal_paid: Option<i64>,
+    pub surplus_sol: Option<i64>,
+    pub bad_debt: Option<i64>,
+    pub twap_ltv: Option<i64>,
+    pub bonus_bps: Option<i32>,
+    pub seized: Option<i64>,
+    pub residual: Option<i64>,
+    pub fully_resolved: Option<bool>,
+    pub slot: i64,
+    pub signature: String,
+    pub inner_ix_idx: i32,
     pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -682,8 +766,8 @@ pub enum BroadcastFrame {
     Market(Arc<MarketRow>),
     Trade(Arc<TradeRow>),
     Message(Arc<MessageRow>),
-    Loan(Arc<LoanRow>),
-    Short(Arc<ShortRow>),
+    Position(Arc<PositionRow>),
+    PositionEvent(Arc<PositionEventRow>),
     Migration(Arc<MigrationRow>),
 }
 

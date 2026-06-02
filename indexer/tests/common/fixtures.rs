@@ -8,9 +8,10 @@
 use chrono::{DateTime, Utc};
 
 use torch_indexer::contracts::{
-    AnyEvent, BondingCurveTrade, DecodedEvent, DeepPoolEvent, MarketCreated, MarketStatus,
-    MarketTier, MigratedToDex, NewLoanRow, NewMarketRow, NewPoolRow, NewShortRow, NewTradeRow,
-    PoolCreated, PositionHealth, ShortOpened, SwapExecuted, TorchEvent,
+    AnyEvent, BondingCurveTrade, CloseShortEvent, DecodedEvent, DeepPoolEvent, LiquidateShortEvent,
+    MarketCreated, MarketStatus, MarketTier, MigratedToDex, NewMarketRow, NewPoolRow,
+    NewPositionEventRow, NewPositionRow, NewTradeRow, OpenLongEvent, OpenShortEvent, PoolCreated,
+    PositionEventKind, PositionHealth, PositionSide, SwapExecuted, TorchEvent,
 };
 
 // ─── pubkey helpers ──────────────────────────────────────────────────────
@@ -41,12 +42,21 @@ pub fn de(event: AnyEvent, slot: i64, inner_ix_idx: i32) -> DecodedEvent {
         block_time: Some(fixed_ts()),
         event,
         memo: None,
+        via_vault: false,
     }
 }
 
 pub fn de_with_memo(event: AnyEvent, slot: i64, inner_ix_idx: i32, memo: &str) -> DecodedEvent {
     let mut e = de(event, slot, inner_ix_idx);
     e.memo = Some(memo.to_string());
+    e
+}
+
+// [V21] Same as `de` but flags the emitting ix as a `*_via_vault` variant
+// (owner_is_vault = true on the resulting position).
+pub fn de_via_vault(event: AnyEvent, slot: i64, inner_ix_idx: i32) -> DecodedEvent {
+    let mut e = de(event, slot, inner_ix_idx);
+    e.via_vault = true;
     e
 }
 
@@ -135,13 +145,67 @@ pub fn swap_executed(pool: u8, user: u8, is_buy: bool) -> SwapExecuted {
     }
 }
 
-pub fn short_opened(mint: u8, user: u8, net_tokens: u64) -> ShortOpened {
-    ShortOpened {
-        mint: pk(mint),
+// [V21] OpenShortEvent — `tokens_borrowed` is the net (post-Token-2022-fee)
+// amount, matching the on-chain net-recording semantics.
+pub fn open_short_event(mint: u8, user: u8, net_tokens: u64) -> OpenShortEvent {
+    OpenShortEvent {
         user: pk(user),
-        sol_collateral: 2_000_000_000,
-        tokens_borrowed: net_tokens, // already net (post-fix semantics)
-        ltv_bps: 4500,
+        mint: pk(mint),
+        position_index: 0,
+        collateral_sol_gross: 2_010_000_000,
+        open_fee_sol: 10_000_000,
+        net_collateral_sol: 2_000_000_000,
+        tokens_borrowed: net_tokens,
+        vault_sol: 2_000_000_000,
+    }
+}
+
+pub fn open_long_event(mint: u8, user: u8, collateral_tokens: u64) -> OpenLongEvent {
+    OpenLongEvent {
+        user: pk(user),
+        mint: pk(mint),
+        position_index: 0,
+        collateral_tokens,
+        borrowed_sol_gross: 1_000_000_000,
+        open_fee_sol: 5_000_000,
+        atomic_buy_sol: 1_000_000_000,
+        vault_tokens: collateral_tokens,
+    }
+}
+
+pub fn close_short_event(mint: u8, user: u8, debt_repaid: u64, fully_closed: bool) -> CloseShortEvent {
+    CloseShortEvent {
+        user: pk(user),
+        mint: pk(mint),
+        position_index: 0,
+        debt_repaid,
+        sol_spent_on_buyback: 1_500_000_000,
+        interest_paid: 20_000_000,
+        principal_paid: 1_480_000_000,
+        surplus_sol_to_user: 480_000_000,
+        fully_closed,
+    }
+}
+
+pub fn liquidate_short_event(
+    mint: u8,
+    liquidator: u8,
+    borrower: u8,
+    tokens_covered: u64,
+    fully_liquidated: bool,
+) -> LiquidateShortEvent {
+    LiquidateShortEvent {
+        liquidator: pk(liquidator),
+        borrower: pk(borrower),
+        mint: pk(mint),
+        position_index: 0,
+        tokens_covered,
+        sol_seized: 1_900_000_000,
+        bad_debt: 0,
+        bonus_bps: 500,
+        twap_ltv: 9200,
+        residual_sol_to_borrower: 50_000_000,
+        fully_liquidated,
     }
 }
 
@@ -208,33 +272,73 @@ pub fn new_trade_row(mint: &str, trader: &str, slot: i64, inner: i32) -> NewTrad
     }
 }
 
-pub fn new_loan_row(mint: &str, borrower: &str, slot: i64) -> NewLoanRow {
-    NewLoanRow {
+// [V21] Unified position row. `side` selects the unit-by-side defaults:
+//   short → collateral = SOL (2 SOL), debt = tokens (net)
+//   long  → collateral = tokens,      debt = SOL
+pub fn new_position_row(
+    mint: &str,
+    owner: &str,
+    side: PositionSide,
+    position_index: i32,
+    slot: i64,
+) -> NewPositionRow {
+    let (collateral_amount, debt_amount, vault_balance) = match side {
+        PositionSide::Short => (2_000_000_000, 999_300_000, 2_000_000_000),
+        PositionSide::Long => (315_000_000_000_000, 1_000_000_000, 315_000_000_000_000),
+    };
+    NewPositionRow {
         mint: mint.to_string(),
-        borrower: borrower.to_string(),
-        collateral_amount: 100_000_000_000,
-        borrowed_amount: 2_000_000_000,
+        owner: owner.to_string(),
+        side,
+        position_index,
+        collateral_amount,
+        debt_amount,
+        open_fee_sol: 10_000_000,
+        vault_balance,
         accrued_interest_stored: 0,
         last_update_slot: slot,
         health: PositionHealth::Healthy,
         is_active: true,
+        owner_is_vault: false,
         created_at: fixed_ts(),
         updated_at: fixed_ts(),
     }
 }
 
-pub fn new_short_row(mint: &str, shorter: &str, slot: i64) -> NewShortRow {
-    NewShortRow {
+// [V21] A position_events log row (append-only). Defaults to an `open` event;
+// override `kind` + the kind-specific fields at the call site.
+pub fn new_position_event_row(
+    mint: &str,
+    owner: &str,
+    side: PositionSide,
+    kind: PositionEventKind,
+    slot: i64,
+    inner: i32,
+) -> NewPositionEventRow {
+    NewPositionEventRow {
         mint: mint.to_string(),
-        shorter: shorter.to_string(),
-        sol_collateral: 2_000_000_000,
-        tokens_borrowed: 999_300_000, // net post-fee
-        accrued_interest_stored: 0,
-        last_update_slot: slot,
-        health: PositionHealth::Healthy,
-        is_active: true,
+        owner: owner.to_string(),
+        side,
+        position_index: 0,
+        kind,
+        liquidator: None,
+        sol_in: None,
+        sol_out: None,
+        tokens_in: None,
+        tokens_out: None,
+        interest_paid: None,
+        principal_paid: None,
+        surplus_sol: None,
+        bad_debt: None,
+        twap_ltv: None,
+        bonus_bps: None,
+        seized: None,
+        residual: None,
+        fully_resolved: None,
+        slot,
+        signature: format!("sig_posevt_{slot}_{inner}"),
+        inner_ix_idx: inner,
         created_at: fixed_ts(),
-        updated_at: fixed_ts(),
     }
 }
 
@@ -261,6 +365,39 @@ pub fn ev_swap(pool: u8, user: u8, is_buy: bool) -> AnyEvent {
     AnyEvent::DeepPool(DeepPoolEvent::SwapExecuted(swap_executed(pool, user, is_buy)))
 }
 
-pub fn ev_short_opened(mint: u8, user: u8, net_tokens: u64) -> AnyEvent {
-    AnyEvent::Torch(TorchEvent::ShortOpened(short_opened(mint, user, net_tokens)))
+pub fn ev_open_short(mint: u8, user: u8, net_tokens: u64) -> AnyEvent {
+    AnyEvent::Torch(TorchEvent::OpenShort(open_short_event(mint, user, net_tokens)))
+}
+
+pub fn ev_open_long(mint: u8, user: u8, collateral_tokens: u64) -> AnyEvent {
+    AnyEvent::Torch(TorchEvent::OpenLong(open_long_event(
+        mint,
+        user,
+        collateral_tokens,
+    )))
+}
+
+pub fn ev_close_short(mint: u8, user: u8, debt_repaid: u64, fully_closed: bool) -> AnyEvent {
+    AnyEvent::Torch(TorchEvent::CloseShort(close_short_event(
+        mint,
+        user,
+        debt_repaid,
+        fully_closed,
+    )))
+}
+
+pub fn ev_liquidate_short(
+    mint: u8,
+    liquidator: u8,
+    borrower: u8,
+    tokens_covered: u64,
+    fully_liquidated: bool,
+) -> AnyEvent {
+    AnyEvent::Torch(TorchEvent::LiquidateShort(liquidate_short_event(
+        mint,
+        liquidator,
+        borrower,
+        tokens_covered,
+        fully_liquidated,
+    )))
 }

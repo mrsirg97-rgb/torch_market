@@ -5,7 +5,7 @@ use crate::constants::*;
 use crate::contexts::*;
 use crate::errors::TorchMarketError;
 use crate::math;
-use crate::state::{BondingCurve, ProtocolTreasury, Treasury, UserPosition, UserStats};
+use crate::state::{BondingCurve, ProtocolTreasury, UserPosition, UserStats};
 
 // ============================================================================
 // Buy — shared helpers
@@ -112,7 +112,6 @@ fn quote_buy_tokens(
 fn finalize_buy_state(
     bonding_curve: &mut BondingCurve,
     bonding_curve_key: Pubkey,
-    token_treasury: &mut Treasury,
     user_position: &mut UserPosition,
     user_stats: Option<&mut UserStats>,
     protocol_treasury: &mut ProtocolTreasury,
@@ -145,10 +144,8 @@ fn finalize_buy_state(
         .checked_sub(tokens_out)
         .ok_or(TorchMarketError::MathOverflow)?;
 
-    token_treasury.sol_balance = token_treasury
-        .sol_balance
-        .checked_add(computed.total_to_treasury)
-        .ok_or(TorchMarketError::MathOverflow)?;
+    // SOL fee physically lands in treasury_sol_vault (the distribute step) — no
+    // tracked field to bump; balance is derived from the vault's lamports.
 
     let is_first_buy = user_position.user == Pubkey::default();
     if is_first_buy {
@@ -253,13 +250,17 @@ pub fn buy(ctx: Context<Buy>, args: BuyArgs) -> Result<()> {
         TOKEN_DECIMALS,
     )?;
 
+    crate::pool_validation::validate_bonding_curve_sol(
+        &ctx.accounts.bonding_curve_sol,
+        &ctx.accounts.mint.key(),
+    )?;
     let sys_program = ctx.accounts.system_program.to_account_info();
     let buyer_info = ctx.accounts.buyer.to_account_info();
     distribute_buy_sol_from_signer(
         &sys_program,
         &buyer_info,
-        &ctx.accounts.bonding_curve.to_account_info(),
-        &ctx.accounts.token_treasury.to_account_info(),
+        &ctx.accounts.bonding_curve_sol,
+        &ctx.accounts.treasury_sol_vault.to_account_info(),
         &ctx.accounts.dev_wallet.to_account_info(),
         &ctx.accounts.protocol_treasury.to_account_info(),
         &ctx.accounts.creator,
@@ -279,7 +280,6 @@ pub fn buy(ctx: Context<Buy>, args: BuyArgs) -> Result<()> {
     finalize_buy_state(
         &mut ctx.accounts.bonding_curve,
         bonding_curve_key,
-        &mut ctx.accounts.token_treasury,
         &mut ctx.accounts.user_position,
         user_stats_ref,
         &mut ctx.accounts.protocol_treasury,
@@ -311,8 +311,9 @@ pub fn buy(ctx: Context<Buy>, args: BuyArgs) -> Result<()> {
 
 // Vault-routed buy: vault funds the SOL, tokens deposited into vault ATA.
 pub fn buy_via_vault(ctx: Context<BuyViaVault>, args: BuyArgs) -> Result<()> {
+    // Derived balance (vault_sol lamports − rent), not a tracked field.
     require!(
-        ctx.accounts.torch_vault.sol_balance >= args.sol_amount,
+        crate::pool_validation::vault_physical_sol(&ctx.accounts.vault_sol)? >= args.sol_amount,
         TorchMarketError::InsufficientVaultBalance
     );
 
@@ -352,22 +353,30 @@ pub fn buy_via_vault(ctx: Context<BuyViaVault>, args: BuyArgs) -> Result<()> {
         TOKEN_DECIMALS,
     )?;
 
+    // Fund the buy from vault_sol (System-owned) via seed-signed system transfers.
+    crate::pool_validation::validate_bonding_curve_sol(
+        &ctx.accounts.bonding_curve_sol,
+        &ctx.accounts.mint.key(),
+    )?;
+    let creator_key = ctx.accounts.torch_vault.creator;
+    let vsol_seeds: &[&[u8]] = &[
+        TORCH_VAULT_SOL_SEED,
+        creator_key.as_ref(),
+        &[ctx.bumps.vault_sol],
+    ];
     distribute_buy_sol_from_vault(
-        &ctx.accounts.torch_vault.to_account_info(),
-        &ctx.accounts.bonding_curve.to_account_info(),
-        &ctx.accounts.token_treasury.to_account_info(),
+        &ctx.accounts.system_program.to_account_info(),
+        &ctx.accounts.vault_sol.to_account_info(),
+        vsol_seeds,
+        &ctx.accounts.bonding_curve_sol,
+        &ctx.accounts.treasury_sol_vault.to_account_info(),
         &ctx.accounts.dev_wallet.to_account_info(),
         &ctx.accounts.protocol_treasury.to_account_info(),
         &ctx.accounts.creator,
-        args.sol_amount,
         &computed,
     )?;
 
     let vault = &mut ctx.accounts.torch_vault;
-    vault.sol_balance = vault
-        .sol_balance
-        .checked_sub(args.sol_amount)
-        .ok_or(TorchMarketError::MathOverflow)?;
     vault.total_spent = vault
         .total_spent
         .checked_add(args.sol_amount)
@@ -386,7 +395,6 @@ pub fn buy_via_vault(ctx: Context<BuyViaVault>, args: BuyArgs) -> Result<()> {
     finalize_buy_state(
         &mut ctx.accounts.bonding_curve,
         bonding_curve_key,
-        &mut ctx.accounts.token_treasury,
         &mut ctx.accounts.user_position,
         user_stats_ref,
         &mut ctx.accounts.protocol_treasury,
@@ -422,7 +430,7 @@ fn distribute_buy_sol_from_signer<'info>(
     system_program: &AccountInfo<'info>,
     signer: &AccountInfo<'info>,
     bonding_curve: &AccountInfo<'info>,
-    token_treasury: &AccountInfo<'info>,
+    treasury_sol_vault: &AccountInfo<'info>,
     dev_wallet: &AccountInfo<'info>,
     protocol_treasury: &AccountInfo<'info>,
     creator: &AccountInfo<'info>,
@@ -441,43 +449,45 @@ fn distribute_buy_sol_from_signer<'info>(
         )
     };
     xfer(bonding_curve, computed.sol_to_curve)?;
-    xfer(token_treasury, computed.total_to_treasury)?;
+    xfer(treasury_sol_vault, computed.total_to_treasury)?;
     xfer(dev_wallet, computed.dev_wallet_share)?;
     xfer(protocol_treasury, computed.protocol_fee)?;
     xfer(creator, computed.creator_sol)?;
     Ok(())
 }
 
-// 5-way direct-lamport distribution from a program-owned vault PDA.
-// Vault PDA can't be a System.transfer source (program-owned), so we shift
-// lamports directly. Atomic with the rest of the instruction.
+// 5-way distribution from the System-owned vault_sol PDA via seed-signed system
+// transfers (no direct lamports — vault_sol is the vault's SOL home).
 #[allow(clippy::too_many_arguments)]
 fn distribute_buy_sol_from_vault<'info>(
-    vault: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
+    vault_sol: &AccountInfo<'info>,
+    vsol_seeds: &[&[u8]],
     bonding_curve: &AccountInfo<'info>,
-    token_treasury: &AccountInfo<'info>,
+    treasury_sol_vault: &AccountInfo<'info>,
     dev_wallet: &AccountInfo<'info>,
     protocol_treasury: &AccountInfo<'info>,
     creator: &AccountInfo<'info>,
-    sol_amount: u64,
     computed: &BuyComputed,
 ) -> Result<()> {
-    **vault.try_borrow_mut_lamports()? = vault
-        .lamports()
-        .checked_sub(sol_amount)
-        .ok_or(TorchMarketError::MathOverflow)?;
-    let credit = |to: &AccountInfo<'info>, amount: u64| -> Result<()> {
-        **to.try_borrow_mut_lamports()? = to
-            .lamports()
-            .checked_add(amount)
-            .ok_or(TorchMarketError::MathOverflow)?;
-        Ok(())
+    let xfer = |to: &AccountInfo<'info>, amount: u64| -> Result<()> {
+        anchor_lang::system_program::transfer(
+            CpiContext::new_with_signer(
+                system_program.clone(),
+                anchor_lang::system_program::Transfer {
+                    from: vault_sol.clone(),
+                    to: to.clone(),
+                },
+                &[vsol_seeds],
+            ),
+            amount,
+        )
     };
-    credit(bonding_curve, computed.sol_to_curve)?;
-    credit(token_treasury, computed.total_to_treasury)?;
-    credit(dev_wallet, computed.dev_wallet_share)?;
-    credit(protocol_treasury, computed.protocol_fee)?;
-    credit(creator, computed.creator_sol)?;
+    xfer(bonding_curve, computed.sol_to_curve)?;
+    xfer(treasury_sol_vault, computed.total_to_treasury)?;
+    xfer(dev_wallet, computed.dev_wallet_share)?;
+    xfer(protocol_treasury, computed.protocol_fee)?;
+    xfer(creator, computed.creator_sol)?;
     Ok(())
 }
 
@@ -522,16 +532,13 @@ fn compute_sell(
 #[allow(clippy::too_many_arguments)]
 fn finalize_sell_state(
     bonding_curve: &mut BondingCurve,
-    token_treasury: &mut Treasury,
     user_stats: Option<&mut UserStats>,
     protocol_treasury: Option<&mut ProtocolTreasury>,
     token_amount: u64,
     computed: &SellComputed,
 ) -> Result<()> {
-    token_treasury.sol_balance = token_treasury
-        .sol_balance
-        .checked_add(computed.sell_fee)
-        .ok_or(TorchMarketError::MathOverflow)?;
+    // Sell fee physically lands in treasury_sol_vault (the shift step) — no
+    // tracked field; balance is derived from the vault's lamports.
     bonding_curve.virtual_sol_reserves = bonding_curve
         .virtual_sol_reserves
         .checked_sub(computed.sol_out)
@@ -573,23 +580,28 @@ fn finalize_sell_state(
     Ok(())
 }
 
-// Direct lamport shift from bonding_curve to a recipient. Used because the
-// curve PDA is program-owned (can't be a System.transfer source) and sells
-// pull SOL out of the curve.
-fn shift_curve_lamports<'info>(
-    bonding_curve: &AccountInfo<'info>,
+// Seed-signed SOL transfer out of the System-owned bonding_curve_sol PDA. The
+// curve's bonded SOL lives in this System account (not the program-owned data
+// account), so sells/reclaim move it via system_program::transfer — no direct
+// lamports. `bcsol_seeds` = [BONDING_CURVE_SOL_SEED, mint, &[bump]].
+fn transfer_curve_sol<'info>(
+    system_program: &AccountInfo<'info>,
+    bonding_curve_sol: &AccountInfo<'info>,
+    bcsol_seeds: &[&[u8]],
     to: &AccountInfo<'info>,
     amount: u64,
 ) -> Result<()> {
-    **bonding_curve.try_borrow_mut_lamports()? = bonding_curve
-        .lamports()
-        .checked_sub(amount)
-        .ok_or(TorchMarketError::MathOverflow)?;
-    **to.try_borrow_mut_lamports()? = to
-        .lamports()
-        .checked_add(amount)
-        .ok_or(TorchMarketError::MathOverflow)?;
-    Ok(())
+    anchor_lang::system_program::transfer(
+        CpiContext::new_with_signer(
+            system_program.clone(),
+            anchor_lang::system_program::Transfer {
+                from: bonding_curve_sol.clone(),
+                to: to.clone(),
+            },
+            &[bcsol_seeds],
+        ),
+        amount,
+    )
 }
 
 // ============================================================================
@@ -625,15 +637,26 @@ pub fn sell(ctx: Context<Sell>, args: SellArgs) -> Result<()> {
         TOKEN_DECIMALS,
     )?;
 
-    let bc_info = ctx.accounts.bonding_curve.to_account_info();
-    shift_curve_lamports(
-        &bc_info,
+    let mint_key = ctx.accounts.mint.key();
+    let bcsol_bump = crate::pool_validation::validate_bonding_curve_sol(
+        &ctx.accounts.bonding_curve_sol,
+        &mint_key,
+    )?;
+    let bcsol_seeds: &[&[u8]] = &[BONDING_CURVE_SOL_SEED, mint_key.as_ref(), &[bcsol_bump]];
+    let sys_program = ctx.accounts.system_program.to_account_info();
+    let bcsol_info = ctx.accounts.bonding_curve_sol.to_account_info();
+    transfer_curve_sol(
+        &sys_program,
+        &bcsol_info,
+        bcsol_seeds,
         &ctx.accounts.seller.to_account_info(),
         computed.sol_to_seller,
     )?;
-    shift_curve_lamports(
-        &bc_info,
-        &ctx.accounts.token_treasury.to_account_info(),
+    transfer_curve_sol(
+        &sys_program,
+        &bcsol_info,
+        bcsol_seeds,
+        &ctx.accounts.treasury_sol_vault.to_account_info(),
         computed.sell_fee,
     )?;
 
@@ -650,7 +673,6 @@ pub fn sell(ctx: Context<Sell>, args: SellArgs) -> Result<()> {
 
     finalize_sell_state(
         &mut ctx.accounts.bonding_curve,
-        &mut ctx.accounts.token_treasury,
         user_stats_ref,
         protocol_treasury_ref,
         args.token_amount,
@@ -709,23 +731,31 @@ pub fn sell_via_vault(ctx: Context<SellViaVault>, args: SellArgs) -> Result<()> 
         TOKEN_DECIMALS,
     )?;
 
-    let bc_info = ctx.accounts.bonding_curve.to_account_info();
-    shift_curve_lamports(
-        &bc_info,
-        &ctx.accounts.torch_vault.to_account_info(),
+    // Proceeds → vault_sol (the vault's SOL home); fee → treasury_sol_vault.
+    let mint_key = ctx.accounts.mint.key();
+    let bcsol_bump = crate::pool_validation::validate_bonding_curve_sol(
+        &ctx.accounts.bonding_curve_sol,
+        &mint_key,
+    )?;
+    let bcsol_seeds: &[&[u8]] = &[BONDING_CURVE_SOL_SEED, mint_key.as_ref(), &[bcsol_bump]];
+    let sys_program = ctx.accounts.system_program.to_account_info();
+    let bcsol_info = ctx.accounts.bonding_curve_sol.to_account_info();
+    transfer_curve_sol(
+        &sys_program,
+        &bcsol_info,
+        bcsol_seeds,
+        &ctx.accounts.vault_sol.to_account_info(),
         computed.sol_to_seller,
     )?;
-    shift_curve_lamports(
-        &bc_info,
-        &ctx.accounts.token_treasury.to_account_info(),
+    transfer_curve_sol(
+        &sys_program,
+        &bcsol_info,
+        bcsol_seeds,
+        &ctx.accounts.treasury_sol_vault.to_account_info(),
         computed.sell_fee,
     )?;
 
     let vault = &mut ctx.accounts.torch_vault;
-    vault.sol_balance = vault
-        .sol_balance
-        .checked_add(computed.sol_to_seller)
-        .ok_or(TorchMarketError::MathOverflow)?;
     vault.total_received = vault
         .total_received
         .checked_add(computed.sol_to_seller)
@@ -744,7 +774,6 @@ pub fn sell_via_vault(ctx: Context<SellViaVault>, args: SellArgs) -> Result<()> 
 
     finalize_sell_state(
         &mut ctx.accounts.bonding_curve,
-        &mut ctx.accounts.token_treasury,
         user_stats_ref,
         protocol_treasury_ref,
         args.token_amount,

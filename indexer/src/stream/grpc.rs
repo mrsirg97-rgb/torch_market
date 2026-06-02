@@ -275,6 +275,18 @@ pub fn decode_block_transaction(
     let mut tx_events: Vec<DecodedEvent> = Vec::new();
     let mut flat_idx: i32 = 0;
     for inner in &meta.inner_instructions {
+        // Resolve whether the outer instruction that emitted this group's
+        // events is a `*_via_vault` leverage variant — drives `owner_is_vault`.
+        // `inner.index` points at the outer ix in the top-level message.
+        let via_vault = tx_info
+            .message
+            .as_ref()
+            .and_then(|msg| msg.instructions.get(inner.index as usize))
+            .map(|outer| {
+                Some(outer.program_id_index as usize) == torch_idx
+                    && torch_discs.is_via_vault_ix(&outer.data)
+            })
+            .unwrap_or(false);
         for ix in &inner.instructions {
             let pidx = ix.program_id_index as usize;
             if Some(pidx) == torch_idx {
@@ -287,6 +299,7 @@ pub fn decode_block_transaction(
                             block_time,
                             event: AnyEvent::Torch(event),
                             memo: None,
+                            via_vault,
                         });
                     }
                     Err(e) => log_decode_failure(slot, &signature, ix, "torch", e),
@@ -301,6 +314,7 @@ pub fn decode_block_transaction(
                             block_time,
                             event: AnyEvent::DeepPool(event),
                             memo: None,
+                            via_vault: false,
                         });
                     }
                     Err(e) => log_decode_failure(slot, &signature, ix, "deep_pool", e),

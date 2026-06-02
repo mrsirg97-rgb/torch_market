@@ -6,6 +6,7 @@ use crate::pool_validation::read_deep_pool_reserves;
 use crate::token_2022_utils::*;
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::invoke_signed;
+use anchor_lang::system_program;
 
 // Harvest accumulated transfer fees.
 // This collects transfer fees that have been withheld from transfers
@@ -110,25 +111,28 @@ pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) ->
         return Ok(());
     }
 
-    // Record treasury lamports before swap
-    let treasury_lamports_before = ctx.accounts.treasury.to_account_info().lamports();
+    // Record treasury_sol_vault lamports before swap — SOL proceeds land THERE
+    // now (unified custody), not in the program-owned treasury account.
+    let vault_lamports_before = ctx.accounts.treasury_sol_vault.lamports();
 
-    // DeepPool swap CPI: sell tokens for SOL
+    // DeepPool swap CPI: sell tokens for SOL. user = treasury (authority of the
+    // token account); sol_source = treasury_sol_vault (the SOL sink). Both are
+    // PDAs, so both sign via seeds.
     let treasury_seeds = &[
         TREASURY_SEED,
         mint_key.as_ref(),
         &[ctx.accounts.treasury.bump],
     ];
-    let treasury_signer = &[&treasury_seeds[..]][..];
+    let tsv_seeds = &[
+        TREASURY_SOL_VAULT_SEED,
+        mint_key.as_ref(),
+        &[ctx.bumps.treasury_sol_vault],
+    ];
+    let signers = &[&treasury_seeds[..], &tsv_seeds[..]][..];
 
-    // sol_source = treasury (sell only): deep_pool credits lamports via direct
-    // manipulation, which doesn't require sol_source to be system-owned.
-    // deep_pool v5.0.0: associated_token_program dropped from Swap context
-    // (treasury_token_account is pre-created at treasury init, enforced by
-    // the `associated_token::*` constraint on SwapFeesToSol above).
     let swap_accounts = deep_pool::cpi::accounts::Swap {
         user: ctx.accounts.treasury.to_account_info(),
-        sol_source: ctx.accounts.treasury.to_account_info(),
+        sol_source: ctx.accounts.treasury_sol_vault.to_account_info(),
         pool: ctx.accounts.deep_pool.to_account_info(),
         token_mint: ctx.accounts.mint.to_account_info(),
         token_vault: ctx.accounts.deep_pool_token_vault.to_account_info(),
@@ -143,7 +147,7 @@ pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) ->
         CpiContext::new_with_signer(
             ctx.accounts.deep_pool_program.to_account_info(),
             swap_accounts,
-            treasury_signer,
+            signers,
         ),
         deep_pool::SwapArgs {
             amount_in: sell_amount,
@@ -152,10 +156,10 @@ pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) ->
         },
     )?;
 
-    // Measure SOL received from lamport delta
-    let treasury_lamports_after = ctx.accounts.treasury.to_account_info().lamports();
-    let sol_received = treasury_lamports_after
-        .checked_sub(treasury_lamports_before)
+    // Measure SOL received from the vault's lamport delta
+    let vault_lamports_after = ctx.accounts.treasury_sol_vault.lamports();
+    let sol_received = vault_lamports_after
+        .checked_sub(vault_lamports_before)
         .ok_or(TorchMarketError::MathOverflow)?;
     require!(
         sol_received >= minimum_amount_out,
@@ -175,24 +179,25 @@ pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) ->
         (ca, ta)
     };
 
+    // Creator split: pay from treasury_sol_vault (System-owned → seed-signed
+    // system transfer, not direct-lamport which only works on program-owned accts).
     if creator_amount > 0 {
-        let treasury_info = ctx.accounts.treasury.to_account_info();
-        **treasury_info.try_borrow_mut_lamports()? = treasury_info
-            .lamports()
-            .checked_sub(creator_amount)
-            .ok_or(TorchMarketError::MathOverflow)?;
-        let creator_info = ctx.accounts.creator.to_account_info();
-        **creator_info.try_borrow_mut_lamports()? = creator_info
-            .lamports()
-            .checked_add(creator_amount)
-            .ok_or(TorchMarketError::MathOverflow)?;
+        system_program::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.system_program.to_account_info(),
+                system_program::Transfer {
+                    from: ctx.accounts.treasury_sol_vault.to_account_info(),
+                    to: ctx.accounts.creator.to_account_info(),
+                },
+                &[tsv_seeds],
+            ),
+            creator_amount,
+        )?;
     }
 
+    // treasury_amount stays in treasury_sol_vault (no field). harvested_fees is a
+    // pure stat counter (observability), never trusted for a balance.
     let treasury = &mut ctx.accounts.treasury;
-    treasury.sol_balance = treasury
-        .sol_balance
-        .checked_add(treasury_amount)
-        .ok_or(TorchMarketError::MathOverflow)?;
     treasury.harvested_fees = treasury
         .harvested_fees
         .checked_add(treasury_amount)

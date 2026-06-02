@@ -36,6 +36,5 @@ fn create_token_then_small_buy() {
 
     let bc = env.get_bonding_curve(&t);
     assert!(bc.real_sol_reserves > 0);
-    let tr = env.get_treasury(&t);
-    assert!(tr.sol_balance > 0);
+    assert!(env.treasury_sol(&t) > 0);
 }

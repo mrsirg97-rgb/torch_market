@@ -5,9 +5,9 @@ use anchor_spl::token_interface::{
 };
 
 use crate::constants::*;
-use crate::contexts::{FundMigrationSol, MigrateToDex};
+use crate::contexts::MigrateToDex;
 use crate::errors::TorchMarketError;
-use crate::pool_validation::read_token_account_balance;
+use crate::pool_validation::{read_token_account_balance, treasury_physical_sol};
 
 // Calculate transfer fee for our Token-2022 token
 // Uses known constants: TRANSFER_FEE_BPS (4 = 0.04%) and MAX_TRANSFER_FEE (u64::MAX)
@@ -26,34 +26,15 @@ fn calculate_transfer_fee(amount: u64) -> Result<u64> {
     Ok(fee.min(MAX_TRANSFER_FEE))
 }
 
-// Fund payer with bonding curve SOL for DeepPool pool creation.
-// Separate instruction — isolates direct lamport manipulation from CPIs.
-// Called BEFORE migrate_to_dex in the same transaction.
-pub fn fund_migration_sol_handler(ctx: Context<FundMigrationSol>) -> Result<()> {
-    let sol_amount = ctx.accounts.bonding_curve.real_sol_reserves;
-    let bc_info = ctx.accounts.bonding_curve.to_account_info();
-    let payer_info = ctx.accounts.payer.to_account_info();
-
-    **bc_info.try_borrow_mut_lamports()? = bc_info
-        .lamports()
-        .checked_sub(sol_amount)
-        .ok_or(TorchMarketError::MathOverflow)?;
-    **payer_info.try_borrow_mut_lamports()? = payer_info
-        .lamports()
-        .checked_add(sol_amount)
-        .ok_or(TorchMarketError::MathOverflow)?;
-
-    Ok(())
-}
-
 // Migrate bonded token to DeepPool.
 // Permissionless — anyone can call once bonding completes.
-// Must be preceded by fund_migration_sol in the same transaction.
+// The bonded SOL is sourced directly from the System-owned bonding_curve_sol PDA
+// (seed-signed) as deep_pool create_pool's sol_source — no separate fund step.
 // Flow:
 // 1. Handle vote vault (burn or return tokens)
 // 2. Burn excess tokens not needed for pool
 // 3. Transfer tokens from bonding curve vault to payer
-// 4. (SOL already in payer via fund_migration_sol)
+// 4. (SOL sourced from bonding_curve_sol directly in create_pool — no staging)
 // 5. CPI to DeepPool create_pool
 // 6. Burn LP tokens (lock liquidity forever)
 // 7. Revoke mint/freeze/transfer_fee authorities
@@ -62,6 +43,12 @@ pub fn fund_migration_sol_handler(ctx: Context<FundMigrationSol>) -> Result<()> 
 pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
     let bonding_curve = &ctx.accounts.bonding_curve;
     let mint_key = ctx.accounts.mint.key();
+    // Migration fee floor — derived from treasury_sol_vault (replaces the context
+    // constraint on the removed `sol_balance` field).
+    require!(
+        treasury_physical_sol(&ctx.accounts.treasury_sol_vault)? >= MIN_MIGRATION_SOL,
+        TorchMarketError::InsufficientMigrationFee
+    );
     let bc_seeds = &[BONDING_CURVE_SEED, mint_key.as_ref(), &[bonding_curve.bump]];
     let bc_signer = &[&bc_seeds[..]][..];
 
@@ -116,22 +103,35 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
         TOKEN_DECIMALS,
     )?;
 
-    // 4. SOL already in payer via fund_migration_sol (separate instruction)
+    // 4. Bonded SOL already lives in bonding_curve_sol (it accumulated there on
+    //    every buy) — no staging step needed.
 
-    // 5. CPI to DeepPool create_pool
-    // PDA = ["deep_pool", mint, payer] — unique per creator, no frontrun possible
+    // 5. CPI to DeepPool create_pool. The pool SOL is sourced from the System-owned
+    // bonding_curve_sol (seed-signed), NOT the payer — the bonded raise never transits
+    // a user wallet. The payer is still `creator` (rent payer / token source / LP
+    // receiver / signer); it only fronts rent, reimbursed below.
     let payer_lamports_pre = ctx.accounts.payer.to_account_info().lamports();
     let second_transfer_fee = calculate_transfer_fee(tokens_payer_will_receive)?;
     let tokens_in_pool = tokens_payer_will_receive
         .checked_sub(second_transfer_fee)
         .ok_or(TorchMarketError::MathOverflow)?;
 
-    // Torch config PDA — signer-verified namespace for DeepPool pools
+    // Torch config PDA — signer-verified namespace for DeepPool pools.
     let (_, config_bump) = Pubkey::find_program_address(&[TORCH_CONFIG_SEED], &crate::ID);
     let config_seeds = &[TORCH_CONFIG_SEED, &[config_bump]];
-    let config_signer = &[&config_seeds[..]];
+    // bonding_curve_sol PDA — address + bump validated here (not in the context, to
+    // spare try_accounts stack), then seed-signed as create_pool's sol_source.
+    let (bcsol_pda, bcsol_bump) =
+        Pubkey::find_program_address(&[BONDING_CURVE_SOL_SEED, mint_key.as_ref()], &crate::ID);
+    require!(
+        ctx.accounts.bonding_curve_sol.key() == bcsol_pda,
+        TorchMarketError::InvalidPoolAccount
+    );
+    let bcsol_seeds = &[BONDING_CURVE_SOL_SEED, mint_key.as_ref(), &[bcsol_bump]];
+    let create_pool_signers = &[&config_seeds[..], &bcsol_seeds[..]];
     let cpi_accounts = deep_pool::cpi::accounts::CreatePool {
         creator: ctx.accounts.payer.to_account_info(),
+        sol_source: ctx.accounts.bonding_curve_sol.to_account_info(),
         config: ctx.accounts.torch_config.to_account_info(),
         token_mint: ctx.accounts.mint.to_account_info(),
         pool: ctx.accounts.deep_pool.to_account_info(),
@@ -151,7 +151,7 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
         CpiContext::new_with_signer(
             ctx.accounts.deep_pool_program.to_account_info(),
             cpi_accounts,
-            config_signer,
+            create_pool_signers,
         ),
         deep_pool::CreatePoolArgs {
             initial_token_amount: tokens_payer_will_receive,
@@ -222,38 +222,40 @@ pub fn migrate_to_dex_handler(ctx: Context<MigrateToDex>) -> Result<()> {
         None,
     )?;
 
-    // 8. Reimburse payer from treasury (direct lamport manipulation — after all CPIs)
+    // 8. Reimburse payer's rent from treasury (seed-signed transfer — after all CPIs).
+    // The pool SOL came from bonding_curve_sol, not the payer, so the payer's only
+    // outlay is the rent it fronted for the new pool accounts (no sol_amount to net out).
     let payer_lamports_post = ctx.accounts.payer.to_account_info().lamports();
-    // Subtract sol_amount: that SOL came from the bonding curve (via fund_migration_sol),
-    // not from the payer's wallet. Only reimburse the rent for new accounts.
     let migration_cost = payer_lamports_pre
         .checked_sub(payer_lamports_post)
-        .ok_or(TorchMarketError::MathOverflow)?
-        .saturating_sub(sol_amount);
+        .ok_or(TorchMarketError::MathOverflow)?;
 
-    {
-        let treasury_info = ctx.accounts.treasury.to_account_info();
-        let payer_info = ctx.accounts.payer.to_account_info();
-        **treasury_info.try_borrow_mut_lamports()? = treasury_info
-            .lamports()
-            .checked_sub(migration_cost)
-            .ok_or(TorchMarketError::InsufficientMigrationFee)?;
-        **payer_info.try_borrow_mut_lamports()? = payer_info
-            .lamports()
-            .checked_add(migration_cost)
-            .ok_or(TorchMarketError::MathOverflow)?;
+    if migration_cost > 0 {
+        // treasury_sol_vault is System-owned → seed-signed system transfer.
+        let tsv_seeds: &[&[u8]] = &[
+            TREASURY_SOL_VAULT_SEED,
+            mint_key.as_ref(),
+            &[ctx.bumps.treasury_sol_vault],
+        ];
+        anchor_lang::system_program::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.system_program.to_account_info(),
+                anchor_lang::system_program::Transfer {
+                    from: ctx.accounts.treasury_sol_vault.to_account_info(),
+                    to: ctx.accounts.payer.to_account_info(),
+                },
+                &[tsv_seeds],
+            ),
+            migration_cost,
+        )?;
     }
 
-    // 9. Update state and record baseline
+    // 9. Update state and record baseline (physical SOL already moved; no field)
     let bonding_curve = &mut ctx.accounts.bonding_curve;
     let treasury = &mut ctx.accounts.treasury;
     bonding_curve.migrated = true;
     bonding_curve.real_sol_reserves = 0;
     bonding_curve.real_token_reserves = 0;
-    treasury.sol_balance = treasury
-        .sol_balance
-        .checked_sub(migration_cost)
-        .ok_or(TorchMarketError::InsufficientMigrationFee)?;
 
     treasury.baseline_sol_reserves = sol_amount;
     treasury.baseline_token_reserves = tokens_in_pool;

@@ -1,10 +1,10 @@
 /**
  * SDK E2E Test against Surfpool (mainnet fork)
  *
- * Tests: create token → vault lifecycle → buy (direct + vault) → sell → star → messages
- * Then: bond to completion → migrate → margin stress tests (lending + shorts)
- * Margin: getLendingInfo → stress borrow (near-max LTV) → partial repay → full repay → position verification
- *         → short open → getShortPosition → partial close → full close
+ * Tests: create token → vault lifecycle → buy (direct + vault) → sell → messages
+ * Then: bond to completion → migrate → [V21] leverage stress tests (long + short)
+ * Leverage: getLendingInfo → open long → getPosition(long) → partial close → full close
+ *         → open short → getPosition(short) → partial close → full close
  *         → vault swap (buy + sell) → long liquidation → short liquidation → protocol reward claims
  *
  * Run:
@@ -32,11 +32,10 @@ import {
   buildDirectBuyTransaction,
   buildSellTransaction,
   buildCreateTokenTransaction,
-  buildStarTransaction,
   buildMigrateTransaction,
-  buildBorrowTransaction,
-  buildRepayTransaction,
-  buildLiquidateTransaction,
+  buildOpenLongTransaction,
+  buildCloseLongTransaction,
+  buildLiquidateLongTransaction,
   buildOpenShortTransaction,
   buildCloseShortTransaction,
   buildLiquidateShortTransaction,
@@ -59,12 +58,12 @@ import {
   getSellQuote,
   getBorrowQuote,
   getLendingInfo,
-  getLoanPosition,
-  getShortPosition,
+  getPosition,
   getTorchVaultPda,
   getBondingCurvePda,
   getProtocolTreasuryPda,
   getTokenTreasuryPda,
+  getTreasurySolVaultPda,
   getTreasuryTokenAccount,
   getDeepPoolAccounts,
   PROGRAM_ID,
@@ -155,6 +154,10 @@ const main = async () => {
   // (mainnet fork may have stale vaults from prior program versions)
   const wallet = Keypair.generate()
   const walletAddr = wallet.publicKey.toBase58()
+  // [V21] via_vault positions are owned by the TorchVault PDA, not the wallet
+  // (position PDAs derive from the vault key). Every leverage position in this
+  // test is opened via_vault (vault: walletAddr), so verify with the vault owner.
+  const vaultOwner = getTorchVaultPda(wallet.publicKey)[0].toBase58()
 
   log(`Funder: ${funder.publicKey.toBase58()}`)
   log(`Test wallet: ${walletAddr} (fresh)`)
@@ -555,50 +558,9 @@ const main = async () => {
   }
 
   // ------------------------------------------------------------------
-  // 12. Star Token (via vault — can't star your own, so link starrer to vault)
+  // 12. Star Token — [V21] REMOVED. The star/creator-reward feature was ripped
+  // out; creator monetization is the creator token, not community-token+stars.
   // ------------------------------------------------------------------
-  log('\n[12] Star Token (via vault)')
-  const starrer = Keypair.generate()
-  try {
-    // Fund starrer with gas only
-    const fundTx = new Transaction().add(
-      SystemProgram.transfer({
-        fromPubkey: wallet.publicKey,
-        toPubkey: starrer.publicKey,
-        lamports: 0.02 * LAMPORTS_PER_SOL,
-      }),
-    )
-    const { blockhash } = await connection.getLatestBlockhash()
-    fundTx.recentBlockhash = blockhash
-    fundTx.feePayer = wallet.publicKey
-    await signAndSend(connection, wallet, fundTx, true)
-
-    // Link starrer to vault so vault pays the 0.05 SOL
-    const linkResult = await buildLinkWalletTransaction(connection, {
-      authority: walletAddr,
-      vault_creator: walletAddr,
-      wallet_to_link: starrer.publicKey.toBase58(),
-    })
-    await signAndSend(connection, wallet, linkResult.transaction)
-
-    const result = await buildStarTransaction(connection, {
-      mint,
-      user: starrer.publicKey.toBase58(),
-      vault: walletAddr,
-    })
-    const sig = await signAndSend(connection, starrer, result.transaction)
-    ok('buildStarTransaction (vault)', `sig=${sig.slice(0, 8)}...`)
-
-    // Unlink starrer
-    const unlinkResult = await buildUnlinkWalletTransaction(connection, {
-      authority: walletAddr,
-      vault_creator: walletAddr,
-      wallet_to_unlink: starrer.publicKey.toBase58(),
-    })
-    await signAndSend(connection, wallet, unlinkResult.transaction)
-  } catch (e: any) {
-    fail('buildStarTransaction (vault)', e)
-  }
 
   // ------------------------------------------------------------------
   // 13. Get Messages
@@ -780,7 +742,11 @@ const main = async () => {
         // V20: vote vault removed (always 0), zero-burn migration (no excess tokens burned).
         // tokensSold reduces to CURVE_SUPPLY - poolTokens.
         const tokensSold = CURVE_SUPPLY - poolTokens
-        const treasurySol = Number(tr.sol_balance.toString()) / LAMPORTS_PER_SOL
+        // [V21] Treasury SOL lives in the System-owned treasury_sol_vault PDA.
+        const treasurySolVaultInfo = await connection.getAccountInfo(
+          getTreasurySolVaultPda(new PublicKey(mint))[0],
+        )
+        const treasurySol = (treasurySolVaultInfo?.lamports ?? 0) / LAMPORTS_PER_SOL
         const poolAcctInfo = await connection.getAccountInfo(deepPool.pool)
         const rentExempt = await connection.getMinimumBalanceForRentExemption(DEEP_POOL_STATE_LEN)
         const poolSol2 = (poolAcctInfo!.lamports - rentExempt) / LAMPORTS_PER_SOL
@@ -1086,7 +1052,7 @@ const main = async () => {
       }
 
       // ------------------------------------------------------------------
-      // M1. getLendingInfo — verify pool params after migration
+      // M1. getLendingInfo — verify pool params after migration [V21]
       // ------------------------------------------------------------------
       log('\n[M1] getLendingInfo — pool parameters')
       try {
@@ -1095,20 +1061,20 @@ const main = async () => {
           `  interest_rate=${info.interest_rate_bps}bps, max_ltv=${info.max_ltv_bps}bps, liq_threshold=${info.liquidation_threshold_bps}bps`,
         )
         log(
-          `  utilization_cap=${info.utilization_cap_bps}bps, borrow_multiplier=${info.borrow_share_multiplier}x`,
+          `  utilization_cap=${info.utilization_cap_bps}bps, lending_enabled=${info.lending_enabled}, short_enabled=${info.short_selling_enabled}`,
         )
         log(
-          `  treasury_sol_available=${(info.treasury_sol_available / LAMPORTS_PER_SOL).toFixed(4)} SOL, active_loans=${info.active_loans}`,
+          `  treasury_sol_vault=${(info.treasury_sol_vault_lamports / LAMPORTS_PER_SOL).toFixed(4)} SOL, active_longs=${info.active_longs}, active_shorts=${info.active_shorts}`,
         )
         if (
-          info.interest_rate_bps === 200 &&
+          info.interest_rate_bps > 0 &&
           info.max_ltv_bps > 0 &&
-          info.max_ltv_bps <= 5000 &&
-          info.liquidation_threshold_bps === 6500
+          info.max_ltv_bps <= 9000 &&
+          info.liquidation_threshold_bps > 0
         ) {
           ok(
             'getLendingInfo',
-            `params correct, treasury_available=${(info.treasury_sol_available / LAMPORTS_PER_SOL).toFixed(4)} SOL`,
+            `params present, vault=${(info.treasury_sol_vault_lamports / LAMPORTS_PER_SOL).toFixed(4)} SOL`,
           )
         } else {
           fail('getLendingInfo', { message: 'unexpected lending params' })
@@ -1118,14 +1084,14 @@ const main = async () => {
       }
 
       // ------------------------------------------------------------------
-      // M1b. getTreasuryState — verify per-token Treasury reader
+      // M1b. getTreasuryState — verify per-token Treasury reader [V21]
       // ------------------------------------------------------------------
       log('\n[M1b] getTreasuryState — per-token treasury reader')
       try {
         const ts = await getTreasuryState(connection, mint)
         if (!ts) throw new Error('Treasury not found for migrated token')
         log(
-          `  address=${ts.address.slice(0, 16)}...  sol_balance=${ts.sol_balance_sol.toFixed(4)} SOL  stars=${ts.total_stars}`,
+          `  address=${ts.address.slice(0, 16)}...  vault_sol=${ts.treasury_sol_vault_sol.toFixed(4)} SOL  lending=${ts.lending_enabled}`,
         )
         log(
           `  baseline_initialized=${ts.baseline_initialized}  baseline_sol=${(ts.baseline_sol_reserves / LAMPORTS_PER_SOL).toFixed(2)}  baseline_tokens=${(ts.baseline_token_reserves / 1e6).toFixed(0)}`,
@@ -1136,162 +1102,140 @@ const main = async () => {
         if (!ts.baseline_initialized) {
           throw new Error('baseline_initialized should be true after migration')
         }
-        if (ts.sol_balance_sol <= 0) {
-          throw new Error(
-            `expected Treasury sol_balance > 0 after bonding, got ${ts.sol_balance_sol}`,
-          )
-        }
         ok(
           'getTreasuryState',
-          `sol=${ts.sol_balance_sol.toFixed(4)} SOL, baseline_initialized=${ts.baseline_initialized}`,
+          `vault_sol=${ts.treasury_sol_vault_sol.toFixed(4)} SOL, baseline_initialized=${ts.baseline_initialized}`,
         )
       } catch (e: any) {
         fail('getTreasuryState', e)
       }
 
       // ------------------------------------------------------------------
-      // M2. Stress borrow — near-max LTV, verify position state
+      // M2. Open Long — post token collateral, borrow SOL (clamped) [V21]
       // ------------------------------------------------------------------
-      log('\n[M2] Stress Borrow — near-max LTV with position verification')
-      let stressBorrowActive = false // track whether we have an active loan for later tests
+      log('\n[M2] Open Long — token collateral, auto-clamped borrow')
+      let stressBorrowActive = false // track whether we have an active long for later tests
 
       try {
         const totalTokens = await getVaultTokenBalance(connection, mint, wallet.publicKey)
         log(`  Vault token balance: ${(totalTokens / 1e6).toFixed(0)} tokens`)
 
-        // Use 40% as collateral (save rest for short tests)
+        // Use 40% as collateral (save rest for short tests).
         const collateralAmount = Math.floor(totalTokens * 0.4)
         const quote = await getBorrowQuote(connection, mint, collateralAmount)
         log(
-          `  Pool available: ${(quote.pool_available_sol / LAMPORTS_PER_SOL).toFixed(4)}, per-user cap: ${(quote.per_user_cap_sol / LAMPORTS_PER_SOL).toFixed(4)}, max borrow: ${(quote.max_borrow_sol / LAMPORTS_PER_SOL).toFixed(4)}`,
+          `  collateral_value: ${(quote.collateral_value_sol / LAMPORTS_PER_SOL).toFixed(4)} SOL, ltv_max: ${(quote.ltv_max_sol / LAMPORTS_PER_SOL).toFixed(4)}, pool_available: ${(quote.pool_available_sol / LAMPORTS_PER_SOL).toFixed(4)}, max borrow: ${(quote.max_borrow_sol / LAMPORTS_PER_SOL).toFixed(4)}`,
         )
 
-        // Borrow at ~45% LTV (close to 50% max, stress test)
-        const targetBorrow = Math.floor(quote.collateral_value_sol * 0.45)
-        const borrowAmount = Math.min(targetBorrow, quote.max_borrow_sol)
-
-        if (borrowAmount < 100_000_000) {
-          // MIN_BORROW_AMOUNT
-          log('  Skipping — lending capacity too low for stress test')
-          ok('stress borrow', 'skipped — lending capacity too low')
+        if (quote.max_borrow_sol < 100_000_000) {
+          // MIN_BORROW_AMOUNT — V21 rejects too-small borrows.
+          log('  Skipping — lending capacity too low for open long')
+          ok('open long', 'skipped — lending capacity too low')
         } else {
-          const targetLtv =
-            quote.collateral_value_sol > 0
-              ? Math.floor((borrowAmount / quote.collateral_value_sol) * 10000)
-              : 0
-          log(
-            `  Collateral: ${(collateralAmount / 1e6).toFixed(0)} tokens (value: ${(quote.collateral_value_sol / LAMPORTS_PER_SOL).toFixed(4)} SOL), borrowing: ${(borrowAmount / LAMPORTS_PER_SOL).toFixed(4)} SOL (~${(targetLtv / 100).toFixed(0)}% LTV)`,
-          )
-
-          const vaultBefore = await getVault(connection, walletAddr)
-          const borrowResult = await buildBorrowTransaction(connection, {
+          // V21: no borrow-size knob. Borrow = collateral × LTV, clamped to caps.
+          const openResult = await buildOpenLongTransaction(connection, {
             mint,
             borrower: walletAddr,
-            collateral_amount: collateralAmount,
-            sol_to_borrow: borrowAmount,
+            collateral: collateralAmount,
             vault: walletAddr,
           })
-          const borrowSig = await signAndSend(connection, wallet, borrowResult.transaction)
-          const vaultAfter = await getVault(connection, walletAddr)
-          const solReceived = (vaultAfter?.sol_balance || 0) - (vaultBefore?.sol_balance || 0)
+          const openSig = await signAndSend(connection, wallet, openResult.transaction)
           ok(
-            'stress borrow',
-            `${(borrowAmount / LAMPORTS_PER_SOL).toFixed(4)} SOL at ~${(targetLtv / 100).toFixed(0)}% LTV, vault_received=${solReceived.toFixed(4)} SOL sig=${borrowSig.slice(0, 8)}...`,
+            'open long',
+            `${openResult.message} (est borrow ~${(quote.max_borrow_sol / LAMPORTS_PER_SOL).toFixed(4)} SOL) sig=${openSig.slice(0, 8)}...`,
           )
           stressBorrowActive = true
 
-          // ------------------------------------------------------------------
-          // M3. getLoanPosition — verify position state after borrow
-          // ------------------------------------------------------------------
-          log('\n[M3] getLoanPosition — verify active position')
+          // ----------------------------------------------------------------
+          // M3. getPosition('long') — verify position state after open
+          // ----------------------------------------------------------------
+          log('\n[M3] getPosition (long) — verify active position')
+          let openDebt = 0
           try {
-            const pos = await getLoanPosition(connection, mint, walletAddr)
+            const pos = await getPosition(connection, mint, vaultOwner, 'long', 0)
+            openDebt = pos.debt_amount
             log(
-              `  collateral=${(pos.collateral_amount / 1e6).toFixed(0)} tokens, borrowed=${(pos.borrowed_amount / LAMPORTS_PER_SOL).toFixed(4)} SOL, interest=${pos.accrued_interest}, health=${pos.health}`,
+              `  collateral=${(pos.collateral_amount / 1e6).toFixed(0)} tokens, debt=${(pos.debt_amount / LAMPORTS_PER_SOL).toFixed(4)} SOL, interest=${pos.accrued_interest}, health=${pos.health}`,
             )
             log(
-              `  collateral_value=${pos.collateral_value_sol !== null ? (pos.collateral_value_sol / LAMPORTS_PER_SOL).toFixed(4) + ' SOL' : 'null'}, LTV=${pos.current_ltv_bps !== null ? (pos.current_ltv_bps / 100).toFixed(1) + '%' : 'null'}`,
+              `  debt_value=${pos.debt_value_sol !== null ? (pos.debt_value_sol / LAMPORTS_PER_SOL).toFixed(4) + ' SOL' : 'null'}, LTV=${pos.current_ltv_bps !== null ? (pos.current_ltv_bps / 100).toFixed(1) + '%' : 'null'}`,
             )
 
-            if (pos.health === 'healthy' && pos.borrowed_amount > 0 && pos.collateral_amount > 0) {
+            if (pos.health !== 'none' && pos.debt_amount > 0 && pos.collateral_amount > 0) {
               ok(
-                'getLoanPosition (active)',
+                'getPosition long (active)',
                 `health=${pos.health}, LTV=${pos.current_ltv_bps !== null ? (pos.current_ltv_bps / 100).toFixed(1) + '%' : 'n/a'}`,
               )
             } else {
-              fail('getLoanPosition (active)', {
-                message: `unexpected: health=${pos.health} borrowed=${pos.borrowed_amount}`,
+              fail('getPosition long (active)', {
+                message: `unexpected: health=${pos.health} debt=${pos.debt_amount}`,
               })
             }
           } catch (e: any) {
-            fail('getLoanPosition (active)', e)
+            fail('getPosition long (active)', e)
           }
 
-          // ------------------------------------------------------------------
-          // M4. Partial repay — repay half, verify position still active
-          // ------------------------------------------------------------------
-          log('\n[M4] Partial Repay — half of debt')
+          // ----------------------------------------------------------------
+          // M4. Partial close — close 50%, verify position still active
+          // ----------------------------------------------------------------
+          log('\n[M4] Partial Close Long — 50% of position')
           try {
-            const halfDebt = Math.floor(borrowAmount / 2)
-            log(
-              `  Repaying ${(halfDebt / LAMPORTS_PER_SOL).toFixed(4)} SOL (half of ${(borrowAmount / LAMPORTS_PER_SOL).toFixed(4)})`,
-            )
-
-            const repayResult = await buildRepayTransaction(connection, {
+            const closeResult = await buildCloseLongTransaction(connection, {
               mint,
               borrower: walletAddr,
-              sol_amount: halfDebt,
+              repay_fraction_bps: 5000, // half
               vault: walletAddr,
             })
-            const repaySig = await signAndSend(connection, wallet, repayResult.transaction)
-            ok('partial repay', `${repayResult.message} sig=${repaySig.slice(0, 8)}...`)
+            const closeSig = await signAndSend(connection, wallet, closeResult.transaction)
+            ok('partial close long', `${closeResult.message} sig=${closeSig.slice(0, 8)}...`)
 
-            // Verify position still active with reduced debt
-            const posAfter = await getLoanPosition(connection, mint, walletAddr)
+            const posAfter = await getPosition(connection, mint, vaultOwner, 'long', 0)
             log(
-              `  After partial repay: borrowed=${(posAfter.borrowed_amount / LAMPORTS_PER_SOL).toFixed(4)} SOL, health=${posAfter.health}`,
+              `  After partial close: debt=${(posAfter.debt_amount / LAMPORTS_PER_SOL).toFixed(4)} SOL, health=${posAfter.health}`,
             )
-            if (posAfter.borrowed_amount > 0 && posAfter.borrowed_amount < borrowAmount) {
-              ok('getLoanPosition (after partial repay)', `debt reduced, health=${posAfter.health}`)
+            if (posAfter.debt_amount > 0 && posAfter.debt_amount < openDebt) {
+              ok(
+                'getPosition long (after partial close)',
+                `debt reduced, health=${posAfter.health}`,
+              )
             } else {
-              fail('getLoanPosition (after partial repay)', {
-                message: `unexpected borrowed_amount=${posAfter.borrowed_amount}`,
+              fail('getPosition long (after partial close)', {
+                message: `unexpected debt=${posAfter.debt_amount}`,
               })
             }
           } catch (e: any) {
-            fail('partial repay', e)
+            fail('partial close long', e)
           }
 
-          // ------------------------------------------------------------------
-          // M5. Full repay — close the position
-          // ------------------------------------------------------------------
-          log('\n[M5] Full Repay — close position')
+          // ----------------------------------------------------------------
+          // M5. Full close — close the position
+          // ----------------------------------------------------------------
+          log('\n[M5] Full Close Long — close position')
           try {
-            const repayResult = await buildRepayTransaction(connection, {
+            const closeResult = await buildCloseLongTransaction(connection, {
               mint,
               borrower: walletAddr,
-              sol_amount: borrowAmount, // overpay to ensure full close
+              repay_fraction_bps: 10000, // full
               vault: walletAddr,
             })
-            const repaySig = await signAndSend(connection, wallet, repayResult.transaction)
-            ok('full repay', `${repayResult.message} sig=${repaySig.slice(0, 8)}...`)
+            const closeSig = await signAndSend(connection, wallet, closeResult.transaction)
+            ok('full close long', `${closeResult.message} sig=${closeSig.slice(0, 8)}...`)
             stressBorrowActive = false
 
-            // Verify position closed
-            const posAfter = await getLoanPosition(connection, mint, walletAddr)
-            if (posAfter.health === 'none' || posAfter.borrowed_amount === 0) {
-              ok('getLoanPosition (after full repay)', 'position closed')
+            const posAfter = await getPosition(connection, mint, vaultOwner, 'long', 0)
+            if (posAfter.health === 'none' || posAfter.debt_amount === 0) {
+              ok('getPosition long (after full close)', 'position closed')
             } else {
-              fail('getLoanPosition (after full repay)', {
-                message: `still active: borrowed=${posAfter.borrowed_amount}`,
+              fail('getPosition long (after full close)', {
+                message: `still active: debt=${posAfter.debt_amount}`,
               })
             }
           } catch (e: any) {
-            fail('full repay', e)
+            fail('full close long', e)
           }
-        } // end else (borrowAmount >= MIN_BORROW)
+        } // end else (max_borrow >= MIN_BORROW)
       } catch (e: any) {
-        fail('stress borrow', e)
+        fail('open long', e)
         if (e.logs) console.error('  Logs:', e.logs.slice(-5).join('\n        '))
       }
 
@@ -1313,9 +1257,9 @@ const main = async () => {
         const vaultSolInSol = vaultBeforeShort?.sol_balance || 0
         log(`  Vault SOL balance: ${vaultSolInSol.toFixed(4)} SOL`)
 
-        // Post 1 SOL as collateral, borrow 5000 tokens (5x minimum)
+        // [V21] Post 1 SOL as collateral; borrowed tokens = collateral × LTV
+        // (clamped on-chain — no tokens_to_borrow knob).
         const shortCollateral = Math.floor(1 * LAMPORTS_PER_SOL)
-        const tokensToBorrow = 5_000_000_000 // 5,000 tokens (6 decimals)
 
         if (vaultSolInSol < 1.0) {
           log('  Skipping short — vault SOL too low for 1 SOL collateral')
@@ -1325,8 +1269,7 @@ const main = async () => {
           const openResult = await buildOpenShortTransaction(connection, {
             mint,
             shorter: walletAddr,
-            sol_collateral: shortCollateral,
-            tokens_to_borrow: tokensToBorrow,
+            collateral: shortCollateral,
             vault: walletAddr,
           })
           const openSig = await signAndSend(connection, wallet, openResult.transaction)
@@ -1337,64 +1280,62 @@ const main = async () => {
             `${openResult.message} collateral=${(solSpent / LAMPORTS_PER_SOL).toFixed(4)} SOL sig=${openSig.slice(0, 8)}...`,
           )
 
-          // Verify short position via getShortPosition
+          // Verify short position via getPosition('short')
           log('\n  Verifying short position...')
+          let openShortDebt = 0
           try {
-            const shortPos = await getShortPosition(connection, mint, walletAddr)
+            const shortPos = await getPosition(connection, mint, vaultOwner, 'short', 0)
+            openShortDebt = shortPos.debt_amount
             log(
-              `  sol_collateral=${(shortPos.sol_collateral / LAMPORTS_PER_SOL).toFixed(4)} SOL, tokens_borrowed=${(shortPos.tokens_borrowed / 1e6).toFixed(0)}, interest=${(shortPos.accrued_interest / 1e6).toFixed(0)}`,
+              `  collateral=${(shortPos.collateral_amount / LAMPORTS_PER_SOL).toFixed(4)} SOL, debt=${(shortPos.debt_amount / 1e6).toFixed(0)} tokens, interest=${(shortPos.accrued_interest / 1e6).toFixed(0)}`,
             )
             log(
               `  debt_value=${shortPos.debt_value_sol !== null ? (shortPos.debt_value_sol / LAMPORTS_PER_SOL).toFixed(4) + ' SOL' : 'null'}, LTV=${shortPos.current_ltv_bps !== null ? (shortPos.current_ltv_bps / 100).toFixed(1) + '%' : 'null'}, health=${shortPos.health}`,
             )
 
             if (
-              shortPos.health === 'healthy' &&
-              shortPos.tokens_borrowed > 0 &&
-              shortPos.sol_collateral > 0
+              shortPos.health !== 'none' &&
+              shortPos.debt_amount > 0 &&
+              shortPos.collateral_amount > 0
             ) {
               ok(
-                'getShortPosition (active)',
+                'getPosition short (active)',
                 `health=${shortPos.health}, LTV=${shortPos.current_ltv_bps !== null ? (shortPos.current_ltv_bps / 100).toFixed(1) + '%' : 'n/a'}`,
               )
             } else {
-              fail('getShortPosition (active)', {
+              fail('getPosition short (active)', {
                 message: `unexpected: health=${shortPos.health}`,
               })
             }
           } catch (e: any) {
-            fail('getShortPosition (active)', e)
+            fail('getPosition short (active)', e)
           }
 
-          // Partial close — return half the borrowed tokens
-          log('\n  Partial close short (50% of tokens)...')
+          // Partial close — buy back half the debt
+          log('\n  Partial close short (50%)...')
           try {
-            const halfTokens = Math.floor(tokensToBorrow / 2)
             const closeResult = await buildCloseShortTransaction(connection, {
               mint,
               shorter: walletAddr,
-              token_amount: halfTokens,
+              repay_fraction_bps: 5000, // half
               vault: walletAddr,
             })
             const closeSig = await signAndSend(connection, wallet, closeResult.transaction)
-            ok(
-              'partial close short',
-              `returned ${(halfTokens / 1e6).toFixed(0)} tokens sig=${closeSig.slice(0, 8)}...`,
-            )
+            ok('partial close short', `${closeResult.message} sig=${closeSig.slice(0, 8)}...`)
 
             // Verify position still active with reduced debt
-            const posAfter = await getShortPosition(connection, mint, walletAddr)
+            const posAfter = await getPosition(connection, mint, vaultOwner, 'short', 0)
             log(
-              `  After partial close: tokens_borrowed=${(posAfter.tokens_borrowed / 1e6).toFixed(0)}, health=${posAfter.health}`,
+              `  After partial close: debt=${(posAfter.debt_amount / 1e6).toFixed(0)} tokens, health=${posAfter.health}`,
             )
-            if (posAfter.tokens_borrowed > 0 && posAfter.tokens_borrowed < tokensToBorrow) {
+            if (posAfter.debt_amount > 0 && posAfter.debt_amount < openShortDebt) {
               ok(
-                'getShortPosition (after partial close)',
-                `debt reduced to ${(posAfter.tokens_borrowed / 1e6).toFixed(0)} tokens`,
+                'getPosition short (after partial close)',
+                `debt reduced to ${(posAfter.debt_amount / 1e6).toFixed(0)} tokens`,
               )
             } else {
-              fail('getShortPosition (after partial close)', {
-                message: `unexpected: tokens_borrowed=${posAfter.tokens_borrowed}`,
+              fail('getPosition short (after partial close)', {
+                message: `unexpected: debt=${posAfter.debt_amount}`,
               })
             }
           } catch (e: any) {
@@ -1402,13 +1343,13 @@ const main = async () => {
             if (e.logs) console.error('  Logs:', e.logs.slice(-5).join('\n        '))
           }
 
-          // Full close — overpay to cover interest + remaining
+          // Full close — repay 100%
           log('\n  Full close short...')
           try {
             const closeResult = await buildCloseShortTransaction(connection, {
               mint,
               shorter: walletAddr,
-              token_amount: tokensToBorrow * 2, // overpay to fully close
+              repay_fraction_bps: 10000, // full
               vault: walletAddr,
             })
             const closeSig = await signAndSend(connection, wallet, closeResult.transaction)
@@ -1421,12 +1362,12 @@ const main = async () => {
             )
 
             // Verify position closed
-            const posAfter = await getShortPosition(connection, mint, walletAddr)
-            if (posAfter.health === 'none' || posAfter.tokens_borrowed === 0) {
-              ok('getShortPosition (after full close)', 'position closed')
+            const posAfter = await getPosition(connection, mint, vaultOwner, 'short', 0)
+            if (posAfter.health === 'none' || posAfter.debt_amount === 0) {
+              ok('getPosition short (after full close)', 'position closed')
             } else {
-              fail('getShortPosition (after full close)', {
-                message: `still active: tokens=${posAfter.tokens_borrowed}`,
+              fail('getPosition short (after full close)', {
+                message: `still active: debt=${posAfter.debt_amount}`,
               })
             }
           } catch (e: any) {
@@ -1517,8 +1458,10 @@ const main = async () => {
         // The vault swap buys above generated transfer fees (1% on token transfers)
         // Snapshot treasury state before harvest
         const preHarvestData = await fetchTokenRaw(connection, new PublicKey(mint))
+        // [V21] Treasury SOL lives in the System-owned treasury_sol_vault PDA.
+        const treasurySolVaultPda = getTreasurySolVaultPda(new PublicKey(mint))[0]
         const preSolBalance =
-          Number(preHarvestData?.treasury?.sol_balance?.toString() || '0') / LAMPORTS_PER_SOL
+          ((await connection.getAccountInfo(treasurySolVaultPda))?.lamports ?? 0) / LAMPORTS_PER_SOL
         const preHarvestedFees =
           Number(preHarvestData?.treasury?.harvested_fees?.toString() || '0') / LAMPORTS_PER_SOL
 
@@ -1545,9 +1488,8 @@ const main = async () => {
         const harvestSig = await signAndSend(connection, wallet, harvestResult.transaction)
 
         // Snapshot after harvest
-        const postHarvestData = await fetchTokenRaw(connection, new PublicKey(mint))
         const postSolBalance =
-          Number(postHarvestData?.treasury?.sol_balance?.toString() || '0') / LAMPORTS_PER_SOL
+          ((await connection.getAccountInfo(treasurySolVaultPda))?.lamports ?? 0) / LAMPORTS_PER_SOL
         let postTokenBal = 0
         try {
           const bal = await connection.getTokenAccountBalance(treasuryAta)
@@ -1599,54 +1541,39 @@ const main = async () => {
         const totalTokens3 = await getVaultTokenBalance(connection, mint, wallet.publicKey)
         const collateralAmount = Math.floor(totalTokens3 * 0.5)
 
-        // Get borrow quote (handles pool price, treasury cap, per-user cap, transfer fee, etc.)
+        // [V21] Open-long quote (LTV-bound × treasury headroom; no per-user cap).
         const quote = await getBorrowQuote(connection, mint, collateralAmount)
         const collateralValue = quote.collateral_value_sol
-        let solToBorrow = Math.max(100_000_000, Math.floor(collateralValue * 0.48))
-        solToBorrow = Math.min(solToBorrow, quote.max_borrow_sol)
         log(
-          `  Pool available: ${(quote.pool_available_sol / LAMPORTS_PER_SOL).toFixed(4)}, per-user cap: ${(quote.per_user_cap_sol / LAMPORTS_PER_SOL).toFixed(4)}, max borrow: ${(quote.max_borrow_sol / LAMPORTS_PER_SOL).toFixed(4)}`,
+          `  collateral_value: ${(collateralValue / LAMPORTS_PER_SOL).toFixed(4)} SOL, pool_available: ${(quote.pool_available_sol / LAMPORTS_PER_SOL).toFixed(4)}, max borrow: ${(quote.max_borrow_sol / LAMPORTS_PER_SOL).toFixed(4)}`,
         )
 
-        // Check if achievable LTV can reach liquidation threshold (65%)
-        // With per-user cap, small collateral positions can only borrow a tiny fraction of value
-        const achievableLtvBps =
-          collateralValue > 0 ? Math.floor((solToBorrow / collateralValue) * 10000) : 0
-
-        if (solToBorrow < 100_000_000) {
+        if (quote.max_borrow_sol < 100_000_000) {
           // MIN_BORROW_AMOUNT
           log('  Skipping liquidation test — treasury too small for minimum borrow (0.1 SOL)')
           ok('vault-routed liquidation', 'skipped — treasury lending capacity too low')
-        } else if (achievableLtvBps < 3000) {
-          // If we can't even reach 30% LTV, interest accrual won't push us to 65% in a reasonable time
-          log(
-            `  Skipping liquidation test — per-user cap limits LTV to ${(achievableLtvBps / 100).toFixed(1)}% (need ~48% for liquidation test)`,
-          )
-          ok(
-            'vault-routed liquidation',
-            `skipped — per-user cap limits achievable LTV to ${(achievableLtvBps / 100).toFixed(1)}%`,
-          )
         } else {
           log(
-            `  Vault tokens: ${(totalTokens3 / 1e6).toFixed(0)}, collateral: ${(collateralAmount / 1e6).toFixed(0)}, value: ${(collateralValue / 1e9).toFixed(4)} SOL, borrow: ${(solToBorrow / 1e9).toFixed(4)} SOL (~${(achievableLtvBps / 100).toFixed(0)}% LTV)`,
+            `  Vault tokens: ${(totalTokens3 / 1e6).toFixed(0)}, collateral: ${(collateralAmount / 1e6).toFixed(0)}, value: ${(collateralValue / 1e9).toFixed(4)} SOL, est borrow: ${(quote.max_borrow_sol / 1e9).toFixed(4)} SOL (~${(quote.max_ltv_bps / 100).toFixed(0)}% LTV)`,
           )
 
-          const borrowResult = await buildBorrowTransaction(connection, {
+          // V21: borrow size is auto-clamped; post token collateral via vault.
+          const openResult = await buildOpenLongTransaction(connection, {
             mint,
             borrower: walletAddr,
-            collateral_amount: collateralAmount,
-            sol_to_borrow: solToBorrow,
+            collateral: collateralAmount,
             vault: walletAddr,
           })
-          await signAndSend(connection, wallet, borrowResult.transaction)
-          ok('borrow for liquidation (vault)', borrowResult.message)
+          await signAndSend(connection, wallet, openResult.transaction)
+          ok('open long for liquidation (vault)', openResult.message)
 
-          // Time travel ~420 days to push LTV past 65% threshold via interest accrual
-          // At 23x borrow multiplier, effective LTV is ~31%. Need ~55 epochs (385 days)
-          // to accrue enough interest at 2%/epoch to breach 65%. Using 60 for margin.
+          // Time travel to push the long's HEALTH LTV (debt / vault-tokens value =
+          // collateral + bought) past the 65% threshold via interest accrual. This
+          // position opens at ~30% health LTV, so it needs ~2.1x debt growth — and at
+          // the [V21] 1.5%/epoch rate (was 2%) that's ~75 epochs. Using 100 for margin.
           const FULL_EPOCH_SLOTS = 1_512_000 // ~7 days
-          const slotsToTravel = FULL_EPOCH_SLOTS * 60
-          log(`  Time traveling ${slotsToTravel} slots (~420 days)...`)
+          const slotsToTravel = FULL_EPOCH_SLOTS * 100
+          log(`  Time traveling ${slotsToTravel} slots (~700 days)...`)
           const currentSlot = await connection.getSlot()
           await fetch('http://127.0.0.1:8899', {
             method: 'POST',
@@ -1663,15 +1590,15 @@ const main = async () => {
 
           // Regression guard: verify the SDK's off-chain interest projection flips
           // health to 'liquidatable' after time-travel, without any on-chain
-          // instruction touching the loan. If this fails, getLoanPosition has
+          // instruction touching the position. If this fails, getPosition has
           // stopped projecting accrued_interest to the current slot.
-          const postTravelLoan = await getLoanPosition(connection, mint, walletAddr)
+          const postTravelLoan = await getPosition(connection, mint, vaultOwner, 'long', 0)
           log(
             `  Post-travel (projected): health=${postTravelLoan.health}, LTV=${postTravelLoan.current_ltv_bps != null ? (postTravelLoan.current_ltv_bps / 100).toFixed(1) + '%' : 'n/a'}, interest=${(postTravelLoan.accrued_interest / LAMPORTS_PER_SOL).toFixed(4)} SOL (stored=${(postTravelLoan.accrued_interest_stored / LAMPORTS_PER_SOL).toFixed(4)})`,
           )
           if (postTravelLoan.health !== 'liquidatable') {
             throw new Error(
-              `SDK projection regression: loan should be 'liquidatable' post time-travel, got '${postTravelLoan.health}'`,
+              `SDK projection regression: long should be 'liquidatable' post time-travel, got '${postTravelLoan.health}'`,
             )
           }
           ok(
@@ -1679,13 +1606,17 @@ const main = async () => {
             `liquidatable off-chain without on-chain accrual touch`,
           )
 
-          // Liquidate via vault — a different linked wallet acts as liquidator
+          // Liquidate via vault — a different linked wallet acts as liquidator.
+          // A long liquidation has the liquidator PAY the position's SOL debt
+          // (it receives the seized tokens + bonus), so fund it with the full
+          // owed amount + gas, not just gas.
           const liquidator = Keypair.generate()
+          const liqFunding = postTravelLoan.total_owed + Math.floor(0.2 * LAMPORTS_PER_SOL)
           const fundLiqTx = new Transaction().add(
             SystemProgram.transfer({
               fromPubkey: wallet.publicKey,
               toPubkey: liquidator.publicKey,
-              lamports: 0.05 * LAMPORTS_PER_SOL,
+              lamports: liqFunding,
             }),
           )
           const { blockhash: liqBh } = await connection.getLatestBlockhash()
@@ -1702,7 +1633,7 @@ const main = async () => {
           await signAndSend(connection, wallet, linkLiqResult.transaction)
 
           const vaultBefore = await getVault(connection, walletAddr)
-          const liqResult = await buildLiquidateTransaction(connection, {
+          const liqResult = await buildLiquidateLongTransaction(connection, {
             mint,
             liquidator: liquidator.publicKey.toBase58(),
             borrower: walletAddr,
@@ -1712,22 +1643,22 @@ const main = async () => {
           const liqSig = await signAndSend(connection, liquidator, liqResult.transaction)
           const vaultAfter = await getVault(connection, walletAddr)
           ok(
-            'buildLiquidateTransaction (vault)',
+            'buildLiquidateLongTransaction (vault)',
             `vault_sol_delta=${((vaultAfter?.sol_balance || 0) - (vaultBefore?.sol_balance || 0)).toFixed(4)} SOL sig=${liqSig.slice(0, 8)}...`,
           )
 
           // Verify position state after liquidation
           try {
-            const posAfterLiq = await getLoanPosition(connection, mint, walletAddr)
+            const posAfterLiq = await getPosition(connection, mint, vaultOwner, 'long', 0)
             log(
-              `  After liquidation: borrowed=${(posAfterLiq.borrowed_amount / LAMPORTS_PER_SOL).toFixed(4)} SOL, collateral=${(posAfterLiq.collateral_amount / 1e6).toFixed(0)} tokens, health=${posAfterLiq.health}`,
+              `  After liquidation: debt=${(posAfterLiq.debt_amount / LAMPORTS_PER_SOL).toFixed(4)} SOL, collateral=${(posAfterLiq.collateral_amount / 1e6).toFixed(0)} tokens, health=${posAfterLiq.health}`,
             )
             ok(
-              'getLoanPosition (after liquidation)',
-              `health=${posAfterLiq.health}, remaining_debt=${(posAfterLiq.borrowed_amount / LAMPORTS_PER_SOL).toFixed(4)} SOL`,
+              'getPosition long (after liquidation)',
+              `health=${posAfterLiq.health}, remaining_debt=${(posAfterLiq.debt_amount / LAMPORTS_PER_SOL).toFixed(4)} SOL`,
             )
           } catch (e: any) {
-            fail('getLoanPosition (after liquidation)', e)
+            fail('getPosition long (after liquidation)', e)
           }
 
           // Unlink liquidator
@@ -1769,46 +1700,34 @@ const main = async () => {
           log('  Skipping short liquidation — vault SOL too low')
           ok('short liquidation', 'skipped — insufficient vault SOL')
         } else {
-          // Compute how many tokens to borrow to hit ~48% LTV (DeepPool)
-          // LTV = (tokens * pool_sol / pool_tokens) / sol_collateral
-          // tokens = LTV * sol_collateral * pool_tokens / pool_sol
-          const dp = getDeepPoolAccounts(new PublicKey(mint))
-          const [dpAcct, dpTokenBal, dpRent] = await Promise.all([
-            connection.getAccountInfo(dp.pool),
-            connection.getTokenAccountBalance(dp.tokenVault),
-            connection.getMinimumBalanceForRentExemption(129),
-          ])
-          const poolSol = (dpAcct?.lamports ?? 0) - dpRent
-          const poolTokens = Number(dpTokenBal.value.amount)
-          // Target 95% of depth-band max LTV for this pool
-          const lendingInfo = await getLendingInfo(connection, mint)
-          const targetLtv = (lendingInfo.max_ltv_bps * 0.95) / 10000
-          let tokensToBorrow = Math.floor((targetLtv * shortCollateral * poolTokens) / poolSol)
-          tokensToBorrow = Math.max(tokensToBorrow, 1_000_000_000) // at least MIN_SHORT_TOKENS
+          // [V21] open_short auto-clamps borrowed tokens to collateral × LTV
+          // (no tokens_to_borrow knob), so we just post SOL collateral.
           log(
-            `  Pool: ${(poolSol / LAMPORTS_PER_SOL).toFixed(2)} SOL / ${(poolTokens / 1e6).toFixed(0)} tokens, borrowing ${(tokensToBorrow / 1e6).toFixed(0)} tokens against ${(shortCollateral / LAMPORTS_PER_SOL).toFixed(1)} SOL collateral`,
+            `  Opening short against ${(shortCollateral / LAMPORTS_PER_SOL).toFixed(1)} SOL collateral (borrow auto-clamped)`,
           )
 
           const openResult = await buildOpenShortTransaction(connection, {
             mint,
             shorter: walletAddr,
-            sol_collateral: shortCollateral,
-            tokens_to_borrow: tokensToBorrow,
+            collateral: shortCollateral,
             vault: walletAddr,
           })
           await signAndSend(connection, wallet, openResult.transaction)
           ok('open short for liquidation', openResult.message)
 
           // Verify position is healthy before time travel
-          const posBefore = await getShortPosition(connection, mint, walletAddr)
+          const posBefore = await getPosition(connection, mint, vaultOwner, 'short', 0)
           log(
-            `  Pre-liquidation: tokens_borrowed=${(posBefore.tokens_borrowed / 1e6).toFixed(0)}, LTV=${posBefore.current_ltv_bps !== null ? (posBefore.current_ltv_bps / 100).toFixed(1) + '%' : 'n/a'}, health=${posBefore.health}`,
+            `  Pre-liquidation: debt=${(posBefore.debt_amount / 1e6).toFixed(0)} tokens, LTV=${posBefore.current_ltv_bps !== null ? (posBefore.current_ltv_bps / 100).toFixed(1) + '%' : 'n/a'}, health=${posBefore.health}`,
           )
 
           // Time travel ~280 days to accrue enough interest to push LTV past 65% threshold
+          // [V21] LTV is sized against the live position_sol_vault (posted
+          // collateral + token-sale proceeds ≈ 1.4× the posted SOL), so a short
+          // needs ~2.1× debt growth to breach 65% — ~80 epochs of interest.
           const FULL_EPOCH_SLOTS2 = 1_512_000 // ~7 days
-          const slotsToTravel2 = FULL_EPOCH_SLOTS2 * 40
-          log(`  Time traveling ${slotsToTravel2} slots (~280 days)...`)
+          const slotsToTravel2 = FULL_EPOCH_SLOTS2 * 80
+          log(`  Time traveling ${slotsToTravel2} slots (~560 days)...`)
           const currentSlot2 = await connection.getSlot()
           await fetch('http://127.0.0.1:8899', {
             method: 'POST',
@@ -1825,7 +1744,7 @@ const main = async () => {
 
           // Regression guard: same projection check for shorts. Interest accrues
           // in tokens, and debt_value_sol should grow relative to sol_collateral.
-          const postTravelShort = await getShortPosition(connection, mint, walletAddr)
+          const postTravelShort = await getPosition(connection, mint, vaultOwner, 'short', 0)
           log(
             `  Post-travel short (projected): health=${postTravelShort.health}, LTV=${postTravelShort.current_ltv_bps != null ? (postTravelShort.current_ltv_bps / 100).toFixed(1) + '%' : 'n/a'}, interest_tokens=${(postTravelShort.accrued_interest / 1e6).toFixed(0)} (stored=${(postTravelShort.accrued_interest_stored / 1e6).toFixed(0)})`,
           )
@@ -1839,13 +1758,16 @@ const main = async () => {
             `liquidatable off-chain without on-chain accrual touch`,
           )
 
-          // Create a liquidator and link to vault
+          // Create a liquidator and link to vault. [V21] The SDK now auto-acquires
+          // the cover tokens via a prepended DeepPool buy, so the liquidator must
+          // FRONT that buy in SOL (~the covered debt value); the seize (debt +
+          // bonus) repays it within the same tx. Fund enough to front the buy.
           const shortLiquidator = Keypair.generate()
           const fundShortLiqTx = new Transaction().add(
             SystemProgram.transfer({
               fromPubkey: wallet.publicKey,
               toPubkey: shortLiquidator.publicKey,
-              lamports: 0.05 * LAMPORTS_PER_SOL,
+              lamports: 3 * LAMPORTS_PER_SOL,
             }),
           )
           const { blockhash: shortLiqBh } = await connection.getLatestBlockhash()
@@ -1881,16 +1803,16 @@ const main = async () => {
 
           // Verify position state after short liquidation
           try {
-            const posAfterShortLiq = await getShortPosition(connection, mint, walletAddr)
+            const posAfterShortLiq = await getPosition(connection, mint, vaultOwner, 'short', 0)
             log(
-              `  After short liquidation: tokens_borrowed=${(posAfterShortLiq.tokens_borrowed / 1e6).toFixed(0)}, collateral=${(posAfterShortLiq.sol_collateral / LAMPORTS_PER_SOL).toFixed(4)} SOL, health=${posAfterShortLiq.health}`,
+              `  After short liquidation: debt=${(posAfterShortLiq.debt_amount / 1e6).toFixed(0)} tokens, collateral=${(posAfterShortLiq.collateral_amount / LAMPORTS_PER_SOL).toFixed(4)} SOL, health=${posAfterShortLiq.health}`,
             )
             ok(
-              'getShortPosition (after liquidation)',
-              `health=${posAfterShortLiq.health}, remaining_debt=${(posAfterShortLiq.tokens_borrowed / 1e6).toFixed(0)} tokens`,
+              'getPosition short (after liquidation)',
+              `health=${posAfterShortLiq.health}, remaining_debt=${(posAfterShortLiq.debt_amount / 1e6).toFixed(0)} tokens`,
             )
           } catch (e: any) {
-            fail('getShortPosition (after liquidation)', e)
+            fail('getPosition short (after liquidation)', e)
           }
 
           // Unlink liquidator

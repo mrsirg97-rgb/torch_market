@@ -26,7 +26,7 @@ use torch_market::{
     constants::*,
     pool_validation,
     state::{
-        BondingCurve, GlobalConfig, LoanPosition, ProtocolTreasury, ShortPosition, TorchVault,
+        BondingCurve, GlobalConfig, Position, ProtocolTreasury, TorchVault,
         Treasury,
     },
     token_2022_utils::{get_associated_token_address_2022, TOKEN_2022_PROGRAM_ID},
@@ -228,17 +228,53 @@ impl Env {
         deserialize_anchor(&self.svm, &t.treasury)
     }
 
-    pub fn get_loan(&self, t: &TokenCtx, borrower: &Pubkey) -> Option<LoanPosition> {
-        let (addr, _) = Pubkey::find_program_address(
-            &[LOAN_SEED, t.mint.as_ref(), borrower.as_ref()],
-            &torch_market::ID,
-        );
-        try_deserialize_anchor(&self.svm, &addr)
+    /// Derived treasury SOL = treasury_sol_vault lamports − rent (mirrors the
+    /// program's `treasury_physical_sol`; there is no tracked `sol_balance` field).
+    pub fn treasury_sol(&self, t: &TokenCtx) -> u64 {
+        let lamports = self
+            .svm
+            .get_account(&t.treasury_sol_vault)
+            .map(|a| a.lamports)
+            .unwrap_or(0);
+        let rent = self
+            .svm
+            .get_sysvar::<solana_sdk::rent::Rent>()
+            .minimum_balance(0);
+        lamports.saturating_sub(rent)
     }
 
-    pub fn get_short(&self, t: &TokenCtx, shorter: &Pubkey) -> Option<ShortPosition> {
+    /// Force an account's lamports to an exact value (preserving data/owner) —
+    /// used to set the treasury_sol_vault below/above a gate in tests.
+    pub fn poke_lamports(&mut self, addr: &Pubkey, lamports: u64) {
+        let acct = self.svm.get_account(addr).unwrap_or_default();
+        let new = Account {
+            lamports,
+            data: acct.data().to_vec(),
+            owner: *acct.owner(),
+            executable: acct.executable(),
+            rent_epoch: acct.rent_epoch(),
+        };
+        self.svm.set_account(*addr, new).expect("set_account");
+    }
+
+    // [V21] Resolve a unified Position PDA for (user, mint, side, index). `side`
+    // is POSITION_SIDE_LONG / POSITION_SIDE_SHORT; the byte disambiguates a long
+    // and a short at the same index.
+    pub fn get_position(
+        &self,
+        t: &TokenCtx,
+        user: &Pubkey,
+        side: u8,
+        index: u32,
+    ) -> Option<Position> {
         let (addr, _) = Pubkey::find_program_address(
-            &[SHORT_SEED, t.mint.as_ref(), shorter.as_ref()],
+            &[
+                POSITION_SEED,
+                user.as_ref(),
+                t.mint.as_ref(),
+                &[side],
+                &index.to_le_bytes(),
+            ],
             &torch_market::ID,
         );
         try_deserialize_anchor(&self.svm, &addr)
@@ -260,8 +296,16 @@ impl Env {
             &[BONDING_CURVE_SEED, mint_key.as_ref()],
             &torch_market::ID,
         );
+        let (bonding_curve_sol, _) = Pubkey::find_program_address(
+            &[BONDING_CURVE_SOL_SEED, mint_key.as_ref()],
+            &torch_market::ID,
+        );
         let (treasury, _) =
             Pubkey::find_program_address(&[TREASURY_SEED, mint_key.as_ref()], &torch_market::ID);
+        let (treasury_sol_vault, _) = Pubkey::find_program_address(
+            &[TREASURY_SOL_VAULT_SEED, mint_key.as_ref()],
+            &torch_market::ID,
+        );
         let (treasury_lock, _) = Pubkey::find_program_address(
             &[TREASURY_LOCK_SEED, mint_key.as_ref()],
             &torch_market::ID,
@@ -283,6 +327,7 @@ impl Env {
                 bonding_curve,
                 token_vault,
                 treasury,
+                treasury_sol_vault,
                 treasury_token_account,
                 treasury_lock,
                 treasury_lock_token_account,
@@ -318,7 +363,9 @@ impl Env {
             creator: creator.pubkey(),
             mint: mint_key,
             bonding_curve,
+            bonding_curve_sol,
             treasury,
+            treasury_sol_vault,
             treasury_lock,
             token_vault,
             treasury_token_account,
@@ -364,8 +411,10 @@ impl Env {
                 dev_wallet: self.dev_wallet.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
+                bonding_curve_sol: t.bonding_curve_sol,
                 token_vault: t.token_vault,
                 token_treasury: t.treasury,
+                treasury_sol_vault: t.treasury_sol_vault,
                 treasury_token_account: t.treasury_token_account,
                 buyer_token_account,
                 user_position,
@@ -425,8 +474,10 @@ impl Env {
                 dev_wallet: dev_wallet_override.unwrap_or(self.dev_wallet.pubkey()),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
+                bonding_curve_sol: t.bonding_curve_sol,
                 token_vault: t.token_vault,
                 token_treasury: t.treasury,
+                treasury_sol_vault: t.treasury_sol_vault,
                 treasury_token_account: t.treasury_token_account,
                 buyer_token_account,
                 user_position,
@@ -495,14 +546,17 @@ impl Env {
                 dev_wallet: self.dev_wallet.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
+                bonding_curve_sol: t.bonding_curve_sol,
                 token_vault: t.token_vault,
                 token_treasury: t.treasury,
+                treasury_sol_vault: t.treasury_sol_vault,
                 treasury_token_account: t.treasury_token_account,
                 user_position,
                 user_stats: Some(user_stats),
                 protocol_treasury: self.protocol_treasury,
                 creator: t.creator,
                 torch_vault: vault.vault,
+                vault_sol: vault.vault_sol,
                 vault_wallet_link: wallet_link,
                 vault_token_account,
                 token_program: TOKEN_2022_PROGRAM_ID,
@@ -550,10 +604,12 @@ impl Env {
                 seller: seller.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
+                bonding_curve_sol: t.bonding_curve_sol,
                 token_vault: t.token_vault,
                 seller_token_account,
                 user_position: Some(user_position),
                 token_treasury: t.treasury,
+                treasury_sol_vault: t.treasury_sol_vault,
                 user_stats: Some(user_stats),
                 protocol_treasury: Some(self.protocol_treasury),
                 token_program: TOKEN_2022_PROGRAM_ID,
@@ -605,12 +661,15 @@ impl Env {
                 seller: signer.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
+                bonding_curve_sol: t.bonding_curve_sol,
                 token_vault: t.token_vault,
                 user_position: Some(user_position),
                 token_treasury: t.treasury,
+                treasury_sol_vault: t.treasury_sol_vault,
                 user_stats: Some(user_stats),
                 protocol_treasury: Some(self.protocol_treasury),
                 torch_vault: vault.vault,
+                vault_sol: vault.vault_sol,
                 vault_wallet_link: wallet_link,
                 vault_token_account,
                 token_program: TOKEN_2022_PROGRAM_ID,
@@ -643,11 +702,16 @@ impl Env {
             &[VAULT_WALLET_LINK_SEED, creator.pubkey().as_ref()],
             &torch_market::ID,
         );
+        let (vault_sol, _) = Pubkey::find_program_address(
+            &[TORCH_VAULT_SOL_SEED, creator.pubkey().as_ref()],
+            &torch_market::ID,
+        );
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::CreateVault {
                 creator: creator.pubkey(),
                 vault,
+                vault_sol,
                 wallet_link,
                 system_program: system_program::ID,
             }
@@ -658,8 +722,24 @@ impl Env {
         VaultCtx {
             creator: creator.pubkey(),
             vault,
+            vault_sol,
             authority_creator_link: wallet_link,
         }
+    }
+
+    /// Derived TorchVault SOL balance = vault_sol lamports − rent (mirrors
+    /// vault_physical_sol). There is no tracked sol_balance field.
+    pub fn vault_sol(&self, vault: &VaultCtx) -> u64 {
+        let lamports = self
+            .svm
+            .get_account(&vault.vault_sol)
+            .map(|a| a.lamports)
+            .unwrap_or(0);
+        let rent = self
+            .svm
+            .get_sysvar::<solana_sdk::rent::Rent>()
+            .minimum_balance(0);
+        lamports.saturating_sub(rent)
     }
 
     pub fn deposit_vault(
@@ -673,6 +753,7 @@ impl Env {
             accounts: torch_market::accounts::DepositVault {
                 depositor: depositor.pubkey(),
                 vault: vault.vault,
+                vault_sol: vault.vault_sol,
                 system_program: system_program::ID,
             }
             .to_account_metas(None),
@@ -692,6 +773,7 @@ impl Env {
             accounts: torch_market::accounts::WithdrawVault {
                 authority: authority.pubkey(),
                 vault: vault.vault,
+                vault_sol: vault.vault_sol,
                 system_program: system_program::ID,
             }
             .to_account_metas(None),
@@ -784,7 +866,9 @@ impl Env {
                 payer: payer.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
+                bonding_curve_sol: t.bonding_curve_sol,
                 token_treasury: t.treasury,
+                treasury_sol_vault: t.treasury_sol_vault,
                 protocol_treasury: self.protocol_treasury,
                 system_program: system_program::ID,
             }
@@ -808,6 +892,7 @@ impl Env {
                 contributor: contributor.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
+                bonding_curve_sol: t.bonding_curve_sol,
                 system_program: system_program::ID,
             }
             .to_account_metas(None),
@@ -906,6 +991,7 @@ impl Env {
                 bonding_curve: t.bonding_curve,
                 creator: t.creator,
                 treasury: t.treasury,
+                treasury_sol_vault: t.treasury_sol_vault,
                 treasury_token_account: t.treasury_token_account,
                 deep_pool_program: deep_pool::ID,
                 deep_pool: t.deep_pool,
@@ -948,28 +1034,6 @@ impl Env {
             }
             .to_account_metas(None),
             data: torch_market::instruction::ClaimProtocolRewards {}.data(),
-        };
-        self.send(&[ix], &[user])
-    }
-
-    pub fn star_token(&mut self, user: &Keypair, t: &TokenCtx) -> Result<(), TransactionError> {
-        let (star_record, _) = Pubkey::find_program_address(
-            &[STAR_RECORD_SEED, user.pubkey().as_ref(), t.mint.as_ref()],
-            &torch_market::ID,
-        );
-        let ix = Instruction {
-            program_id: torch_market::ID,
-            accounts: torch_market::accounts::StarToken {
-                user: user.pubkey(),
-                mint: t.mint,
-                bonding_curve: t.bonding_curve,
-                token_treasury: t.treasury,
-                creator: t.creator,
-                star_record,
-                system_program: system_program::ID,
-            }
-            .to_account_metas(None),
-            data: torch_market::instruction::StarToken {}.data(),
         };
         self.send(&[ix], &[user])
     }
@@ -1038,9 +1102,10 @@ impl Env {
         }
     }
 
-    /// Single-tx migration matching the SDK shape (packages/sdk/src/transactions.ts:1689):
-    /// ComputeBudget(400k) + create payer_token ATA + fund_migration_sol + migrate_to_dex.
-    /// Payer signs + pays rent. Treasury must have >= MIN_MIGRATION_SOL.
+    /// Single-tx migration: ComputeBudget + create payer_token ATA + migrate_to_dex.
+    /// The bonded SOL is sourced directly from bonding_curve_sol (seed-signed) inside
+    /// migrate_to_dex — no separate fund step. Payer signs + pays rent (reimbursed).
+    /// Treasury must have >= MIN_MIGRATION_SOL.
     pub fn migrate(&mut self, t: &TokenCtx, payer: &Keypair) -> Result<(), TransactionError> {
         use torch_market::token_2022_utils::build_create_associated_token_account_instruction;
         let payer_token = get_associated_token_address_2022(&payer.pubkey(), &t.mint);
@@ -1049,39 +1114,24 @@ impl Env {
         let deep_pool_lp_account =
             get_associated_token_address_2022(&t.deep_pool, &t.deep_pool_lp_mint);
 
-        // SDK uses 400k. Bump to 600k in the harness — gives margin against the
-        // CU-edge flake observed under parallel test scheduling. Doesn't diverge
-        // from production's ix shape; only the explicit budget value.
         let bump_cu = ComputeBudgetInstruction::set_compute_unit_limit(600_000);
         let create_ata_ix = build_create_associated_token_account_instruction(
             &payer.pubkey(),
             &payer.pubkey(),
             &t.mint,
         );
-        let fund_ix = Instruction {
-            program_id: torch_market::ID,
-            accounts: torch_market::accounts::FundMigrationSol {
-                payer: payer.pubkey(),
-                mint: t.mint,
-                bonding_curve: t.bonding_curve,
-            }
-            .to_account_metas(None),
-            data: torch_market::instruction::FundMigrationSol {}.data(),
-        };
         let migrate_ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::MigrateToDex {
                 event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
                 payer: payer.pubkey(),
-                global_config: self.global_config,
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
+                treasury_sol_vault: t.treasury_sol_vault,
+                bonding_curve_sol: t.bonding_curve_sol,
                 token_vault: t.token_vault,
-                treasury_token_account: t.treasury_token_account,
-                treasury_lock_token_account: t.treasury_lock_token_account,
-                treasury_lock: t.treasury_lock,
                 payer_token,
                 deep_pool_program: deep_pool::ID,
                 torch_config: self.torch_config,
@@ -1091,7 +1141,6 @@ impl Env {
                 payer_lp_account,
                 deep_pool_lp_account,
                 deep_pool_event_authority: pool_validation::derive_deep_pool_event_authority(),
-                token_program: TOKEN_2022_PROGRAM_ID,
                 token_2022_program: TOKEN_2022_PROGRAM_ID,
                 associated_token_program: spl_associated_token_account_id(),
                 system_program: system_program::ID,
@@ -1099,280 +1148,408 @@ impl Env {
             .to_account_metas(None),
             data: torch_market::instruction::MigrateToDex {}.data(),
         };
-        self.send(&[bump_cu, create_ata_ix, fund_ix, migrate_ix], &[payer])
+        self.send(&[bump_cu, create_ata_ix, migrate_ix], &[payer])
     }
 
     // -----------------------------------------------------------------------
     // Lending (long): borrow / repay / liquidate
     // -----------------------------------------------------------------------
 
-    pub fn borrow(
+    // [V21] Atomic-custodied long open. Token collateral → position token vault;
+    // treasury funds a SOL borrow that atomically buys tokens into the same
+    // vault. `min_out` = min tokens out from the buy.
+    pub fn open_long(
         &mut self,
         borrower: &Keypair,
         t: &TokenCtx,
-        collateral_amount: u64,
-        sol_to_borrow: u64,
+        position_index: u32,
+        collateral: u64,
+        min_out: u64,
     ) -> Result<(), TransactionError> {
         let borrower_token_account = get_associated_token_address_2022(&borrower.pubkey(), &t.mint);
-        let (collateral_vault, _) = Pubkey::find_program_address(
-            &[COLLATERAL_VAULT_SEED, t.mint.as_ref()],
+        let (position, _) = Pubkey::find_program_address(
+            &[
+                POSITION_SEED,
+                borrower.pubkey().as_ref(),
+                t.mint.as_ref(),
+                &[POSITION_SIDE_LONG],
+                &position_index.to_le_bytes(),
+            ],
             &torch_market::ID,
         );
-        let (loan_position, _) = Pubkey::find_program_address(
-            &[LOAN_SEED, t.mint.as_ref(), borrower.pubkey().as_ref()],
+        // The position token vault is the canonical ATA of the Position PDA.
+        let position_token_vault = get_associated_token_address_2022(&position, &t.mint);
+        let (long_sol_vault, _) = Pubkey::find_program_address(
+            &[
+                LONG_SOL_VAULT_SEED,
+                borrower.pubkey().as_ref(),
+                t.mint.as_ref(),
+                &position_index.to_le_bytes(),
+            ],
             &torch_market::ID,
         );
 
         let ix = Instruction {
             program_id: torch_market::ID,
-            accounts: torch_market::accounts::Borrow {
-                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+            accounts: torch_market::accounts::OpenLongPosition {
+                event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
                 borrower: borrower.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
-                collateral_vault,
+                treasury_sol_vault: t.treasury_sol_vault,
                 borrower_token_account,
-                loan_position,
+                position,
+                position_token_vault,
+                long_sol_vault,
+                deep_pool_program: deep_pool::ID,
                 deep_pool: t.deep_pool,
                 deep_pool_token_vault: t.deep_pool_token_vault,
-                token_program: TOKEN_2022_PROGRAM_ID,
-                system_program: system_program::ID,
-            }
-            .to_account_metas(None),
-            data: torch_market::instruction::Borrow {
-                args: torch_market::contexts::BorrowArgs {
-                    collateral_amount,
-                    sol_to_borrow,
-                },
-            }
-            .data(),
-        };
-        self.send(&[ix], &[borrower])
-    }
-
-    pub fn repay(
-        &mut self,
-        borrower: &Keypair,
-        t: &TokenCtx,
-        sol_amount: u64,
-    ) -> Result<(), TransactionError> {
-        let borrower_token_account = get_associated_token_address_2022(&borrower.pubkey(), &t.mint);
-        let (collateral_vault, _) = Pubkey::find_program_address(
-            &[COLLATERAL_VAULT_SEED, t.mint.as_ref()],
-            &torch_market::ID,
-        );
-        let (loan_position, _) = Pubkey::find_program_address(
-            &[LOAN_SEED, t.mint.as_ref(), borrower.pubkey().as_ref()],
-            &torch_market::ID,
-        );
-
-        let ix = Instruction {
-            program_id: torch_market::ID,
-            accounts: torch_market::accounts::Repay {
-                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
-                program: torch_market::ID,
-                borrower: borrower.pubkey(),
-                mint: t.mint,
-                treasury: t.treasury,
-                collateral_vault,
-                borrower_token_account,
-                loan_position,
-                token_program: TOKEN_2022_PROGRAM_ID,
-                system_program: system_program::ID,
-            }
-            .to_account_metas(None),
-            data: torch_market::instruction::Repay { sol_amount }.data(),
-        };
-        self.send(&[ix], &[borrower])
-    }
-
-    pub fn borrow_via_vault(
-        &mut self,
-        signer: &Keypair,
-        vault: &VaultCtx,
-        t: &TokenCtx,
-        collateral_amount: u64,
-        sol_to_borrow: u64,
-    ) -> Result<(), TransactionError> {
-        let vault_token_account = get_associated_token_address_2022(&vault.vault, &t.mint);
-        self.ensure_token2022_ata(signer, &vault.vault, &t.mint)?;
-        let (collateral_vault, _) = Pubkey::find_program_address(
-            &[COLLATERAL_VAULT_SEED, t.mint.as_ref()],
-            &torch_market::ID,
-        );
-        let (loan_position, _) = Pubkey::find_program_address(
-            &[LOAN_SEED, t.mint.as_ref(), signer.pubkey().as_ref()],
-            &torch_market::ID,
-        );
-        let (wallet_link, _) = Pubkey::find_program_address(
-            &[VAULT_WALLET_LINK_SEED, signer.pubkey().as_ref()],
-            &torch_market::ID,
-        );
-
-        let ix = Instruction {
-            program_id: torch_market::ID,
-            accounts: torch_market::accounts::BorrowViaVault {
-                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
-                program: torch_market::ID,
-                borrower: signer.pubkey(),
-                mint: t.mint,
-                bonding_curve: t.bonding_curve,
-                treasury: t.treasury,
-                collateral_vault,
-                loan_position,
-                deep_pool: t.deep_pool,
-                deep_pool_token_vault: t.deep_pool_token_vault,
-                torch_vault: vault.vault,
-                vault_wallet_link: wallet_link,
-                vault_token_account,
-                token_program: TOKEN_2022_PROGRAM_ID,
-                system_program: system_program::ID,
-            }
-            .to_account_metas(None),
-            data: torch_market::instruction::BorrowViaVault {
-                args: torch_market::contexts::BorrowArgs {
-                    collateral_amount,
-                    sol_to_borrow,
-                },
-            }
-            .data(),
-        };
-        self.send(&[ix], &[signer])
-    }
-
-    pub fn repay_via_vault(
-        &mut self,
-        signer: &Keypair,
-        vault: &VaultCtx,
-        t: &TokenCtx,
-        sol_amount: u64,
-    ) -> Result<(), TransactionError> {
-        let vault_token_account = get_associated_token_address_2022(&vault.vault, &t.mint);
-        self.ensure_token2022_ata(signer, &vault.vault, &t.mint)?;
-        let (collateral_vault, _) = Pubkey::find_program_address(
-            &[COLLATERAL_VAULT_SEED, t.mint.as_ref()],
-            &torch_market::ID,
-        );
-        let (loan_position, _) = Pubkey::find_program_address(
-            &[LOAN_SEED, t.mint.as_ref(), signer.pubkey().as_ref()],
-            &torch_market::ID,
-        );
-        let (wallet_link, _) = Pubkey::find_program_address(
-            &[VAULT_WALLET_LINK_SEED, signer.pubkey().as_ref()],
-            &torch_market::ID,
-        );
-
-        let ix = Instruction {
-            program_id: torch_market::ID,
-            accounts: torch_market::accounts::RepayViaVault {
-                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
-                program: torch_market::ID,
-                borrower: signer.pubkey(),
-                mint: t.mint,
-                treasury: t.treasury,
-                collateral_vault,
-                loan_position,
-                torch_vault: vault.vault,
-                vault_wallet_link: wallet_link,
-                vault_token_account,
-                token_program: TOKEN_2022_PROGRAM_ID,
-                system_program: system_program::ID,
-            }
-            .to_account_metas(None),
-            data: torch_market::instruction::RepayViaVault { sol_amount }.data(),
-        };
-        self.send(&[ix], &[signer])
-    }
-
-    pub fn liquidate_via_vault(
-        &mut self,
-        signer: &Keypair,
-        vault: &VaultCtx,
-        borrower: Pubkey,
-        t: &TokenCtx,
-    ) -> Result<(), TransactionError> {
-        let vault_token_account = get_associated_token_address_2022(&vault.vault, &t.mint);
-        self.ensure_token2022_ata(signer, &vault.vault, &t.mint)?;
-        let (collateral_vault, _) = Pubkey::find_program_address(
-            &[COLLATERAL_VAULT_SEED, t.mint.as_ref()],
-            &torch_market::ID,
-        );
-        let (loan_position, _) = Pubkey::find_program_address(
-            &[LOAN_SEED, t.mint.as_ref(), borrower.as_ref()],
-            &torch_market::ID,
-        );
-        let (wallet_link, _) = Pubkey::find_program_address(
-            &[VAULT_WALLET_LINK_SEED, signer.pubkey().as_ref()],
-            &torch_market::ID,
-        );
-
-        let ix = Instruction {
-            program_id: torch_market::ID,
-            accounts: torch_market::accounts::LiquidateViaVault {
-                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
-                program: torch_market::ID,
-                liquidator: signer.pubkey(),
-                borrower,
-                mint: t.mint,
-                bonding_curve: t.bonding_curve,
-                treasury: t.treasury,
-                collateral_vault,
-                loan_position,
-                deep_pool: t.deep_pool,
-                deep_pool_token_vault: t.deep_pool_token_vault,
-                torch_vault: vault.vault,
-                vault_wallet_link: wallet_link,
-                vault_token_account,
-                token_program: TOKEN_2022_PROGRAM_ID,
+                deep_pool_event_authority: Pubkey::find_program_address(&[b"__event_authority"], &deep_pool::ID).0,
+                token_2022_program: TOKEN_2022_PROGRAM_ID,
                 associated_token_program: spl_associated_token_account_id(),
                 system_program: system_program::ID,
             }
             .to_account_metas(None),
-            data: torch_market::instruction::LiquidateViaVault {}.data(),
+            data: torch_market::instruction::OpenLong {
+                args: torch_market::contexts::OpenPositionArgs {
+                    position_index,
+                    collateral,
+                    min_out,
+                },
+            }
+            .data(),
         };
-        self.send(&[ix], &[signer])
+        self.send(&[ix], &[borrower])
     }
 
-    pub fn liquidate(
+    // [V21] Atomic long close. Sells the vault tokens, splits SOL output:
+    // debt → treasury, surplus → user. `repay_fraction_bps` = 10000 for full.
+    pub fn close_long(
         &mut self,
-        liquidator: &Keypair,
-        borrower: Pubkey,
+        borrower: &Keypair,
         t: &TokenCtx,
+        position_index: u32,
+        repay_fraction_bps: u16,
+        min_surplus_sol_out: u64,
     ) -> Result<(), TransactionError> {
-        let liquidator_token_account =
-            get_associated_token_address_2022(&liquidator.pubkey(), &t.mint);
-        let (collateral_vault, _) = Pubkey::find_program_address(
-            &[COLLATERAL_VAULT_SEED, t.mint.as_ref()],
+        let (position, _) = Pubkey::find_program_address(
+            &[
+                POSITION_SEED,
+                borrower.pubkey().as_ref(),
+                t.mint.as_ref(),
+                &[POSITION_SIDE_LONG],
+                &position_index.to_le_bytes(),
+            ],
             &torch_market::ID,
         );
-        let (loan_position, _) = Pubkey::find_program_address(
-            &[LOAN_SEED, t.mint.as_ref(), borrower.as_ref()],
+        let position_token_vault = get_associated_token_address_2022(&position, &t.mint);
+        let (long_sol_vault, _) = Pubkey::find_program_address(
+            &[
+                LONG_SOL_VAULT_SEED,
+                borrower.pubkey().as_ref(),
+                t.mint.as_ref(),
+                &position_index.to_le_bytes(),
+            ],
             &torch_market::ID,
         );
 
         let ix = Instruction {
             program_id: torch_market::ID,
-            accounts: torch_market::accounts::Liquidate {
-                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+            accounts: torch_market::accounts::CloseLongPosition {
+                event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
+                borrower: borrower.pubkey(),
+                mint: t.mint,
+                bonding_curve: t.bonding_curve,
+                treasury: t.treasury,
+                treasury_sol_vault: t.treasury_sol_vault,
+                position,
+                position_token_vault,
+                long_sol_vault,
+                deep_pool_program: deep_pool::ID,
+                deep_pool: t.deep_pool,
+                deep_pool_token_vault: t.deep_pool_token_vault,
+                deep_pool_event_authority: Pubkey::find_program_address(&[b"__event_authority"], &deep_pool::ID).0,
+                token_2022_program: TOKEN_2022_PROGRAM_ID,
+                system_program: system_program::ID,
+            }
+            .to_account_metas(None),
+            data: torch_market::instruction::CloseLong {
+                args: torch_market::contexts::ClosePositionArgs {
+                    position_index,
+                    repay_fraction_bps,
+                    min_surplus_sol_out,
+                },
+            }
+            .data(),
+        };
+        self.send(&[ix], &[borrower])
+    }
+
+    // [V21] Long liquidation: liquidator pays SOL debt → treasury, seizes vault
+    // tokens + bonus. No swap CPI; deep_pool read-only for the mark. Residual
+    // equity tokens (full liq) return to the borrower's ATA. Hardened TWAP (D-10).
+    pub fn liquidate_long(
+        &mut self,
+        liquidator: &Keypair,
+        borrower: Pubkey,
+        t: &TokenCtx,
+        position_index: u32,
+    ) -> Result<(), TransactionError> {
+        let liquidator_token_account =
+            get_associated_token_address_2022(&liquidator.pubkey(), &t.mint);
+        let borrower_token_account = get_associated_token_address_2022(&borrower, &t.mint);
+        let (position, _) = Pubkey::find_program_address(
+            &[
+                POSITION_SEED,
+                borrower.as_ref(),
+                t.mint.as_ref(),
+                &[POSITION_SIDE_LONG],
+                &position_index.to_le_bytes(),
+            ],
+            &torch_market::ID,
+        );
+        let position_token_vault = get_associated_token_address_2022(&position, &t.mint);
+
+        let ix = Instruction {
+            program_id: torch_market::ID,
+            accounts: torch_market::accounts::LiquidateLongPosition {
+                event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
                 liquidator: liquidator.pubkey(),
                 borrower,
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
-                collateral_vault,
+                treasury_sol_vault: t.treasury_sol_vault,
+                position,
+                borrower_token_account,
+                position_token_vault,
                 liquidator_token_account,
-                loan_position,
                 deep_pool: t.deep_pool,
                 deep_pool_token_vault: t.deep_pool_token_vault,
-                token_program: TOKEN_2022_PROGRAM_ID,
+                token_2022_program: TOKEN_2022_PROGRAM_ID,
                 associated_token_program: spl_associated_token_account_id(),
                 system_program: system_program::ID,
             }
             .to_account_metas(None),
-            data: torch_market::instruction::Liquidate {}.data(),
+            data: torch_market::instruction::LiquidateLong {
+                args: torch_market::contexts::LiquidatePositionArgs { position_index },
+            }
+            .data(),
+        };
+        self.send(&[ix], &[liquidator])
+    }
+
+    // Test helper: materialize the vault's token ATA and seed it with `amount`
+    // raw token units (mirrors poke_token_amount on other token accounts). Used
+    // to stock the vault with long-collateral tokens.
+    pub fn fund_vault_tokens(&mut self, funder: &Keypair, vault: &VaultCtx, t: &TokenCtx, amount: u64) {
+        self.ensure_token2022_ata(funder, &vault.vault, &t.mint)
+            .expect("create vault ATA");
+        let ata = get_associated_token_address_2022(&vault.vault, &t.mint);
+        self.poke_token_amount(ata, amount);
+    }
+
+    // [V21] Vault-routed open_long. Token collateral comes from the vault's token
+    // ATA (seed-signed); borrow is from the treasury; position is vault-seeded.
+    // `signer` is a linked wallet (pays position + token-vault rent).
+    pub fn open_long_via_vault(
+        &mut self,
+        signer: &Keypair,
+        vault: &VaultCtx,
+        t: &TokenCtx,
+        position_index: u32,
+        collateral: u64,
+        min_out: u64,
+    ) -> Result<(), TransactionError> {
+        let vault_token_account = get_associated_token_address_2022(&vault.vault, &t.mint);
+        let (position, _) = Pubkey::find_program_address(
+            &[
+                POSITION_SEED,
+                vault.vault.as_ref(),
+                t.mint.as_ref(),
+                &[POSITION_SIDE_LONG],
+                &position_index.to_le_bytes(),
+            ],
+            &torch_market::ID,
+        );
+        let position_token_vault = get_associated_token_address_2022(&position, &t.mint);
+        let (long_sol_vault, _) = Pubkey::find_program_address(
+            &[
+                LONG_SOL_VAULT_SEED,
+                vault.vault.as_ref(),
+                t.mint.as_ref(),
+                &position_index.to_le_bytes(),
+            ],
+            &torch_market::ID,
+        );
+        let (vault_wallet_link, _) = Pubkey::find_program_address(
+            &[VAULT_WALLET_LINK_SEED, signer.pubkey().as_ref()],
+            &torch_market::ID,
+        );
+
+        let ix = Instruction {
+            program_id: torch_market::ID,
+            accounts: torch_market::accounts::OpenLongViaVault {
+                event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
+                signer: signer.pubkey(),
+                torch_vault: vault.vault,
+                vault_wallet_link,
+                mint: t.mint,
+                bonding_curve: t.bonding_curve,
+                treasury: t.treasury,
+                treasury_sol_vault: t.treasury_sol_vault,
+                vault_token_account,
+                position,
+                position_token_vault,
+                long_sol_vault,
+                deep_pool_program: deep_pool::ID,
+                deep_pool: t.deep_pool,
+                deep_pool_token_vault: t.deep_pool_token_vault,
+                deep_pool_event_authority: Pubkey::find_program_address(&[b"__event_authority"], &deep_pool::ID).0,
+                token_2022_program: TOKEN_2022_PROGRAM_ID,
+                associated_token_program: spl_associated_token_account_id(),
+                system_program: system_program::ID,
+            }
+            .to_account_metas(None),
+            data: torch_market::instruction::OpenLongViaVault {
+                args: torch_market::contexts::OpenPositionArgs {
+                    position_index,
+                    collateral,
+                    min_out,
+                },
+            }
+            .data(),
+        };
+        self.send(&[ix], &[signer])
+    }
+
+    // [V21] Vault-routed close_long. Surplus P&L → vault_sol; signer reclaims rent.
+    pub fn close_long_via_vault(
+        &mut self,
+        signer: &Keypair,
+        vault: &VaultCtx,
+        t: &TokenCtx,
+        position_index: u32,
+        repay_fraction_bps: u16,
+        min_surplus_sol_out: u64,
+    ) -> Result<(), TransactionError> {
+        let (position, _) = Pubkey::find_program_address(
+            &[
+                POSITION_SEED,
+                vault.vault.as_ref(),
+                t.mint.as_ref(),
+                &[POSITION_SIDE_LONG],
+                &position_index.to_le_bytes(),
+            ],
+            &torch_market::ID,
+        );
+        let position_token_vault = get_associated_token_address_2022(&position, &t.mint);
+        let (long_sol_vault, _) = Pubkey::find_program_address(
+            &[
+                LONG_SOL_VAULT_SEED,
+                vault.vault.as_ref(),
+                t.mint.as_ref(),
+                &position_index.to_le_bytes(),
+            ],
+            &torch_market::ID,
+        );
+        let (vault_wallet_link, _) = Pubkey::find_program_address(
+            &[VAULT_WALLET_LINK_SEED, signer.pubkey().as_ref()],
+            &torch_market::ID,
+        );
+
+        let ix = Instruction {
+            program_id: torch_market::ID,
+            accounts: torch_market::accounts::CloseLongViaVault {
+                event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
+                signer: signer.pubkey(),
+                torch_vault: vault.vault,
+                vault_sol: vault.vault_sol,
+                vault_wallet_link,
+                mint: t.mint,
+                bonding_curve: t.bonding_curve,
+                treasury: t.treasury,
+                treasury_sol_vault: t.treasury_sol_vault,
+                position,
+                position_token_vault,
+                long_sol_vault,
+                deep_pool_program: deep_pool::ID,
+                deep_pool: t.deep_pool,
+                deep_pool_token_vault: t.deep_pool_token_vault,
+                deep_pool_event_authority: Pubkey::find_program_address(&[b"__event_authority"], &deep_pool::ID).0,
+                token_2022_program: TOKEN_2022_PROGRAM_ID,
+                system_program: system_program::ID,
+            }
+            .to_account_metas(None),
+            data: torch_market::instruction::CloseLongViaVault {
+                args: torch_market::contexts::ClosePositionArgs {
+                    position_index,
+                    repay_fraction_bps,
+                    min_surplus_sol_out,
+                },
+            }
+            .data(),
+        };
+        self.send(&[ix], &[signer])
+    }
+
+    // [V21] Vault-routed long liquidation: external liquidator repays SOL debt →
+    // treasury, seizes vault tokens. Residual tokens → vault ATA, rent → vault_sol.
+    pub fn liquidate_long_via_vault(
+        &mut self,
+        liquidator: &Keypair,
+        vault: &VaultCtx,
+        t: &TokenCtx,
+        position_index: u32,
+    ) -> Result<(), TransactionError> {
+        let liquidator_token_account =
+            get_associated_token_address_2022(&liquidator.pubkey(), &t.mint);
+        let vault_token_account = get_associated_token_address_2022(&vault.vault, &t.mint);
+        let (position, _) = Pubkey::find_program_address(
+            &[
+                POSITION_SEED,
+                vault.vault.as_ref(),
+                t.mint.as_ref(),
+                &[POSITION_SIDE_LONG],
+                &position_index.to_le_bytes(),
+            ],
+            &torch_market::ID,
+        );
+        let position_token_vault = get_associated_token_address_2022(&position, &t.mint);
+
+        let ix = Instruction {
+            program_id: torch_market::ID,
+            accounts: torch_market::accounts::LiquidateLongViaVault {
+                event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
+                liquidator: liquidator.pubkey(),
+                torch_vault: vault.vault,
+                vault_sol: vault.vault_sol,
+                mint: t.mint,
+                bonding_curve: t.bonding_curve,
+                treasury: t.treasury,
+                treasury_sol_vault: t.treasury_sol_vault,
+                position,
+                position_token_vault,
+                vault_token_account,
+                liquidator_token_account,
+                deep_pool: t.deep_pool,
+                deep_pool_token_vault: t.deep_pool_token_vault,
+                token_2022_program: TOKEN_2022_PROGRAM_ID,
+                associated_token_program: spl_associated_token_account_id(),
+                system_program: system_program::ID,
+            }
+            .to_account_metas(None),
+            data: torch_market::instruction::LiquidateLongViaVault {
+                args: torch_market::contexts::LiquidatePositionArgs { position_index },
+            }
+            .data(),
         };
         self.send(&[ix], &[liquidator])
     }
@@ -1381,54 +1558,64 @@ impl Env {
     // Shorts: open / close
     // -----------------------------------------------------------------------
 
+    // [V21] Atomic-custodied short open. Collateral SOL → fee + net to the
+    // per-position SOL vault; borrowed tokens atomically sold on deep_pool, SOL
+    // proceeds land in that vault. `min_out` = min SOL out from the sale.
     pub fn open_short(
         &mut self,
         shorter: &Keypair,
         t: &TokenCtx,
-        sol_collateral: u64,
-        tokens_to_borrow: u64,
+        position_index: u32,
+        collateral: u64,
+        min_out: u64,
     ) -> Result<(), TransactionError> {
-        let shorter_token_account = get_associated_token_address_2022(&shorter.pubkey(), &t.mint);
-        if !self.account_exists(&shorter_token_account) {
-            use torch_market::token_2022_utils::build_create_associated_token_account_instruction;
-            let create_ata_ix = build_create_associated_token_account_instruction(
-                &shorter.pubkey(),
-                &shorter.pubkey(),
-                &t.mint,
-            );
-            self.send(&[create_ata_ix], &[shorter])?;
-        }
-        let (short_config, _) =
-            Pubkey::find_program_address(&[SHORT_CONFIG_SEED, t.mint.as_ref()], &torch_market::ID);
-        let (short_position, _) = Pubkey::find_program_address(
-            &[SHORT_SEED, t.mint.as_ref(), shorter.pubkey().as_ref()],
+        let (position, _) = Pubkey::find_program_address(
+            &[
+                POSITION_SEED,
+                shorter.pubkey().as_ref(),
+                t.mint.as_ref(),
+                &[POSITION_SIDE_SHORT],
+                &position_index.to_le_bytes(),
+            ],
+            &torch_market::ID,
+        );
+        let (position_sol_vault, _) = Pubkey::find_program_address(
+            &[
+                SHORT_VAULT_SEED,
+                shorter.pubkey().as_ref(),
+                t.mint.as_ref(),
+                &position_index.to_le_bytes(),
+            ],
             &torch_market::ID,
         );
 
         let ix = Instruction {
             program_id: torch_market::ID,
-            accounts: torch_market::accounts::OpenShort {
-                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+            accounts: torch_market::accounts::OpenShortPosition {
+                event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
                 shorter: shorter.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
+                treasury_sol_vault: t.treasury_sol_vault,
                 treasury_lock: t.treasury_lock,
                 treasury_lock_token_account: t.treasury_lock_token_account,
-                short_config,
-                short_position,
-                shorter_token_account,
+                position,
+                position_sol_vault,
+                deep_pool_program: deep_pool::ID,
                 deep_pool: t.deep_pool,
                 deep_pool_token_vault: t.deep_pool_token_vault,
-                token_program: TOKEN_2022_PROGRAM_ID,
+                deep_pool_event_authority: Pubkey::find_program_address(&[b"__event_authority"], &deep_pool::ID).0,
+                token_2022_program: TOKEN_2022_PROGRAM_ID,
                 system_program: system_program::ID,
             }
             .to_account_metas(None),
             data: torch_market::instruction::OpenShort {
-                args: torch_market::contexts::OpenShortArgs {
-                    sol_collateral,
-                    tokens_to_borrow,
+                args: torch_market::contexts::OpenPositionArgs {
+                    position_index,
+                    collateral,
+                    min_out,
                 },
             }
             .data(),
@@ -1436,90 +1623,70 @@ impl Env {
         self.send(&[ix], &[shorter])
     }
 
-    pub fn close_short(
-        &mut self,
-        shorter: &Keypair,
-        t: &TokenCtx,
-        token_amount: u64,
-    ) -> Result<(), TransactionError> {
-        let shorter_token_account = get_associated_token_address_2022(&shorter.pubkey(), &t.mint);
-        let (short_config, _) =
-            Pubkey::find_program_address(&[SHORT_CONFIG_SEED, t.mint.as_ref()], &torch_market::ID);
-        let (short_position, _) = Pubkey::find_program_address(
-            &[SHORT_SEED, t.mint.as_ref(), shorter.pubkey().as_ref()],
-            &torch_market::ID,
-        );
-
-        let ix = Instruction {
-            program_id: torch_market::ID,
-            accounts: torch_market::accounts::CloseShort {
-                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
-                program: torch_market::ID,
-                shorter: shorter.pubkey(),
-                mint: t.mint,
-                bonding_curve: t.bonding_curve,
-                treasury: t.treasury,
-                treasury_lock: t.treasury_lock,
-                treasury_lock_token_account: t.treasury_lock_token_account,
-                short_config,
-                short_position,
-                shorter_token_account,
-                token_program: TOKEN_2022_PROGRAM_ID,
-                system_program: system_program::ID,
-            }
-            .to_account_metas(None),
-            data: torch_market::instruction::CloseShort { token_amount }.data(),
-        };
-        self.send(&[ix], &[shorter])
-    }
-
+    /// Vault-routed open_short. `signer` is a linked wallet; collateral comes from
+    /// the vault's vault_sol; the position is VAULT-SEEDED (keyed by vault.vault).
     pub fn open_short_via_vault(
         &mut self,
         signer: &Keypair,
         vault: &VaultCtx,
         t: &TokenCtx,
-        sol_collateral: u64,
-        tokens_to_borrow: u64,
+        position_index: u32,
+        collateral: u64,
+        min_out: u64,
     ) -> Result<(), TransactionError> {
-        let vault_token_account = get_associated_token_address_2022(&vault.vault, &t.mint);
-        self.ensure_token2022_ata(signer, &vault.vault, &t.mint)?;
-        let (short_config, _) =
-            Pubkey::find_program_address(&[SHORT_CONFIG_SEED, t.mint.as_ref()], &torch_market::ID);
-        let (short_position, _) = Pubkey::find_program_address(
-            &[SHORT_SEED, t.mint.as_ref(), signer.pubkey().as_ref()],
+        let (position, _) = Pubkey::find_program_address(
+            &[
+                POSITION_SEED,
+                vault.vault.as_ref(),
+                t.mint.as_ref(),
+                &[POSITION_SIDE_SHORT],
+                &position_index.to_le_bytes(),
+            ],
             &torch_market::ID,
         );
-        let (wallet_link, _) = Pubkey::find_program_address(
+        let (position_sol_vault, _) = Pubkey::find_program_address(
+            &[
+                SHORT_VAULT_SEED,
+                vault.vault.as_ref(),
+                t.mint.as_ref(),
+                &position_index.to_le_bytes(),
+            ],
+            &torch_market::ID,
+        );
+        let (vault_wallet_link, _) = Pubkey::find_program_address(
             &[VAULT_WALLET_LINK_SEED, signer.pubkey().as_ref()],
             &torch_market::ID,
         );
-
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::OpenShortViaVault {
-                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
-                shorter: signer.pubkey(),
+                signer: signer.pubkey(),
+                torch_vault: vault.vault,
+                vault_sol: vault.vault_sol,
+                vault_wallet_link,
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
+                treasury_sol_vault: t.treasury_sol_vault,
                 treasury_lock: t.treasury_lock,
                 treasury_lock_token_account: t.treasury_lock_token_account,
-                short_config,
-                short_position,
+                position,
+                position_sol_vault,
+                deep_pool_program: deep_pool::ID,
                 deep_pool: t.deep_pool,
                 deep_pool_token_vault: t.deep_pool_token_vault,
-                torch_vault: vault.vault,
-                vault_wallet_link: wallet_link,
-                vault_token_account,
-                token_program: TOKEN_2022_PROGRAM_ID,
+                deep_pool_event_authority: Pubkey::find_program_address(&[b"__event_authority"], &deep_pool::ID).0,
+                token_2022_program: TOKEN_2022_PROGRAM_ID,
                 system_program: system_program::ID,
             }
             .to_account_metas(None),
             data: torch_market::instruction::OpenShortViaVault {
-                args: torch_market::contexts::OpenShortArgs {
-                    sol_collateral,
-                    tokens_to_borrow,
+                args: torch_market::contexts::OpenPositionArgs {
+                    position_index,
+                    collateral,
+                    min_out,
                 },
             }
             .data(),
@@ -1527,71 +1694,163 @@ impl Env {
         self.send(&[ix], &[signer])
     }
 
-    pub fn close_short_via_vault(
+    // [V21] Atomic short close. Vault SOL pool-buys tokens to repay the lock;
+    // surplus SOL → user. `repay_fraction_bps` = 10000 for full close.
+    pub fn close_short(
         &mut self,
-        signer: &Keypair,
-        vault: &VaultCtx,
+        shorter: &Keypair,
         t: &TokenCtx,
-        token_amount: u64,
+        position_index: u32,
+        repay_fraction_bps: u16,
+        min_surplus_sol_out: u64,
     ) -> Result<(), TransactionError> {
-        let vault_token_account = get_associated_token_address_2022(&vault.vault, &t.mint);
-        self.ensure_token2022_ata(signer, &vault.vault, &t.mint)?;
-        let (short_config, _) =
-            Pubkey::find_program_address(&[SHORT_CONFIG_SEED, t.mint.as_ref()], &torch_market::ID);
-        let (short_position, _) = Pubkey::find_program_address(
-            &[SHORT_SEED, t.mint.as_ref(), signer.pubkey().as_ref()],
+        let (position, _) = Pubkey::find_program_address(
+            &[
+                POSITION_SEED,
+                shorter.pubkey().as_ref(),
+                t.mint.as_ref(),
+                &[POSITION_SIDE_SHORT],
+                &position_index.to_le_bytes(),
+            ],
             &torch_market::ID,
         );
-        let (wallet_link, _) = Pubkey::find_program_address(
-            &[VAULT_WALLET_LINK_SEED, signer.pubkey().as_ref()],
+        let (position_sol_vault, _) = Pubkey::find_program_address(
+            &[
+                SHORT_VAULT_SEED,
+                shorter.pubkey().as_ref(),
+                t.mint.as_ref(),
+                &position_index.to_le_bytes(),
+            ],
             &torch_market::ID,
         );
 
         let ix = Instruction {
             program_id: torch_market::ID,
-            accounts: torch_market::accounts::CloseShortViaVault {
-                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+            accounts: torch_market::accounts::CloseShortPosition {
+                event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
-                shorter: signer.pubkey(),
+                shorter: shorter.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
                 treasury_lock: t.treasury_lock,
                 treasury_lock_token_account: t.treasury_lock_token_account,
-                short_config,
-                short_position,
-                torch_vault: vault.vault,
-                vault_wallet_link: wallet_link,
-                vault_token_account,
-                token_program: TOKEN_2022_PROGRAM_ID,
+                position,
+                position_sol_vault,
+                deep_pool_program: deep_pool::ID,
+                deep_pool: t.deep_pool,
+                deep_pool_token_vault: t.deep_pool_token_vault,
+                deep_pool_event_authority: Pubkey::find_program_address(&[b"__event_authority"], &deep_pool::ID).0,
+                token_2022_program: TOKEN_2022_PROGRAM_ID,
                 system_program: system_program::ID,
             }
             .to_account_metas(None),
-            data: torch_market::instruction::CloseShortViaVault { token_amount }.data(),
+            data: torch_market::instruction::CloseShort {
+                args: torch_market::contexts::ClosePositionArgs {
+                    position_index,
+                    repay_fraction_bps,
+                    min_surplus_sol_out,
+                },
+            }
+            .data(),
+        };
+        self.send(&[ix], &[shorter])
+    }
+
+    /// Vault-routed close_short. `signer` is a linked wallet; surplus → vault_sol.
+    pub fn close_short_via_vault(
+        &mut self,
+        signer: &Keypair,
+        vault: &VaultCtx,
+        t: &TokenCtx,
+        position_index: u32,
+        repay_fraction_bps: u16,
+        min_surplus_sol_out: u64,
+    ) -> Result<(), TransactionError> {
+        let (position, _) = Pubkey::find_program_address(
+            &[POSITION_SEED, vault.vault.as_ref(), t.mint.as_ref(), &[POSITION_SIDE_SHORT], &position_index.to_le_bytes()],
+            &torch_market::ID,
+        );
+        let (position_sol_vault, _) = Pubkey::find_program_address(
+            &[SHORT_VAULT_SEED, vault.vault.as_ref(), t.mint.as_ref(), &position_index.to_le_bytes()],
+            &torch_market::ID,
+        );
+        let (vault_wallet_link, _) = Pubkey::find_program_address(
+            &[VAULT_WALLET_LINK_SEED, signer.pubkey().as_ref()],
+            &torch_market::ID,
+        );
+        let ix = Instruction {
+            program_id: torch_market::ID,
+            accounts: torch_market::accounts::CloseShortViaVault {
+                event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
+                signer: signer.pubkey(),
+                torch_vault: vault.vault,
+                vault_sol: vault.vault_sol,
+                vault_wallet_link,
+                mint: t.mint,
+                bonding_curve: t.bonding_curve,
+                treasury: t.treasury,
+                treasury_lock: t.treasury_lock,
+                treasury_lock_token_account: t.treasury_lock_token_account,
+                position,
+                position_sol_vault,
+                deep_pool_program: deep_pool::ID,
+                deep_pool: t.deep_pool,
+                deep_pool_token_vault: t.deep_pool_token_vault,
+                deep_pool_event_authority: Pubkey::find_program_address(&[b"__event_authority"], &deep_pool::ID).0,
+                token_2022_program: TOKEN_2022_PROGRAM_ID,
+                system_program: system_program::ID,
+            }
+            .to_account_metas(None),
+            data: torch_market::instruction::CloseShortViaVault {
+                args: torch_market::contexts::ClosePositionArgs {
+                    position_index,
+                    repay_fraction_bps,
+                    min_surplus_sol_out,
+                },
+            }
+            .data(),
         };
         self.send(&[ix], &[signer])
     }
 
+    // [V21] Short liquidation: liquidator pays cover tokens → lock, seizes vault
+    // SOL + bonus. No swap CPI; deep_pool read-only for the mark. Hardened TWAP (D-10).
     pub fn liquidate_short(
         &mut self,
         liquidator: &Keypair,
         borrower: Pubkey,
         t: &TokenCtx,
+        position_index: u32,
     ) -> Result<(), TransactionError> {
         let liquidator_token_account =
             get_associated_token_address_2022(&liquidator.pubkey(), &t.mint);
         self.ensure_token2022_ata(liquidator, &liquidator.pubkey(), &t.mint)?;
-        let (short_config, _) =
-            Pubkey::find_program_address(&[SHORT_CONFIG_SEED, t.mint.as_ref()], &torch_market::ID);
-        let (short_position, _) = Pubkey::find_program_address(
-            &[SHORT_SEED, t.mint.as_ref(), borrower.as_ref()],
+        let (position, _) = Pubkey::find_program_address(
+            &[
+                POSITION_SEED,
+                borrower.as_ref(),
+                t.mint.as_ref(),
+                &[POSITION_SIDE_SHORT],
+                &position_index.to_le_bytes(),
+            ],
+            &torch_market::ID,
+        );
+        let (position_sol_vault, _) = Pubkey::find_program_address(
+            &[
+                SHORT_VAULT_SEED,
+                borrower.as_ref(),
+                t.mint.as_ref(),
+                &position_index.to_le_bytes(),
+            ],
             &torch_market::ID,
         );
 
         let ix = Instruction {
             program_id: torch_market::ID,
-            accounts: torch_market::accounts::LiquidateShort {
-                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+            accounts: torch_market::accounts::LiquidateShortPosition {
+                event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
                 liquidator: liquidator.pubkey(),
                 borrower,
@@ -1600,66 +1859,141 @@ impl Env {
                 treasury: t.treasury,
                 treasury_lock: t.treasury_lock,
                 treasury_lock_token_account: t.treasury_lock_token_account,
-                short_config,
-                short_position,
+                position,
+                position_sol_vault,
                 liquidator_token_account,
                 deep_pool: t.deep_pool,
                 deep_pool_token_vault: t.deep_pool_token_vault,
-                token_program: TOKEN_2022_PROGRAM_ID,
+                token_2022_program: TOKEN_2022_PROGRAM_ID,
                 system_program: system_program::ID,
             }
             .to_account_metas(None),
-            data: torch_market::instruction::LiquidateShort {}.data(),
+            data: torch_market::instruction::LiquidateShort {
+                args: torch_market::contexts::LiquidatePositionArgs { position_index },
+            }
+            .data(),
         };
         self.send(&[ix], &[liquidator])
     }
 
+    // [V21] Vault-routed short liquidation: external liquidator covers a
+    // vault-owned (vault-seeded) short; seized SOL → liquidator, residual + rent
+    // → the vault's vault_sol. No vault_wallet_link (anyone can liquidate).
     pub fn liquidate_short_via_vault(
         &mut self,
-        signer: &Keypair,
+        liquidator: &Keypair,
         vault: &VaultCtx,
-        borrower: Pubkey,
         t: &TokenCtx,
+        position_index: u32,
     ) -> Result<(), TransactionError> {
-        let vault_token_account = get_associated_token_address_2022(&vault.vault, &t.mint);
-        self.ensure_token2022_ata(signer, &vault.vault, &t.mint)?;
-        let (short_config, _) =
-            Pubkey::find_program_address(&[SHORT_CONFIG_SEED, t.mint.as_ref()], &torch_market::ID);
-        let (short_position, _) = Pubkey::find_program_address(
-            &[SHORT_SEED, t.mint.as_ref(), borrower.as_ref()],
+        let liquidator_token_account =
+            get_associated_token_address_2022(&liquidator.pubkey(), &t.mint);
+        self.ensure_token2022_ata(liquidator, &liquidator.pubkey(), &t.mint)?;
+        let (position, _) = Pubkey::find_program_address(
+            &[
+                POSITION_SEED,
+                vault.vault.as_ref(),
+                t.mint.as_ref(),
+                &[POSITION_SIDE_SHORT],
+                &position_index.to_le_bytes(),
+            ],
             &torch_market::ID,
         );
-        let (wallet_link, _) = Pubkey::find_program_address(
-            &[VAULT_WALLET_LINK_SEED, signer.pubkey().as_ref()],
+        let (position_sol_vault, _) = Pubkey::find_program_address(
+            &[
+                SHORT_VAULT_SEED,
+                vault.vault.as_ref(),
+                t.mint.as_ref(),
+                &position_index.to_le_bytes(),
+            ],
             &torch_market::ID,
         );
 
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::LiquidateShortViaVault {
-                event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
-                liquidator: signer.pubkey(),
-                borrower,
+                liquidator: liquidator.pubkey(),
+                torch_vault: vault.vault,
+                vault_sol: vault.vault_sol,
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
                 treasury_lock: t.treasury_lock,
                 treasury_lock_token_account: t.treasury_lock_token_account,
-                short_config,
-                short_position,
+                position,
+                position_sol_vault,
+                liquidator_token_account,
                 deep_pool: t.deep_pool,
                 deep_pool_token_vault: t.deep_pool_token_vault,
-                torch_vault: vault.vault,
-                vault_wallet_link: wallet_link,
-                vault_token_account,
-                token_program: TOKEN_2022_PROGRAM_ID,
+                token_2022_program: TOKEN_2022_PROGRAM_ID,
                 system_program: system_program::ID,
             }
             .to_account_metas(None),
-            data: torch_market::instruction::LiquidateShortViaVault {}.data(),
+            data: torch_market::instruction::LiquidateShortViaVault {
+                args: torch_market::contexts::LiquidatePositionArgs { position_index },
+            }
+            .data(),
         };
-        self.send(&[ix], &[signer])
+        self.send(&[ix], &[liquidator])
+    }
+
+    // [V21] Direct deep_pool swap — a tiny buy (SOL→token) used to stamp the
+    // keeperless TWAP oracle, which advances ONLY on swaps now. `buyer` pays
+    // `sol_in` lamports and receives tokens into their Token-2022 ATA (created on
+    // demand). Same Swap accounts torch's leverage handlers CPI into.
+    pub fn deep_pool_buy(
+        &mut self,
+        buyer: &Keypair,
+        t: &TokenCtx,
+        sol_in: u64,
+    ) -> Result<(), TransactionError> {
+        self.ensure_token2022_ata(buyer, &buyer.pubkey(), &t.mint)?;
+        let buyer_ata = get_associated_token_address_2022(&buyer.pubkey(), &t.mint);
+        let ix = Instruction {
+            program_id: deep_pool::ID,
+            accounts: deep_pool::accounts::Swap {
+                user: buyer.pubkey(),
+                sol_source: buyer.pubkey(),
+                pool: t.deep_pool,
+                token_mint: t.mint,
+                token_vault: t.deep_pool_token_vault,
+                user_token_account: buyer_ata,
+                token_program: TOKEN_2022_PROGRAM_ID,
+                system_program: system_program::ID,
+                event_authority: pool_validation::derive_deep_pool_event_authority(),
+                program: deep_pool::ID,
+            }
+            .to_account_metas(None),
+            data: deep_pool::instruction::Swap {
+                args: deep_pool::SwapArgs {
+                    amount_in: sol_in,
+                    minimum_out: 0,
+                    buy: true,
+                },
+            }
+            .data(),
+        };
+        self.send(&[ix], &[buyer])
+    }
+
+    // [V21][D-10] Warm the keeperless TWAP so the liquidation mark is readable.
+    // The oracle lives in deep_pool and advances ONLY on swaps, so stamp its ring
+    // with a series of tiny buys spaced > MIN_OBS_SPACING_SLOTS apart, spanning
+    // the consumer lookback. After this, `read_twap_sol_per_tok` is anchored at a
+    // snapshot ≥ LIQ_TWAP_LOOKBACK_SLOTS old (no longer warmup). Warps THEN buys
+    // so every buy lands a fresh snapshot. Records at the CURRENT pool price —
+    // call BEFORE moving price to mark healthy, or AFTER to track a moved price.
+    // `cranker` pays the tiny SOL + one ATA rent. Returns the slot landed on.
+    pub fn warm_twap(&mut self, cranker: &Keypair, t: &TokenCtx) -> u64 {
+        let steps = (LIQ_TWAP_LOOKBACK_SLOTS / deep_pool::MIN_OBS_SPACING_SLOTS) + 3;
+        for _ in 0..steps {
+            let next = self.current_slot() + deep_pool::MIN_OBS_SPACING_SLOTS + 1;
+            self.warp_to_slot(next);
+            self.deep_pool_buy(cranker, t, 100_000).expect("warm swap");
+        }
+        self.current_slot()
     }
 
     // -----------------------------------------------------------------------
@@ -1718,7 +2052,9 @@ pub struct TokenCtx {
     pub creator: Pubkey,
     pub mint: Pubkey,
     pub bonding_curve: Pubkey,
+    pub bonding_curve_sol: Pubkey,
     pub treasury: Pubkey,
+    pub treasury_sol_vault: Pubkey,
     pub treasury_lock: Pubkey,
     pub token_vault: Pubkey,
     pub treasury_token_account: Pubkey,
@@ -1732,6 +2068,7 @@ pub struct TokenCtx {
 pub struct VaultCtx {
     pub creator: Pubkey,
     pub vault: Pubkey,
+    pub vault_sol: Pubkey,
     pub authority_creator_link: Pubkey,
 }
 
@@ -1765,6 +2102,23 @@ macro_rules! expect_err {
             "expected error code {} ({:?}), got {}",
             expected, $variant, code
         );
+    }};
+}
+
+/// Anchor framework's `AccountNotInitialized` error (not a TorchMarketError).
+pub const ANCHOR_ACCOUNT_NOT_INITIALIZED: u32 = 3012;
+
+/// Assert that `result` failed with a raw Anchor/framework error code (e.g.
+/// `AccountNotInitialized` = 3012, raised by account resolution before the
+/// handler body runs — used where a closed PDA can't be re-loaded).
+#[macro_export]
+macro_rules! expect_anchor_err {
+    ($result:expr, $code:expr) => {{
+        let res = $result;
+        let err = res.expect_err("expected error, got Ok");
+        let code = $crate::harness::anchor_err_code(&err)
+            .unwrap_or_else(|| panic!("expected Anchor Custom error, got: {:?}", err));
+        assert_eq!(code, $code, "expected anchor error code {}, got {}", $code, code);
     }};
 }
 

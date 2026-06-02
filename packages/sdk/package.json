@@ -1,6 +1,6 @@
 {
   "name": "torchsdk",
-  "version": "20.0.0",
+  "version": "21.0.0",
   "description": "Torch Market SDK",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -18,7 +18,7 @@
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.4",
     "bs58": "^6.0.0",
-    "deeppoolsdk": "5.0.0"
+    "deeppoolsdk": "7.0.2"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",

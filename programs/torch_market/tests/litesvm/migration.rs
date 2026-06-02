@@ -63,12 +63,10 @@ fn already_migrated() {
 fn insufficient_migration_fee() {
     let (mut env, t) = setup_bonded();
 
-    // Force treasury.sol_balance below MIN_MIGRATION_SOL via poke. Bonding
-    // naturally accrues ~10 SOL to treasury; we starve it to test the
-    // safety-net constraint.
-    let mut tr = env.get_treasury(&t);
-    tr.sol_balance = MIN_MIGRATION_SOL - 1;
-    env.poke_anchor(t.treasury, tr);
+    // Force the treasury_sol_vault below MIN_MIGRATION_SOL. Bonding naturally
+    // accrues SOL to the vault; we starve it to test the safety-net floor (now a
+    // handler check on the derived balance, not a context constraint on a field).
+    env.poke_lamports(&t.treasury_sol_vault, MIN_MIGRATION_SOL - 1);
 
     let payer = env.new_funded(2 * LAMPORTS_PER_SOL);
     expect_err!(
@@ -133,8 +131,9 @@ fn mint_authority_revoked() {
 #[test]
 fn payer_net_loss_only_ata_rent_and_tx_fee() {
     // Sanity check on the SOL flow:
-    //   - fund_migration_sol credits payer with `real_sol_reserves`
-    //   - create_pool inside migrate_to_dex moves that SOL into the deep_pool PDA
+    //   - the bonded SOL lives in bonding_curve_sol (accumulated on every buy)
+    //   - create_pool inside migrate_to_dex seed-signs that SOL into the deep_pool PDA
+    //     (sourced from bonding_curve_sol, never the payer's wallet)
     //   - migrate_to_dex reimburses payer for rent of pool-side accounts
     // Net: payer only pays for the payer_token ATA (~0.002 SOL) + tx fee (~5k lamports).
     let (mut env, t) = setup_bonded();

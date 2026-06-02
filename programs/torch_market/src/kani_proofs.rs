@@ -531,35 +531,39 @@ fn verify_double_transfer_fee_positive() {
 }
 
 // ============================================================================
-// 21. MIGRATION: fund_migration_sol Lamport Conservation
-//     Proves: bonding curve SOL debited == payer credited (exact, no loss).
-//     BC retains rent-exempt minimum. Total lamports conserved.
+// 21. MIGRATION: bonding_curve_sol → pool Lamport Conservation
+//     The bonded SOL lives in the System-owned bonding_curve_sol vault; migration
+//     seed-signs a transfer of exactly real_sol_reserves into the pool (no separate
+//     fund step, no user wallet). Proves: pool credited == vault debited (exact),
+//     the vault keeps any donation residual, total lamports conserved.
 // ============================================================================
 
 #[kani::proof]
-fn verify_fund_migration_sol_conservation() {
+fn verify_migration_sol_conservation() {
     let real_sol_reserves: u64 = kani::any();
     kani::assume(real_sol_reserves > 0);
     kani::assume(real_sol_reserves <= BONDING_TARGET_LAMPORTS);
 
-    // Bonding curve has real_sol_reserves + rent-exempt lamports
-    let rent_exempt: u64 = kani::any();
-    kani::assume(rent_exempt > 0);
-    kani::assume(rent_exempt <= 10_000_000);
-    let bc_lamports = real_sol_reserves.checked_add(rent_exempt).unwrap();
+    // bonding_curve_sol holds at least real_sol_reserves (it accumulated every buy);
+    // it may also hold a benign donation residual on top.
+    let residual: u64 = kani::any();
+    kani::assume(residual <= 10_000_000);
+    let vault_lamports = real_sol_reserves.checked_add(residual).unwrap();
 
-    // sub_lamports: bc_lamports - real_sol_reserves must not underflow
-    let bc_after = bc_lamports.checked_sub(real_sol_reserves).unwrap();
-    assert!(bc_after == rent_exempt); // BC retains rent-exempt
+    // Migration transfers exactly real_sol_reserves out (must not underflow).
+    let vault_after = vault_lamports.checked_sub(real_sol_reserves).unwrap();
+    assert!(vault_after == residual); // donation residual stays in the vault
 
-    // Payer receives exactly real_sol_reserves
-    let payer_before: u64 = kani::any();
-    kani::assume(payer_before <= u64::MAX - real_sol_reserves);
-    let payer_after = payer_before.checked_add(real_sol_reserves).unwrap();
-    assert!(payer_after - payer_before == real_sol_reserves);
+    // Pool receives exactly real_sol_reserves.
+    let pool_before: u64 = kani::any();
+    kani::assume(pool_before <= u64::MAX - real_sol_reserves);
+    let pool_after = pool_before.checked_add(real_sol_reserves).unwrap();
+    assert!(pool_after - pool_before == real_sol_reserves);
 
-    // Total lamports conserved
-    assert!(bc_after as u128 + payer_after as u128 == bc_lamports as u128 + payer_before as u128);
+    // Total lamports conserved across the two accounts.
+    assert!(
+        vault_after as u128 + pool_after as u128 == vault_lamports as u128 + pool_before as u128
+    );
 }
 
 // ============================================================================
@@ -1318,62 +1322,39 @@ fn verify_short_liquidation_bonus_increases_seizure() {
 }
 
 // ============================================================================
-// 51. [V5] SHORT: Lifecycle Conservation (Open → Close, No Interest)
-//     Proves: after open_short and immediate close_short, treasury tokens
-//     are perfectly conserved (tokens lent out = tokens returned).
+// 51. [V21] SHORT: Token Lifecycle Conservation (Open → Close, No Interest)
+//     V21 shorts borrow tokens from the static TreasuryLock (atomic sell pulls
+//     them out on open; the borrower buys them back on close). Proves: an open +
+//     immediate close perfectly conserves the lock's token balance AND the
+//     total_tokens_lent counter. (SOL collateral lives in a per-position System
+//     vault — out of scope here; the V20 treasury-SOL / short_collateral_reserved
+//     escrow no longer exists.)
 // ============================================================================
 
 #[kani::proof]
 fn verify_short_lifecycle_conservation() {
     let tokens_borrowed: u64 = kani::any();
-    let sol_collateral: u64 = kani::any();
-    let pool_sol: u64 = 100_000_000_000; // 100 SOL pool
-    let pool_tokens: u64 = 50_000_000_000_000; // 50T tokens
-
     kani::assume(tokens_borrowed >= MIN_SHORT_TOKENS);
     kani::assume(tokens_borrowed <= TOTAL_SUPPLY / 10); // Max 10% of supply
-    kani::assume(sol_collateral >= MIN_BORROW_AMOUNT);
-    kani::assume(sol_collateral <= 500_000_000_000); // Max 500 SOL
 
-    // Treasury tokens before
-    let treasury_tokens_before: u64 = kani::any();
-    kani::assume(treasury_tokens_before >= tokens_borrowed);
-    kani::assume(treasury_tokens_before <= TOTAL_SUPPLY);
+    let lock_tokens_before: u64 = kani::any();
+    let total_tokens_lent_before: u64 = kani::any();
+    kani::assume(lock_tokens_before >= tokens_borrowed);
+    kani::assume(total_tokens_lent_before <= TOTAL_SUPPLY - tokens_borrowed);
 
-    // Treasury SOL before
-    let treasury_sol_before: u64 = kani::any();
-    kani::assume(treasury_sol_before <= 1_000_000_000_000); // Max 1000 SOL
+    // ========== OPEN SHORT: lock lends tokens_borrowed ==========
+    let lock_after_open = lock_tokens_before.checked_sub(tokens_borrowed).unwrap();
+    let lent_after_open = total_tokens_lent_before.checked_add(tokens_borrowed).unwrap();
 
-    // LTV check
-    let debt_value = calc_short_debt_value(tokens_borrowed, pool_sol, pool_tokens).unwrap();
-    kani::assume(debt_value > 0);
-    let ltv = calc_ltv_bps(debt_value, sol_collateral).unwrap();
-    kani::assume(ltv <= DEFAULT_MAX_LTV_BPS as u64);
-
-    // ========== OPEN SHORT ==========
-    let treasury_tokens_after_open = treasury_tokens_before.checked_sub(tokens_borrowed).unwrap();
-    let treasury_sol_after_open = treasury_sol_before.checked_add(sol_collateral).unwrap();
-    let short_collateral_reserved = sol_collateral;
-
-    // ========== CLOSE SHORT (immediate, no interest) ==========
-    let total_owed = tokens_borrowed; // No interest (same slot)
-    let actual_return = total_owed;
-
-    let treasury_tokens_after_close = treasury_tokens_after_open
-        .checked_add(actual_return)
-        .unwrap();
-    let treasury_sol_after_close = treasury_sol_after_open.checked_sub(sol_collateral).unwrap();
-    let short_collateral_after = short_collateral_reserved - sol_collateral;
+    // ========== CLOSE SHORT (immediate, no interest): buy back exactly tokens_borrowed ==========
+    let lock_after_close = lock_after_open.checked_add(tokens_borrowed).unwrap();
+    let lent_after_close = lent_after_open.checked_sub(tokens_borrowed).unwrap();
 
     // ========== ASSERTIONS ==========
-    // Treasury tokens perfectly conserved
-    assert!(treasury_tokens_after_close == treasury_tokens_before);
-
-    // Treasury SOL perfectly conserved
-    assert!(treasury_sol_after_close == treasury_sol_before);
-
-    // Short collateral fully released
-    assert!(short_collateral_after == 0);
+    // Lock token balance perfectly conserved (tokens lent out = tokens returned).
+    assert!(lock_after_close == lock_tokens_before);
+    // total_tokens_lent counter returns to its starting value.
+    assert!(lent_after_close == total_tokens_lent_before);
 }
 
 // ============================================================================
@@ -1474,49 +1455,13 @@ fn verify_short_lifecycle_with_interest() {
 }
 
 // ============================================================================
-// 54. [V5] SHORT: Collateral Reservation Correctness
-//     Proves: short_collateral_reserved accurately tracks short collateral,
-//     and lending available SOL correctly excludes it.
-// ============================================================================
-
-#[kani::proof]
-fn verify_short_collateral_reservation() {
-    let treasury_sol: u64 = kani::any();
-    let short_collateral: u64 = kani::any();
-    let sol_lent: u64 = kani::any();
-
-    kani::assume(treasury_sol >= 1_000_000_000); // Min 1 SOL
-    kani::assume(treasury_sol <= 1_000_000_000_000); // Max 1000 SOL
-    kani::assume(short_collateral <= treasury_sol);
-    kani::assume(sol_lent <= treasury_sol);
-
-    // Available SOL for lending = treasury_sol - short_collateral
-    let available = treasury_sol.saturating_sub(short_collateral);
-
-    // Max lendable = available * 80%
-    let max_lendable = (available as u128)
-        .checked_mul(DEFAULT_LENDING_UTILIZATION_CAP_BPS as u128)
-        .unwrap()
-        .checked_div(10000)
-        .unwrap() as u64;
-
-    // Short collateral is never touched by lending
-    assert!(max_lendable <= available);
-    assert!(available <= treasury_sol);
-    assert!(max_lendable <= treasury_sol);
-
-    // If no shorts, full treasury available
-    if short_collateral == 0 {
-        assert!(available == treasury_sol);
-    }
-
-    // If all treasury is short collateral, nothing available for lending
-    if short_collateral == treasury_sol {
-        assert!(available == 0);
-        assert!(max_lendable == 0);
-    }
-}
-
+// 54. [V21] SHORT: Collateral Isolated From Lending — REMOVED.
+//     V20 subtracted `short_collateral_reserved` from treasury SOL to get the
+//     lendable float (verify_short_collateral_reservation). In V21 shorts escrow
+//     collateral in per-position System vaults and never touch the lending
+//     treasury, so the isolation is STRUCTURAL (short collateral is simply not an
+//     input to `treasury_physical − total_sol_lent_to_longs`) — there is no
+//     arithmetic property left to prove. Covered by verify_lending_gate_available_sol.
 // ============================================================================
 // 55. LENDING: Bad Debt Write-Off Reduces total_sol_lent
 //     Proves: after liquidation with bad debt, total_sol_lent is reduced by
@@ -1562,51 +1507,47 @@ fn verify_liquidation_bad_debt_accounting() {
 
     let actual_collateral_seized = collateral_to_seize.min(collateral);
 
-    // If collateral insufficient, bad debt occurs
-    let actual_debt_covered = if collateral_to_seize > collateral {
+    // Insolvent iff the vault can't fund the full target seize (collateral-capped):
+    // the entire vault is taken and no collateral remains. [V21] In that case the
+    // ENTIRE residual debt is forgiven and the position fully resolves — no tail.
+    let insolvent = collateral_to_seize > collateral;
+    let actual_debt_covered = if insolvent {
         calc_collateral_value(actual_collateral_seized, pool_sol, pool_tokens).unwrap()
     } else {
         debt_to_cover
     };
 
-    let bad_debt = total_debt.saturating_sub(
-        actual_debt_covered
-            .checked_add(total_debt.saturating_sub(debt_to_cover))
-            .unwrap(),
-    );
+    // Apply repayment: interest first, then principal.
+    let interest_paid = actual_debt_covered.min(interest);
+    let principal_paid = actual_debt_covered - interest_paid;
+    let mut loan_interest = interest - interest_paid;
+    let mut loan_borrowed = borrowed.saturating_sub(principal_paid);
 
-    // Apply repayment: interest first, then principal
-    let mut remaining_debt_paid = actual_debt_covered;
-    let mut loan_interest = interest;
-    let mut loan_borrowed = borrowed;
-
-    if remaining_debt_paid <= loan_interest {
-        loan_interest -= remaining_debt_paid;
-        remaining_debt_paid = 0;
+    // [V21] On insolvency, forgive the entire residual (principal + interest).
+    let written_off_principal = if insolvent {
+        let p = loan_borrowed;
+        loan_borrowed = 0;
+        loan_interest = 0;
+        p
     } else {
-        remaining_debt_paid -= loan_interest;
-        loan_interest = 0;
-        loan_borrowed = loan_borrowed.saturating_sub(remaining_debt_paid);
-    }
+        0
+    };
 
-    // Write off bad debt
-    if bad_debt > 0 {
-        loan_borrowed = loan_borrowed.saturating_sub(bad_debt);
-        loan_interest = 0;
-    }
-
-    // Fixed: total_sol_lent reduced by principal paid AND bad debt
+    // total_sol_lent reduced by principal repaid AND the written-off principal.
     let total_sol_lent_after = total_sol_lent_before
-        .saturating_sub(remaining_debt_paid)
-        .saturating_sub(bad_debt);
+        .saturating_sub(principal_paid)
+        .saturating_sub(written_off_principal);
 
-    // Key property: if loan is fully liquidated, total_sol_lent decreased by
-    // at least the original borrowed amount
-    if loan_borrowed == 0 && loan_interest == 0 {
+    // Key property: an insolvent liquidation FULLY resolves the position and removes
+    // exactly its original principal from total_sol_lent (no un-liquidatable tail,
+    // no permanent counter inflation).
+    if insolvent {
+        assert!(loan_borrowed == 0 && loan_interest == 0);
+        // Reduced by AT LEAST the original principal → never left inflated (the bug).
         assert!(total_sol_lent_after <= total_sol_lent_before.saturating_sub(borrowed));
     }
 
-    // total_sol_lent never goes negative (saturating)
+    // total_sol_lent never increases (saturating, monotone down).
     assert!(total_sol_lent_after <= total_sol_lent_before);
 }
 
@@ -1669,46 +1610,43 @@ fn verify_short_liquidation_bad_debt_accounting() {
         tokens_to_cover
     };
 
-    let bad_debt_tokens = total_token_debt.saturating_sub(
-        actual_tokens_covered
-            .checked_add(total_token_debt.saturating_sub(tokens_to_cover))
-            .unwrap(),
-    );
+    // Insolvent iff the SOL collateral can't fund the full target seize. [V21] In
+    // that case the ENTIRE residual token debt is forgiven and the position fully
+    // resolves — no un-liquidatable tail.
+    let insolvent = sol_to_seize > sol_collateral;
 
-    // Apply repayment: interest first, then principal
-    let mut remaining_tokens_paid = actual_tokens_covered;
-    let mut pos_interest = interest;
-    let mut pos_borrowed = tokens_borrowed;
+    // Apply repayment: interest first, then principal.
+    let interest_paid = actual_tokens_covered.min(interest);
+    let principal_paid = actual_tokens_covered - interest_paid;
+    let mut pos_interest = interest - interest_paid;
+    let mut pos_borrowed = tokens_borrowed.saturating_sub(principal_paid);
 
-    if remaining_tokens_paid <= pos_interest {
-        pos_interest -= remaining_tokens_paid;
-        remaining_tokens_paid = 0;
+    // [V21] On insolvency, forgive the entire residual (principal + interest).
+    let written_off_principal = if insolvent {
+        let p = pos_borrowed;
+        pos_borrowed = 0;
+        pos_interest = 0;
+        p
     } else {
-        remaining_tokens_paid -= pos_interest;
-        pos_interest = 0;
-        pos_borrowed = pos_borrowed.saturating_sub(remaining_tokens_paid);
-    }
+        0
+    };
 
-    // Write off bad debt
-    if bad_debt_tokens > 0 {
-        pos_borrowed = pos_borrowed.saturating_sub(bad_debt_tokens);
-        pos_interest = 0;
-    }
-
-    // NEW (fixed): total_tokens_lent reduced by principal paid AND bad debt
+    // total_tokens_lent reduced by principal repaid AND the written-off principal.
     let total_tokens_lent_after = total_tokens_lent_before
-        .saturating_sub(remaining_tokens_paid)
-        .saturating_sub(bad_debt_tokens);
+        .saturating_sub(principal_paid)
+        .saturating_sub(written_off_principal);
 
-    // Key property: if position is fully liquidated, total_tokens_lent decreased
-    // by at least the original tokens_borrowed
-    if pos_borrowed == 0 && pos_interest == 0 {
+    // Key property: an insolvent liquidation FULLY resolves the position and removes
+    // exactly its original principal from total_tokens_lent (no tail, no inflation).
+    if insolvent {
+        assert!(pos_borrowed == 0 && pos_interest == 0);
+        // Reduced by AT LEAST the original principal → never left inflated (the bug).
         assert!(
             total_tokens_lent_after <= total_tokens_lent_before.saturating_sub(tokens_borrowed)
         );
     }
 
-    // total_tokens_lent never goes negative (saturating)
+    // total_tokens_lent never increases (saturating, monotone down).
     assert!(total_tokens_lent_after <= total_tokens_lent_before);
 }
 
@@ -1958,119 +1896,117 @@ fn verify_treasury_sell_amount_bounded() {
 // Depth-Based Risk Bands
 // ============================================================================
 
-//     Proves: get_depth_max_ltv_bps returns correct tier at every boundary,
-//     tiers are exhaustive (no gaps), and LTV values are monotonically increasing.
+//     Proves: the continuous depth curve is 0 below the floor, equals LTV_MIN at
+//     the floor, climbs concavely toward LTV_MAX, stays clamped in [MIN,MAX], and
+//     is monotonic non-decreasing in depth. Inputs are CONCRETE literals so the
+//     `·S_floor/pool_sol` division never goes symbolic (avoids Kani div-blowup).
 
 fn get_depth_max_ltv_bps(pool_sol: u64) -> u16 {
-    if pool_sol < MIN_POOL_SOL_LENDING {
-        0
-    } else if pool_sol < DEPTH_TIER_1 {
-        DEPTH_LTV_0
-    } else if pool_sol < DEPTH_TIER_2 {
-        DEPTH_LTV_1
-    } else if pool_sol < DEPTH_TIER_3 {
-        DEPTH_LTV_2
-    } else {
-        DEPTH_LTV_3
+    if pool_sol < DEPTH_FLOOR_SOL {
+        return 0;
     }
+    let span = (LTV_MAX_BPS - LTV_MIN_BPS) as u64;
+    let drop = span.saturating_mul(DEPTH_FLOOR_SOL) / pool_sol;
+    let ltv = (LTV_MAX_BPS as u64).saturating_sub(drop);
+    ltv.clamp(LTV_MIN_BPS as u64, LTV_MAX_BPS as u64) as u16
 }
 
 #[kani::proof]
-fn verify_depth_bands_boundaries() {
-    // Below minimum: blocked
+fn verify_depth_curve_points() {
+    // Below the floor: no leverage.
     assert!(get_depth_max_ltv_bps(0) == 0);
-    assert!(get_depth_max_ltv_bps(4_999_999_999) == 0);
+    assert!(get_depth_max_ltv_bps(99_999_999_999) == 0);
 
-    // Band 0: 5 SOL to 50 SOL
-    assert!(get_depth_max_ltv_bps(5_000_000_000) == DEPTH_LTV_0);
-    assert!(get_depth_max_ltv_bps(49_999_999_999) == DEPTH_LTV_0);
+    // At the floor (100 SOL): LTV_MIN. 6000 − 3000·100/100 = 3000.
+    assert!(get_depth_max_ltv_bps(100_000_000_000) == LTV_MIN_BPS);
+    assert!(LTV_MIN_BPS == 3000);
+    // Concave climb: 200→4500, 500→5400, 1000→5700.
+    assert!(get_depth_max_ltv_bps(200_000_000_000) == 4500);
+    assert!(get_depth_max_ltv_bps(500_000_000_000) == 5400);
+    assert!(get_depth_max_ltv_bps(1_000_000_000_000) == 5700);
+    // Asymptote: huge depth → LTV_MAX (drop → 0).
+    assert!(get_depth_max_ltv_bps(u64::MAX) == LTV_MAX_BPS);
 
-    // Band 1: 50 SOL to 200 SOL
-    assert!(get_depth_max_ltv_bps(50_000_000_000) == DEPTH_LTV_1);
-    assert!(get_depth_max_ltv_bps(199_999_999_999) == DEPTH_LTV_1);
+    // Bounded and monotonic non-decreasing across the sampled depths.
+    assert!(get_depth_max_ltv_bps(u64::MAX) <= LTV_MAX_BPS);
+    assert!(get_depth_max_ltv_bps(100_000_000_000) <= get_depth_max_ltv_bps(200_000_000_000));
+    assert!(get_depth_max_ltv_bps(200_000_000_000) <= get_depth_max_ltv_bps(500_000_000_000));
+    assert!(get_depth_max_ltv_bps(500_000_000_000) <= get_depth_max_ltv_bps(1_000_000_000_000));
+}
 
-    // Band 2: 200 SOL to 500 SOL
-    assert!(get_depth_max_ltv_bps(200_000_000_000) == DEPTH_LTV_2);
-    assert!(get_depth_max_ltv_bps(499_999_999_999) == DEPTH_LTV_2);
-
-    // Band 3: 500+ SOL
-    assert!(get_depth_max_ltv_bps(500_000_000_000) == DEPTH_LTV_3);
-    assert!(get_depth_max_ltv_bps(u64::MAX) == DEPTH_LTV_3);
-
-    // Monotonic: each tier >= previous
-    assert!(DEPTH_LTV_0 <= DEPTH_LTV_1);
-    assert!(DEPTH_LTV_1 <= DEPTH_LTV_2);
-    assert!(DEPTH_LTV_2 <= DEPTH_LTV_3);
+// [V21] Rail 2 size cap — concrete points: ρ_max·S, exactly 25% of pool SOL.
+#[kani::proof]
+fn verify_size_cap_points() {
+    fn max_debt_value_for_depth(pool_sol: u64) -> u64 {
+        ((pool_sol as u128 * RHO_MAX_BPS as u128) / 10_000) as u64
+    }
+    assert!(RHO_MAX_BPS == 2500);
+    assert!(max_debt_value_for_depth(100_000_000_000) == 25_000_000_000);
+    assert!(max_debt_value_for_depth(1_000_000_000_000) == 250_000_000_000);
+    assert!(max_debt_value_for_depth(0) == 0);
 }
 
 // ============================================================================
-// 69. MIGRATION: Cost Reimbursement Isolates Rent from Pool SOL
-//     Proves: (payer_pre - payer_post).saturating_sub(sol_amount) correctly
-//     extracts the account rent cost, excluding the bonding curve SOL that
-//     was deposited into the pool. Treasury only reimburses rent.
+// 69. MIGRATION: Cost Reimbursement Is Exactly the Payer's Rent
+//     The pool SOL is sourced from bonding_curve_sol (a separate System PDA), so
+//     the permissionless payer's only outlay across create_pool is the rent for
+//     the new pool accounts. Proves: migration_cost = payer_pre - payer_post =
+//     rent_cost exactly (no sol_amount to net out), bounded to rent magnitude —
+//     the treasury can never reimburse the pool SOL itself.
 // ============================================================================
 
 #[kani::proof]
 fn verify_migration_cost_reimbursement() {
-    let sol_amount: u64 = kani::any();
     let rent_cost: u64 = kani::any();
-    let payer_original: u64 = kani::any();
+    let payer_pre: u64 = kani::any();
 
-    kani::assume(sol_amount > 0);
-    kani::assume(sol_amount <= BONDING_TARGET_LAMPORTS);
     kani::assume(rent_cost <= 50_000_000); // Max ~0.05 SOL rent
-    kani::assume(payer_original <= 10_000_000_000_000); // Max 10K SOL
-    kani::assume(payer_original >= sol_amount + rent_cost); // Payer can afford it
+    kani::assume(payer_pre <= 10_000_000_000_000); // Max 10K SOL
+    kani::assume(payer_pre >= rent_cost); // payer can afford the rent
 
-    // After fund_migration_sol: payer has original + sol_amount
-    let payer_pre = payer_original.checked_add(sol_amount).unwrap();
+    // The pool SOL comes from bonding_curve_sol, never the payer — so create_pool +
+    // account creation only spends the payer's rent.
+    let payer_post = payer_pre.checked_sub(rent_cost).unwrap();
 
-    // After create_pool + account creation: payer spent sol_amount + rent_cost
-    let total_spent = sol_amount.checked_add(rent_cost).unwrap();
-    let payer_post = payer_pre.checked_sub(total_spent).unwrap();
+    // migration_cost = payer_pre - payer_post (no saturating_sub(sol_amount) now).
+    let migration_cost = payer_pre.checked_sub(payer_post).unwrap();
 
-    // migration_cost = (pre - post).saturating_sub(sol_amount)
-    let raw_cost = payer_pre.checked_sub(payer_post).unwrap();
-    let migration_cost = raw_cost.saturating_sub(sol_amount);
-
-    // migration_cost == rent_cost (only the rent, not the pool SOL)
+    // migration_cost == rent_cost exactly (only the rent, never the pool SOL).
     assert!(migration_cost == rent_cost);
-
-    // Treasury reimburses exactly rent_cost
-    assert!(migration_cost <= 50_000_000); // Bounded — never the full pool amount
+    assert!(migration_cost <= 50_000_000); // bounded to rent magnitude
 }
 
 // ============================================================================
-// 70. DEEPPOOL: Vault Swap SOL Accounting
-//     Proves: on sell, sol_received = lamports_after - lamports_before,
-//     and vault.sol_balance increases by exactly sol_received. No inflation.
+// 70. [V21] DEEPPOOL: Vault Swap SOL Accounting (derived, no sol_balance field)
+//     The vault's SOL is DERIVED from its System-owned vault_sol PDA lamports —
+//     there is no tracked sol_balance field. Proves: on sell, sol_received is the
+//     measured lamport delta of vault_sol, and the derived balance increases by
+//     exactly that delta. No inflation (the proceeds aren't double-counted).
 // ============================================================================
 
 #[kani::proof]
 fn verify_vault_swap_sell_accounting() {
-    let vault_sol_balance: u64 = kani::any();
-    let lamports_before: u64 = kani::any();
+    let vault_sol_lamports_before: u64 = kani::any();
     let sol_received: u64 = kani::any();
 
-    kani::assume(vault_sol_balance <= 10_000_000_000_000);
-    kani::assume(lamports_before <= 10_000_000_000_000);
+    kani::assume(vault_sol_lamports_before <= 10_000_000_000_000);
     kani::assume(sol_received > 0);
     kani::assume(sol_received <= 10_000_000_000_000);
 
-    // Lamports increase by sol_received after DeepPool swap CPI
-    let lamports_after = lamports_before.checked_add(sol_received);
-    kani::assume(lamports_after.is_some());
-    let lamports_after = lamports_after.unwrap();
+    // DeepPool's swap CPI credits sol_received lamports into vault_sol.
+    let vault_sol_lamports_after = vault_sol_lamports_before.checked_add(sol_received);
+    kani::assume(vault_sol_lamports_after.is_some());
+    let vault_sol_lamports_after = vault_sol_lamports_after.unwrap();
 
-    // Delta measurement
-    let measured = lamports_after.checked_sub(lamports_before).unwrap();
+    // Proceeds = measured lamport delta (reload-and-diff, never a passed amount).
+    let measured = vault_sol_lamports_after
+        .checked_sub(vault_sol_lamports_before)
+        .unwrap();
     assert!(measured == sol_received);
 
-    // Balance update
-    let new_balance = vault_sol_balance.checked_add(measured);
-    kani::assume(new_balance.is_some());
-    let new_balance = new_balance.unwrap();
-    assert!(new_balance == vault_sol_balance + sol_received);
+    // The DERIVED balance (vault_sol lamports) reflects exactly the proceeds —
+    // no separate field to drift, no double-count.
+    assert!(vault_sol_lamports_after == vault_sol_lamports_before + sol_received);
 }
 
 // ============================================================================
@@ -2429,32 +2365,271 @@ fn verify_gross_up_preserves_net_delivery() {
     assert!(net_received <= net + 1);
 }
 
-// Lending unlock gate uses AVAILABLE SOL, not gross sol_balance. Short
-// collateral parked in `short_collateral_reserved` is escrowed user funds,
-// not protocol-earned float, and must not contribute to the gate threshold.
+// [V21] Lending unlock gate uses AVAILABLE SOL = derived treasury float minus the
+// SOL already lent to longs: `treasury_physical_sol(treasury_sol_vault) −
+// total_sol_lent_to_longs` (open_long in handlers/leverage.rs).
 //
-// Invariant: opening a short of any size cannot transition a treasury
-// from "below gate" to "at gate" for the lending check. The gate only
-// trips when the difference `sol_balance − short_collateral_reserved`
-// crosses the threshold, which is invariant under simultaneous additions
-// to both fields (open_short adds the collateral to both).
+// The V20 short-collateral entanglement (V20C-1) is now STRUCTURALLY impossible:
+// shorts no longer touch the SOL treasury at all — collateral lives in per-position
+// System vaults and borrowed tokens come from the static TreasuryLock — so a short
+// of any size leaves both `treasury_physical` and `total_sol_lent_to_longs`
+// untouched and cannot move the gate. What remains to prove is the available-SOL
+// computation itself: underflow-safe, never over-promises, and monotone — lending
+// more SOL out only ever tightens the gate.
 #[kani::proof]
-#[kani::unwind(2)]
-fn verify_lending_gate_excludes_short_collateral() {
-    let earned_sol: u64 = kani::any();
-    let short_collateral: u64 = kani::any();
+fn verify_lending_gate_available_sol() {
+    let treasury_physical: u64 = kani::any();
+    let total_sol_lent_to_longs: u64 = kani::any();
     let threshold: u64 = kani::any();
 
-    // Treasury arithmetic invariants (state-level).
-    kani::assume(earned_sol <= u64::MAX - short_collateral);
-    let sol_balance = earned_sol + short_collateral;
-
-    // Gate semantics, mirroring check_borrow_caps in handlers/lending.rs.
-    let available = sol_balance.checked_sub(short_collateral).unwrap();
+    let available = treasury_physical.saturating_sub(total_sol_lent_to_longs);
     let gate_open = available >= threshold;
 
-    // The gate's open/closed state depends ONLY on earned_sol vs threshold,
-    // regardless of how much short collateral is parked.
-    assert!(gate_open == (earned_sol >= threshold));
+    // Available never exceeds the physical float — lending can't over-promise SOL.
+    assert!(available <= treasury_physical);
+
+    // Monotone: lending one more lamport to longs never OPENS a closed gate.
+    let available_more_lent =
+        treasury_physical.saturating_sub(total_sol_lent_to_longs.saturating_add(1));
+    assert!(available_more_lent <= available);
+    if !gate_open {
+        assert!(available_more_lent < threshold);
+    }
+}
+
+// ============================================================================
+// 80. [V21] calc_sol_to_token_value — Empty-Side Guard + Safety
+//     The inverse-direction mirror of calc_collateral_value (SOL value → token
+//     amount). Proves: pool_sol==0 short-circuits to None (no div-by-zero), and
+//     for a borrow value within pool depth the result is overflow-safe and
+//     bounded by the token reserve.
+// ============================================================================
+
+#[kani::proof]
+fn verify_sol_to_token_value_empty_side_none() {
+    let sol_value: u64 = kani::any();
+    let pool_tokens: u64 = kani::any();
+    assert!(calc_sol_to_token_value(sol_value, 0, pool_tokens).is_none());
+}
+
+#[kani::proof]
+fn verify_sol_to_token_value_safe_and_bounded() {
+    let pool_sol: u64 = 100_000_000_000; // 100 SOL
+    let pool_tokens: u64 = 50_000_000_000_000; // 50T tokens
+    let sol_value: u64 = kani::any();
+    // Borrow value is bounded by pool SOL depth (LTV ≤ 100% of a collateral
+    // worth at most the pool); pricing it into tokens can't exceed the reserve.
+    kani::assume(sol_value <= pool_sol);
+
+    let out = calc_sol_to_token_value(sol_value, pool_sol, pool_tokens);
+    assert!(out.is_some());
+    assert!(out.unwrap() <= pool_tokens);
+}
+
+// ============================================================================
+// 81. [V21] calc_close_pool_amount_in — None Guards
+//     Proves the short-circuits: zero `tokens_out`, over-fill (`>= pool_tokens`),
+//     and a degenerate 100% swap fee all return None before any pool arithmetic.
+// ============================================================================
+
+#[kani::proof]
+fn verify_close_pool_amount_in_none_guards() {
+    let pool_sol: u64 = kani::any();
+    let pool_tokens: u64 = kani::any();
+    let swap_fee_bps: u16 = kani::any();
+    kani::assume(pool_tokens > 1);
+
+    // tokens_out == 0 → None
+    assert!(calc_close_pool_amount_in(0, pool_sol, pool_tokens, swap_fee_bps).is_none());
+    // tokens_out >= pool_tokens → None (can't drain or over-fill the pool)
+    assert!(calc_close_pool_amount_in(pool_tokens, pool_sol, pool_tokens, swap_fee_bps).is_none());
+
+    // 100% swap fee → None (fee denominator collapses to zero)
+    let some_out: u64 = kani::any();
+    kani::assume(some_out > 0 && some_out < pool_tokens);
+    assert!(calc_close_pool_amount_in(some_out, pool_sol, pool_tokens, 10_000).is_none());
+}
+
+// ============================================================================
+// 82. [V21] calc_close_pool_amount_in — Round-Trip Sufficiency
+//     The load-bearing close_short property: the SOL the inverse quote returns,
+//     run back through DeepPool's ACTUAL forward buy swap (deep_pool::math, the
+//     exact on-chain code), yields AT LEAST `tokens_out`. The double-ceil
+//     rounding guarantees the close buys enough to repay the grossed-up debt —
+//     it can never come up short. Concrete pool + representative order sizes for
+//     CBMC tractability; the symbolic range lives in
+//     tests/math_proptests.rs::close_pool_amount_in_sufficient.
+// ============================================================================
+
+fn assert_close_quote_sufficient(tokens_out: u64, pool_sol: u64, pool_tokens: u64) {
+    let fee_bps = deep_pool::constants::SWAP_FEE_BPS as u16; // 25 — DeepPool's real fee
+    let amount_in =
+        calc_close_pool_amount_in(tokens_out, pool_sol, pool_tokens, fee_bps).unwrap();
+
+    // DeepPool forward buy on the quoted amount_in (exact on-chain functions).
+    let fee = deep_pool::math::calc_swap_fee(amount_in).unwrap();
+    let effective_in = amount_in.checked_sub(fee).unwrap();
+    let realized = deep_pool::math::calc_swap_output(effective_in, pool_sol, pool_tokens).unwrap();
+
+    assert!(realized >= tokens_out);
+}
+
+#[kani::proof]
+fn verify_close_pool_amount_in_sufficiency() {
+    let pool_sol: u64 = 100_000_000_000; // 100 SOL
+    let pool_tokens: u64 = 50_000_000_000_000; // 50T base units
+    // Order sizes spanning dust → 80% of the reserve, all < pool_tokens.
+    assert_close_quote_sufficient(1_000_000, pool_sol, pool_tokens); // 1 whole token
+    assert_close_quote_sufficient(1_000_000_000_000, pool_sol, pool_tokens); // 1M whole tokens
+    assert_close_quote_sufficient(40_000_000_000_000, pool_sol, pool_tokens); // 80% of reserve
+}
+
+// ============================================================================
+// 83. [V21][D-10] twap_value_in_sol — at-mark token→SOL pricing (LTV trigger)
+//     As of v21 the oracle lives in DeepPool; torch consumes a Q64.64 SOL-per-
+//     token price. This helper is now division-free (widening multiply + a
+//     64-bit shift), so unlike the old cumulative-delta form it is FULLY
+//     Kani-provable. Proves: value at exactly-representable prices (1.0, 0.5,
+//     2.0) is the exact product, a zero amount is zero, and an overflowing
+//     widening multiply fails closed to None (no panic, no wrap). Warmup /
+//     fail-closed is DeepPool's read returning None, upstream of this.
+// ============================================================================
+
+#[kani::proof]
+fn verify_twap_value_q64_exact() {
+    let q1: u128 = 1u128 << 64; // price 1.0 sol/token
+    let q_half: u128 = 1u128 << 63; // price 0.5
+    let q2: u128 = 1u128 << 65; // price 2.0
+    assert!(twap_value_in_sol(1_000_000, q1) == Some(1_000_000));
+    assert!(twap_value_in_sol(1_000_000, q_half) == Some(500_000));
+    assert!(twap_value_in_sol(1_000_000, q2) == Some(2_000_000));
+    // Zero token amount → zero value at any price.
+    assert!(twap_value_in_sol(0, q1) == Some(0));
+    assert!(twap_value_in_sol(0, u128::MAX) == Some(0));
+}
+
+#[kani::proof]
+fn verify_twap_value_overflow_is_none() {
+    // amount × price overflowing u128 fails closed (caller refuses to liquidate),
+    // never panics or wraps. u64::MAX × u128::MAX overflows the widening multiply.
+    assert!(twap_value_in_sol(u64::MAX, u128::MAX).is_none());
+}
+
+#[kani::proof]
+fn verify_twap_value_no_panic_symbolic() {
+    // For ALL inputs the function returns (Some|None) without panicking — the
+    // checked multiply makes this total. Division-free, so CBMC solves it.
+    let amount: u64 = kani::any();
+    let price_q64: u128 = kani::any();
+    let _ = twap_value_in_sol(amount, price_q64);
+}
+
+// ============================================================================
+// 84. [V21][D-10] twap_tokens_to_seize — at-mark seize sizing (seize clamp)
+//     Pricing the seize at the mark (not spot) is what stops a spot pump/dump
+//     at liquidation time from inflating the tokens seized. Proves: a zero
+//     marked price → None (no seize basis, fail closed — division-free guard,
+//     symbolic), the seize at exactly-representable prices/bonuses is the exact
+//     amount, and an overflowing grossed-up multiply → None. The internal divide
+//     keeps the value cases concrete (CBMC can't solve a symbolic 128-bit divide).
+// ============================================================================
+
+#[kani::proof]
+fn verify_twap_seize_zero_price_none() {
+    let debt_sol: u64 = kani::any();
+    let bonus: u16 = kani::any();
+    assert!(twap_tokens_to_seize(debt_sol, bonus, 0).is_none());
+}
+
+#[kani::proof]
+fn verify_twap_seize_q64_exact() {
+    let q1: u128 = 1u128 << 64; // price 1.0 sol/token
+    let q_half: u128 = 1u128 << 63; // price 0.5
+    // At 1.0 sol/token, no bonus: cover debt_sol SOL ⇒ seize debt_sol tokens.
+    assert!(twap_tokens_to_seize(5_000_000, 0, q1) == Some(5_000_000));
+    // At 0.5 sol/token, no bonus: each token is worth 0.5 ⇒ seize 2× the debt.
+    assert!(twap_tokens_to_seize(5_000_000, 0, q_half) == Some(10_000_000));
+    // 5% bonus at 1.0 sol/token ⇒ 1.05× the debt in tokens.
+    assert!(twap_tokens_to_seize(5_000_000, 500, q1) == Some(5_250_000));
+}
+
+#[kani::proof]
+fn verify_twap_seize_overflow_is_none() {
+    // The grossed-up `debt × (10_000+bonus) × 2^64` overflows u128 for an
+    // enormous debt → None (fail closed), never a panic/wrap. Price is a valid
+    // non-zero 1.0 so the zero-guard isn't what trips.
+    let q1: u128 = 1u128 << 64;
+    assert!(twap_tokens_to_seize(u64::MAX, 0, q1).is_none());
+}
+
+// ============================================================================
+// 85. [V21][D-10] effective_liq_bonus_bps — distress-scaled bonus (prize cap)
+//     Proves: 0 at/below the liq threshold (incl. a manufactured barely-over
+//     case ≈ 0), full bonus at/above the full-bonus LTV (incl. u64::MAX
+//     zero-collateral), monotone non-decreasing in LTV, and bounded by
+//     max_bonus. This removes the prize from a manufactured liquidation.
+// ============================================================================
+
+#[kani::proof]
+fn verify_bonus_zero_at_or_below_threshold() {
+    let ltv: u64 = kani::any();
+    kani::assume(ltv <= DEFAULT_LIQUIDATION_THRESHOLD_BPS as u64);
+    let b = effective_liq_bonus_bps(
+        ltv,
+        DEFAULT_LIQUIDATION_THRESHOLD_BPS,
+        LIQ_FULL_BONUS_LTV_BPS,
+        DEFAULT_LIQUIDATION_BONUS_BPS,
+    );
+    assert!(b == 0);
+}
+
+#[kani::proof]
+fn verify_bonus_full_at_or_above_full_ltv() {
+    let ltv: u64 = kani::any();
+    kani::assume(ltv >= LIQ_FULL_BONUS_LTV_BPS as u64); // includes u64::MAX
+    let b = effective_liq_bonus_bps(
+        ltv,
+        DEFAULT_LIQUIDATION_THRESHOLD_BPS,
+        LIQ_FULL_BONUS_LTV_BPS,
+        DEFAULT_LIQUIDATION_BONUS_BPS,
+    );
+    assert!(b == DEFAULT_LIQUIDATION_BONUS_BPS as u64);
+}
+
+#[kani::proof]
+fn verify_bonus_monotonic_and_bounded() {
+    let a: u64 = kani::any();
+    let b: u64 = kani::any();
+    kani::assume(a <= b);
+    let ba = effective_liq_bonus_bps(
+        a,
+        DEFAULT_LIQUIDATION_THRESHOLD_BPS,
+        LIQ_FULL_BONUS_LTV_BPS,
+        DEFAULT_LIQUIDATION_BONUS_BPS,
+    );
+    let bb = effective_liq_bonus_bps(
+        b,
+        DEFAULT_LIQUIDATION_THRESHOLD_BPS,
+        LIQ_FULL_BONUS_LTV_BPS,
+        DEFAULT_LIQUIDATION_BONUS_BPS,
+    );
+    assert!(bb >= ba);
+    assert!(bb <= DEFAULT_LIQUIDATION_BONUS_BPS as u64);
+}
+
+#[kani::proof]
+fn verify_bonus_ramp_shape() {
+    let t = DEFAULT_LIQUIDATION_THRESHOLD_BPS; // 6500
+    let f = LIQ_FULL_BONUS_LTV_BPS; // 7547 (derived: 100/(1+bonus))
+    let m = DEFAULT_LIQUIDATION_BONUS_BPS; // 3250 (= 1.3·ρ_max). span = f−t = 1047.
+    // Threshold and below: 0 prize.
+    assert!(effective_liq_bonus_bps(6_500, t, f, m) == 0);
+    // Manufactured barely-over: tiny prize. 3250 × 100 / 1047 = 310 bps.
+    assert!(effective_liq_bonus_bps(6_600, t, f, m) == 310);
+    // Interior: 3250 × 500 / 1047 = 1551 bps.
+    assert!(effective_liq_bonus_bps(7_000, t, f, m) == 1551);
+    // At/above full-bonus LTV: full ceiling (32.5%).
+    assert!(effective_liq_bonus_bps(7_547, t, f, m) == 3_250);
+    assert!(m == 3_250);
 }
 

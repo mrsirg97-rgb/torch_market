@@ -14,8 +14,8 @@ use borsh::BorshSerialize;
 
 use torch_indexer::constants::EVENT_IX_TAG_LE;
 use torch_indexer::contracts::{
-    BondingCurveTrade, DeepPoolEvent, LiquidityAdded, MarketCreated, MigratedToDex, PoolCreated,
-    ShortOpened, SwapExecuted, TorchEvent,
+    BondingCurveTrade, DeepPoolEvent, LiquidityAdded, MarketCreated, MigratedToDex, OpenShortEvent,
+    PoolCreated, SwapExecuted, TorchEvent,
 };
 use torch_indexer::error::DecodeError;
 use torch_indexer::stream::decoder::{
@@ -208,23 +208,27 @@ fn migrated_to_dex_roundtrip() {
 }
 
 #[test]
-fn short_opened_carries_net_amount() {
+fn open_short_carries_net_amount() {
     let discs = TorchDiscriminators::compute();
-    let original = ShortOpened {
-        mint: pk(50),
+    let original = OpenShortEvent {
         user: pk(51),
-        sol_collateral: 2_000_000_000,
+        mint: pk(50),
+        position_index: 3,
+        collateral_sol_gross: 2_010_000_000,
+        open_fee_sol: 10_000_000,
+        net_collateral_sol: 2_000_000_000,
         // Net amount after Token-2022 fee — the value the on-chain handler
         // records post-fix.
         tokens_borrowed: 999_300_000,
-        ltv_bps: 4500,
+        vault_sol: 2_000_000_000,
     };
-    let data = wrap_event("ShortOpened", &original);
+    let data = wrap_event("OpenShortEvent", &original);
     let decoded = try_decode_torch_event(&data, &discs).expect("decode");
     match decoded {
-        TorchEvent::ShortOpened(s) => {
+        TorchEvent::OpenShort(s) => {
             assert_eq!(s.tokens_borrowed, 999_300_000);
-            assert_eq!(s.ltv_bps, 4500);
+            assert_eq!(s.position_index, 3);
+            assert_eq!(s.net_collateral_sol, 2_000_000_000);
         }
         _ => panic!("decoded wrong variant"),
     }

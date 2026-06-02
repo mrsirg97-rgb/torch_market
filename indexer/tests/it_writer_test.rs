@@ -2,8 +2,8 @@
 //
 // Exercises the three-phase ordering (markets → pools → everything else),
 // FK constraints across torch/deep_pool tables, idempotent replay, memo
-// gating + attribution, position delta application (LoanRepaid,
-// ShortClosed), and checkpoint behavior.
+// gating + attribution, V21 position delta application (CloseShort /
+// LiquidateShort reconcile + position_events log), and checkpoint behavior.
 //
 // Each test gets a fresh DB. The writer is invoked via
 // `write_events_no_checkpoint` for tests that don't care about
@@ -16,11 +16,12 @@ use common::{fixtures::*, TestDb};
 use sqlx::Row;
 
 use torch_indexer::contracts::{
-    AnyEvent, BlockBatch, BondingCurveTrade, DecodedEvent, MarketStatus, PositionHealth,
-    ShortClosed, TorchEvent,
+    AnyEvent, BlockBatch, BondingCurveTrade, CloseShortEvent, DecodedEvent, MarketStatus,
+    PositionHealth, PositionSide, TorchEvent,
 };
 use torch_indexer::domain::{
-    loan, market, message, migration, pool, short, trade, MessageFilter, TradeFilter,
+    market, message, migration, pool, position, trade, MessageFilter, PositionEventFilter,
+    TradeFilter,
 };
 use torch_indexer::stream::writer::write_events_no_checkpoint;
 
@@ -220,7 +221,7 @@ async fn writer_persists_memo_only_when_attached_to_trade() {
     assert_eq!(messages[0].sender, pk58(3));
 }
 
-// ─── ShortOpened net semantics through the writer ───────────────────────
+// ─── OpenShort net semantics through the writer (V21) ───────────────────
 
 #[tokio::test]
 async fn writer_records_short_with_net_tokens_borrowed() {
@@ -228,20 +229,62 @@ async fn writer_records_short_with_net_tokens_borrowed() {
     let net = 999_300_000u64;
     let events = vec![
         de(ev_market_created(1, 2), 100, 0),
-        de(ev_short_opened(1, 3, net), 100, 1),
+        de(ev_open_short(1, 3, net), 100, 1),
     ];
     write_events_no_checkpoint(&db.pool, 100, events)
         .await
         .unwrap();
 
     let mut tx = db.pool.begin().await.unwrap();
-    let s = short::get(&mut tx, &pk58(1), &pk58(3)).await.unwrap().unwrap();
-    assert_eq!(s.tokens_borrowed, net as i64);
-    assert!(s.is_active);
-    assert_eq!(s.health, PositionHealth::Healthy);
+    let p = position::get(&mut tx, &pk58(1), &pk58(3), PositionSide::Short, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(p.debt_amount, net as i64, "short debt = net tokens borrowed");
+    assert!(p.is_active);
+    assert!(!p.owner_is_vault);
+    assert_eq!(p.health, PositionHealth::Healthy);
+
+    // The open also appended a position_events row.
+    let events = position::event::list(
+        &mut tx,
+        PositionEventFilter {
+            mint: Some(pk58(1)),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].tokens_out, Some(net as i64));
 }
 
-// ─── Delta application: ShortClosed reduces tokens_borrowed ─────────────
+// ─── via_vault open sets owner_is_vault ─────────────────────────────────
+
+#[tokio::test]
+async fn writer_open_short_via_vault_flags_owner_is_vault() {
+    let db = TestDb::new().await;
+    let net = 999_300_000u64;
+    write_events_no_checkpoint(
+        &db.pool,
+        100,
+        vec![
+            de(ev_market_created(1, 2), 100, 0),
+            de_via_vault(ev_open_short(1, 3, net), 100, 1),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let mut tx = db.pool.begin().await.unwrap();
+    let p = position::get(&mut tx, &pk58(1), &pk58(3), PositionSide::Short, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(p.owner_is_vault, "via_vault ix ⇒ owner_is_vault = true");
+}
+
+// ─── Delta application: CloseShort reconciles the position ──────────────
 
 #[tokio::test]
 async fn writer_short_closed_full_marks_inactive() {
@@ -253,19 +296,22 @@ async fn writer_short_closed_full_marks_inactive() {
         100,
         vec![
             de(ev_market_created(1, 2), 100, 0),
-            de(ev_short_opened(1, 3, net), 100, 1),
+            de(ev_open_short(1, 3, net), 100, 1),
         ],
     )
     .await
     .unwrap();
 
-    // Close fully — tokens_returned + interest covers debt, fully_closed=true.
-    let close_event = ShortClosed {
-        mint: pk(1),
+    // Close fully — debt_repaid covers the borrowed tokens, fully_closed=true.
+    let close_event = CloseShortEvent {
         user: pk(3),
-        tokens_returned: net, // matches tokens_borrowed
-        interest_paid_tokens: 0,
-        sol_returned: 2_000_000_000,
+        mint: pk(1),
+        position_index: 0,
+        debt_repaid: net,
+        sol_spent_on_buyback: 1_500_000_000,
+        interest_paid: 0,
+        principal_paid: 1_500_000_000,
+        surplus_sol_to_user: 500_000_000,
         fully_closed: true,
     };
     write_events_no_checkpoint(
@@ -276,19 +322,23 @@ async fn writer_short_closed_full_marks_inactive() {
             inner_ix_idx: 0,
             slot: 200,
             block_time: Some(fixed_ts()),
-            event: AnyEvent::Torch(TorchEvent::ShortClosed(close_event)),
+            event: AnyEvent::Torch(TorchEvent::CloseShort(close_event)),
             memo: None,
+            via_vault: false,
         }],
     )
     .await
     .unwrap();
 
     let mut tx = db.pool.begin().await.unwrap();
-    let s = short::get(&mut tx, &pk58(1), &pk58(3)).await.unwrap().unwrap();
-    assert!(!s.is_active, "fully_closed=true → is_active=false");
-    assert_eq!(s.tokens_borrowed, 0, "debt fully cleared");
-    assert_eq!(s.sol_collateral, 0, "collateral fully returned");
-    assert_eq!(s.last_update_slot, 200);
+    let p = position::get(&mut tx, &pk58(1), &pk58(3), PositionSide::Short, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!p.is_active, "fully_closed=true → is_active=false");
+    assert_eq!(p.debt_amount, 0, "debt fully cleared");
+    assert_eq!(p.collateral_amount, 0, "collateral fully drained");
+    assert_eq!(p.last_update_slot, 200);
 }
 
 #[tokio::test]
@@ -300,19 +350,22 @@ async fn writer_short_closed_partial_stays_active() {
         100,
         vec![
             de(ev_market_created(1, 2), 100, 0),
-            de(ev_short_opened(1, 3, net), 100, 1),
+            de(ev_open_short(1, 3, net), 100, 1),
         ],
     )
     .await
     .unwrap();
 
     // Pay back half.
-    let close_event = ShortClosed {
-        mint: pk(1),
+    let close_event = CloseShortEvent {
         user: pk(3),
-        tokens_returned: net / 2,
-        interest_paid_tokens: 0,
-        sol_returned: 1_000_000_000,
+        mint: pk(1),
+        position_index: 0,
+        debt_repaid: net / 2,
+        sol_spent_on_buyback: 1_000_000_000,
+        interest_paid: 0,
+        principal_paid: 1_000_000_000,
+        surplus_sol_to_user: 0,
         fully_closed: false,
     };
     write_events_no_checkpoint(
@@ -323,17 +376,21 @@ async fn writer_short_closed_partial_stays_active() {
             inner_ix_idx: 0,
             slot: 200,
             block_time: Some(fixed_ts()),
-            event: AnyEvent::Torch(TorchEvent::ShortClosed(close_event)),
+            event: AnyEvent::Torch(TorchEvent::CloseShort(close_event)),
             memo: None,
+            via_vault: false,
         }],
     )
     .await
     .unwrap();
 
     let mut tx = db.pool.begin().await.unwrap();
-    let s = short::get(&mut tx, &pk58(1), &pk58(3)).await.unwrap().unwrap();
-    assert!(s.is_active, "partial close → still active");
-    assert_eq!(s.tokens_borrowed, (net / 2) as i64);
+    let p = position::get(&mut tx, &pk58(1), &pk58(3), PositionSide::Short, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(p.is_active, "partial close → still active");
+    assert_eq!(p.debt_amount, (net / 2) as i64);
 }
 
 // ─── Order of events within batch is deterministic ──────────────────────
@@ -357,6 +414,7 @@ async fn writer_orders_events_deterministically() {
                 block_time: Some(fixed_ts()),
                 event: ev_buy_trade(1, 3, 100_000, 50_000),
                 memo: None,
+                via_vault: false,
             },
             DecodedEvent {
                 signature: "aaa".to_string(),
@@ -365,6 +423,7 @@ async fn writer_orders_events_deterministically() {
                 block_time: Some(fixed_ts()),
                 event: ev_buy_trade(1, 3, 200_000, 100_000),
                 memo: None,
+                via_vault: false,
             },
         ],
     )
@@ -385,59 +444,42 @@ async fn writer_orders_events_deterministically() {
     assert_eq!(trades.len(), 2);
 }
 
-// ─── Loan delta application ──────────────────────────────────────────────
+// ─── Liquidation delta application + analytics in position_events ───────
 
 #[tokio::test]
-async fn writer_loan_created_then_repaid_in_full() {
+async fn writer_short_opened_then_liquidated_in_full() {
     let db = TestDb::new().await;
     let mint = pk58(1);
-    let user = pk58(3);
+    let borrower = pk58(3);
+    let net = 999_300_000u64;
 
-    // Step 1: create market + open loan.
+    // Step 1: create market + open short.
     write_events_no_checkpoint(
         &db.pool,
         100,
         vec![
             de(ev_market_created(1, 2), 100, 0),
-            de(
-                AnyEvent::Torch(TorchEvent::LoanCreated(
-                    torch_indexer::contracts::LoanCreated {
-                        mint: pk(1),
-                        user: pk(3),
-                        collateral_amount: 100_000_000_000,
-                        borrowed_amount: 2_000_000_000,
-                        ltv_bps: 4000,
-                    },
-                )),
-                100,
-                1,
-            ),
+            de(ev_open_short(1, 3, net), 100, 1),
         ],
     )
     .await
     .unwrap();
 
     let mut tx = db.pool.begin().await.unwrap();
-    let opened = loan::get(&mut tx, &mint, &user).await.unwrap().unwrap();
-    assert_eq!(opened.borrowed_amount, 2_000_000_000);
+    let opened = position::get(&mut tx, &mint, &borrower, PositionSide::Short, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(opened.debt_amount, net as i64);
     assert!(opened.is_active);
     drop(tx);
 
-    // Step 2: repay in full.
+    // Step 2: liquidator (acct 9) fully liquidates.
     write_events_no_checkpoint(
         &db.pool,
         200,
         vec![de(
-            AnyEvent::Torch(TorchEvent::LoanRepaid(
-                torch_indexer::contracts::LoanRepaid {
-                    mint: pk(1),
-                    user: pk(3),
-                    sol_repaid: 2_000_000_000,
-                    interest_paid: 0,
-                    collateral_returned: 100_000_000_000,
-                    fully_repaid: true,
-                },
-            )),
+            ev_liquidate_short(1, 9, 3, net, true),
             200,
             0,
         )],
@@ -446,10 +488,31 @@ async fn writer_loan_created_then_repaid_in_full() {
     .unwrap();
 
     let mut tx = db.pool.begin().await.unwrap();
-    let repaid = loan::get(&mut tx, &mint, &user).await.unwrap().unwrap();
-    assert!(!repaid.is_active);
-    assert_eq!(repaid.borrowed_amount, 0);
-    assert_eq!(repaid.collateral_amount, 0);
+    let liq = position::get(&mut tx, &mint, &borrower, PositionSide::Short, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!liq.is_active);
+    assert_eq!(liq.debt_amount, 0);
+    assert_eq!(liq.collateral_amount, 0);
+    assert_eq!(liq.health, PositionHealth::Liquidatable);
+
+    // The liquidation analytics survive in the append-only log.
+    let liqs = position::event::list(
+        &mut tx,
+        PositionEventFilter {
+            mint: Some(mint.clone()),
+            kind: Some(torch_indexer::contracts::PositionEventKind::Liquidate),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(liqs.len(), 1);
+    assert_eq!(liqs[0].liquidator, Some(pk58(9)));
+    assert_eq!(liqs[0].twap_ltv, Some(9200));
+    assert_eq!(liqs[0].bonus_bps, Some(500));
+    assert_eq!(liqs[0].seized, Some(1_900_000_000));
 }
 
 // ─── Suppress unused fixture imports (silenced through use). ────────────

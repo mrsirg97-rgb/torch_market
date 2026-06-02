@@ -3,6 +3,7 @@ use anchor_lang::prelude::*;
 use crate::constants::*;
 use crate::contexts::VaultSwap;
 use crate::errors::TorchMarketError;
+use crate::pool_validation::vault_physical_sol;
 // Vault-routed DeepPool swap for migrated Torch tokens.
 // One instruction handles both directions:
 // - Buy (SOL→Token): vault SOL → DeepPool → tokens to vault ATA
@@ -17,149 +18,85 @@ pub fn vault_swap(
     require!(amount_in > 0, TorchMarketError::AmountTooSmall);
     require!(minimum_amount_out > 0, TorchMarketError::AmountTooSmall);
 
-    let vault = &ctx.accounts.torch_vault;
-    let creator_key = vault.creator;
-    let vault_bump = vault.bump;
+    // vault_sol (System-owned) is the vault's SOL home AND the deep_pool swap's
+    // sol_source for BOTH directions — buy pays from it, sell credits into it. No
+    // staging, no direct lamports.
+    let creator_key = ctx.accounts.torch_vault.creator;
+    let vault_bump = ctx.accounts.torch_vault.bump;
     let vault_sol_bump = ctx.bumps.vault_sol;
     let vault_seeds: &[&[u8]] = &[TORCH_VAULT_SEED, creator_key.as_ref(), &[vault_bump]];
-    let vault_sol_seeds: &[&[u8]] = &[
-        TORCH_VAULT_SOL_SEED,
-        creator_key.as_ref(),
-        &[vault_sol_bump],
-    ];
+    let vault_sol_seeds: &[&[u8]] = &[TORCH_VAULT_SOL_SEED, creator_key.as_ref(), &[vault_sol_bump]];
     let cpi_signers = &[vault_seeds, vault_sol_seeds][..];
 
     if is_buy {
-        // Buy: vault sends SOL, receives tokens
         require!(
-            ctx.accounts.torch_vault.sol_balance >= amount_in,
+            vault_physical_sol(&ctx.accounts.vault_sol)? >= amount_in,
             TorchMarketError::InsufficientVaultBalance
         );
-
-        // Decrement sol_balance before CPI (reverts if CPI fails)
-        let vault = &mut ctx.accounts.torch_vault;
-        vault.sol_balance = vault
-            .sol_balance
-            .checked_sub(amount_in)
-            .ok_or(TorchMarketError::MathOverflow)?;
-        vault.total_spent = vault
-            .total_spent
-            .checked_add(amount_in)
-            .ok_or(TorchMarketError::MathOverflow)?;
-
-        // Stage SOL on the system-owned vault_sol PDA. deep_pool's swap will
-        // pull it via System.transfer, which needs a system-owned `from`.
-        let vault_info = ctx.accounts.torch_vault.to_account_info();
-        let vault_sol_info = ctx.accounts.vault_sol.to_account_info();
-        **vault_info.try_borrow_mut_lamports()? = vault_info
-            .lamports()
-            .checked_sub(amount_in)
-            .ok_or(TorchMarketError::MathOverflow)?;
-        **vault_sol_info.try_borrow_mut_lamports()? = vault_sol_info
-            .lamports()
-            .checked_add(amount_in)
-            .ok_or(TorchMarketError::MathOverflow)?;
-
-        // deep_pool v5.0.0: Swap context no longer takes associated_token_program
-        // (init_if_needed dropped from user_token_account — vault ATA must
-        // pre-exist, enforced by the `associated_token::*` constraint on
-        // VaultSwap.vault_token_account above).
-        let swap_accounts = deep_pool::cpi::accounts::Swap {
-            user: ctx.accounts.torch_vault.to_account_info(),
-            sol_source: ctx.accounts.vault_sol.to_account_info(),
-            pool: ctx.accounts.deep_pool.to_account_info(),
-            token_mint: ctx.accounts.mint.to_account_info(),
-            token_vault: ctx.accounts.deep_pool_token_vault.to_account_info(),
-            user_token_account: ctx.accounts.vault_token_account.to_account_info(),
-            token_program: ctx.accounts.token_2022_program.to_account_info(),
-            system_program: ctx.accounts.system_program.to_account_info(),
-            event_authority: ctx.accounts.deep_pool_event_authority.to_account_info(),
-            program: ctx.accounts.deep_pool_program.to_account_info(),
-        };
-
-        deep_pool::cpi::swap(
-            CpiContext::new_with_signer(
-                ctx.accounts.deep_pool_program.to_account_info(),
-                swap_accounts,
-                cpi_signers,
-            ),
-            deep_pool::SwapArgs {
-                amount_in,
-                minimum_out: minimum_amount_out,
-                buy: true,
-            },
-        )?;
-
-        emit_cpi!(VaultSwapExecuted {
-            vault: ctx.accounts.torch_vault.key(),
-            mint: ctx.accounts.mint.key(),
-            signer: ctx.accounts.signer.key(),
-            is_buy: true,
-            amount_in,
-            minimum_amount_out,
-        });
     } else {
-        // Sell: vault sends tokens, receives SOL
         require!(
             ctx.accounts.vault_token_account.amount >= amount_in,
             TorchMarketError::InsufficientTokens
         );
+    }
+    let vault_sol_before = ctx.accounts.vault_sol.lamports();
 
-        let vault_lamports_before = ctx.accounts.torch_vault.to_account_info().lamports();
+    let swap_accounts = deep_pool::cpi::accounts::Swap {
+        user: ctx.accounts.torch_vault.to_account_info(),
+        sol_source: ctx.accounts.vault_sol.to_account_info(),
+        pool: ctx.accounts.deep_pool.to_account_info(),
+        token_mint: ctx.accounts.mint.to_account_info(),
+        token_vault: ctx.accounts.deep_pool_token_vault.to_account_info(),
+        user_token_account: ctx.accounts.vault_token_account.to_account_info(),
+        token_program: ctx.accounts.token_2022_program.to_account_info(),
+        system_program: ctx.accounts.system_program.to_account_info(),
+        event_authority: ctx.accounts.deep_pool_event_authority.to_account_info(),
+        program: ctx.accounts.deep_pool_program.to_account_info(),
+    };
+    deep_pool::cpi::swap(
+        CpiContext::new_with_signer(
+            ctx.accounts.deep_pool_program.to_account_info(),
+            swap_accounts,
+            cpi_signers,
+        ),
+        deep_pool::SwapArgs {
+            amount_in,
+            minimum_out: minimum_amount_out,
+            buy: is_buy,
+        },
+    )?;
 
-        // sol_source = torch_vault: deep_pool credits lamports via direct
-        // manipulation on sell, which is owner-agnostic. No need for vault_sol.
-        // deep_pool v5.0.0: associated_token_program dropped from Swap context.
-        let swap_accounts = deep_pool::cpi::accounts::Swap {
-            user: ctx.accounts.torch_vault.to_account_info(),
-            sol_source: ctx.accounts.torch_vault.to_account_info(),
-            pool: ctx.accounts.deep_pool.to_account_info(),
-            token_mint: ctx.accounts.mint.to_account_info(),
-            token_vault: ctx.accounts.deep_pool_token_vault.to_account_info(),
-            user_token_account: ctx.accounts.vault_token_account.to_account_info(),
-            token_program: ctx.accounts.token_2022_program.to_account_info(),
-            system_program: ctx.accounts.system_program.to_account_info(),
-            event_authority: ctx.accounts.deep_pool_event_authority.to_account_info(),
-            program: ctx.accounts.deep_pool_program.to_account_info(),
-        };
-
-        deep_pool::cpi::swap(
-            CpiContext::new_with_signer(
-                ctx.accounts.deep_pool_program.to_account_info(),
-                swap_accounts,
-                cpi_signers,
-            ),
-            deep_pool::SwapArgs {
-                amount_in,
-                minimum_out: minimum_amount_out,
-                buy: false,
-            },
-        )?;
-
-        let vault_lamports_after = ctx.accounts.torch_vault.to_account_info().lamports();
-        let sol_received = vault_lamports_after
-            .checked_sub(vault_lamports_before)
+    // Stats only (no balance field — balance is derived from vault_sol lamports).
+    let sol_received = if is_buy {
+        0
+    } else {
+        ctx.accounts
+            .vault_sol
+            .lamports()
+            .checked_sub(vault_sol_before)
+            .ok_or(TorchMarketError::MathOverflow)?
+    };
+    let vault = &mut ctx.accounts.torch_vault;
+    if is_buy {
+        vault.total_spent = vault
+            .total_spent
+            .checked_add(amount_in)
             .ok_or(TorchMarketError::MathOverflow)?;
-
-        let vault = &mut ctx.accounts.torch_vault;
-        vault.sol_balance = vault
-            .sol_balance
-            .checked_add(sol_received)
-            .ok_or(TorchMarketError::MathOverflow)?;
+    } else {
         vault.total_received = vault
             .total_received
             .checked_add(sol_received)
             .ok_or(TorchMarketError::MathOverflow)?;
-
-        emit_cpi!(VaultSwapExecuted {
-            vault: vault.key(),
-            mint: ctx.accounts.mint.key(),
-            signer: ctx.accounts.signer.key(),
-            is_buy: false,
-            amount_in,
-            minimum_amount_out,
-        });
     }
+
+    emit_cpi!(VaultSwapExecuted {
+        vault: ctx.accounts.torch_vault.key(),
+        mint: ctx.accounts.mint.key(),
+        signer: ctx.accounts.signer.key(),
+        is_buy,
+        amount_in,
+        minimum_amount_out,
+    });
 
     Ok(())
 }

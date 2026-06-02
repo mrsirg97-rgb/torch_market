@@ -2,7 +2,7 @@
 
 Every token launches with its own margin market. One Anchor program, 40 instructions, 13 account types, no external dependencies beyond DeepPool (also in-house) and the Token-2022 program.
 
-**Program ID:** `4nwTCWyR6vapTQRkV39f32xJ3uQztdjBqfhubnR6wQQC` (V20 torch_next, current)
+**Program ID:** `E5b4rBqtS5jRvjHcYZ3ZSNo2sdSPJtauQKkEacKmmjqG` (V20 torch_next, current)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -91,7 +91,7 @@ V20 replaces the Raydium CPMM dependency with DeepPool (in-house, formally verif
 | **Bonding** | `create_token` | Constant-product curve: 700M tokens sellable, 300M locked, 100 SOL (Flame) or 200 SOL (Torch) graduation target |
 | **Migration** | `fund_migration_sol` + `migrate_to_dex` (permissionless after target reached) | DeepPool pool created with bonded SOL + remaining tokens. 100% of LP burned to pool PDA. Mint/freeze/transfer-fee authorities revoked. |
 | **Trading** | Post-migration | DeepPool swap as canonical price. 0.07% Token-2022 transfer fee on every transfer; permissionless `harvest_fees` + `swap_fees_to_sol` recycle into the treasury |
-| **Margin** | Auto-enabled at `create_token` (both longs and shorts) | Treasury SOL is lending pool. 300M `TreasuryLock` tokens are short pool. Depth-anchored LTV (25-50%), 65% liquidation threshold, 2%/epoch interest, no oracle |
+| **Margin** | Auto-enabled at `create_token` (both longs and shorts) | Treasury SOL is lending pool. 300M `TreasuryLock` tokens are short pool. Depth-scaled rails: concave max-LTV curve (30-60%), 25%-of-pool size cap, 65% liquidation threshold, derived 32.5% bonus, 1.5%/epoch interest, keeperless TWAP mark `[V21]` |
 
 ---
 
@@ -204,10 +204,10 @@ Per-token treasury: SOL balance, lending state, shorts state, baseline for ratio
 | active_loans | u64 | Open `LoanPosition` count |
 | total_interest_collected | u64 | Cumulative interest paid by longs |
 | lending_enabled | bool | Auto-enabled at creation |
-| interest_rate_bps | u16 | Long interest, default 200 (2%/epoch) |
-| max_ltv_bps | u16 | Default 5000 (50%) — clamped at borrow time by `get_depth_max_ltv_bps(pool_sol)` |
+| interest_rate_bps | u16 | Long interest, default 150 (1.5%/epoch) `[V21]` |
+| max_ltv_bps | u16 | Default 6000 (60%) ceiling — effective LTV is `min(get_depth_max_ltv_bps(pool_sol), this)`; seeded to the curve asymptote so it rarely binds `[V21]` |
 | liquidation_threshold_bps | u16 | Default 6500 (65%) |
-| liquidation_bonus_bps | u16 | Default 1000 (10%) |
+| liquidation_bonus_bps | u16 | Default 3250 (32.5%) — derived `1.3·ρ_max`; the ramp ceiling `[V21]` |
 | liquidation_close_bps | u16 | Default 5000 (50% partial close cap) |
 | lending_utilization_cap_bps | u16 | Default 8000 (80% of treasury SOL is lendable) |
 
@@ -466,11 +466,11 @@ System-owned companion to TorchVault. 0 bytes of data. Used only during `vault_s
 
 | Instruction | Description |
 |---|---|
-| `borrow` | Post token collateral, borrow SOL. Reads pool reserves from DeepPool. `effective_max_ltv = min(get_depth_max_ltv_bps(pool_sol), treasury.max_ltv_bps)`. Enforces utilization cap (80% of treasury) and per-user cap (`max_borrow = lendable * (collateral / TOTAL_SUPPLY) * 23`). |
+| `borrow` | Post token collateral, borrow SOL. Reads pool reserves from DeepPool. `effective_max_ltv = min(get_depth_max_ltv_bps(pool_sol), treasury.max_ltv_bps)`. Clamps the borrow by the utilization cap (80% of treasury), the per-user cap (`max_borrow = lendable * (collateral / TOTAL_SUPPLY) * 23`), **and the Rail-2 size cap (`debt_value ≤ 25% · pool_sol`)**. |
 | `borrow_via_vault` | Same as `borrow`, collateral tokens from vault ATA, borrowed SOL to vault. |
 | `repay` | Interest-first repayment. Full repay returns all collateral. Partial repay leaves position open. |
 | `repay_via_vault` | Same as `repay`, repay SOL from vault, returned collateral to vault ATA. |
-| `liquidate` | Permissionless. Re-checks LTV > 65% via current pool reads. Liquidator pays up to 50% of total debt, receives collateral tokens at current pool price + 10% bonus. Bad-debt write-off correctly decrements `total_sol_lent`. |
+| `liquidate` | Permissionless. Re-checks `twap_ltv > 65%` against the hardened TWAP mark (spot veto only refuses a clearly-healthy position). Liquidator pays up to 50% of total debt, receives collateral at the TWAP-priced seize + a distress-scaled bonus (0 → 32.5% ceiling). Bad-debt write-off correctly decrements `total_sol_lent`. |
 | `liquidate_via_vault` | Same as `liquidate`, liquidator funds + receives via vault. |
 
 ### Shorts (7)
@@ -527,19 +527,27 @@ migrate_to_dex
 
 Both sides share parameters, math, and lifecycle structure. The math is intentionally symmetric — the only asymmetry is asset roles (long borrows SOL against tokens; short borrows tokens against SOL).
 
-### Depth-anchored max LTV
+### Depth-scaled risk rails
+
+**[V21]** The old four-step LTV ladder is replaced by a continuous concave **curve** (Rail 1), a per-position **size cap** (Rail 2), and a **derived bonus** (Rail 3). Depth is priced once at open by two pure functions in `pool_validation`; the liquidation logic is unchanged. Full derivation: [depth-scaled-risk-rails.md](./depth-scaled-risk-rails.md); formal treatment: [risk.md](./risk.md) §2.
 
 ```rust
+// Rail 1 — max LTV: concave in depth, 30% at the 100-SOL floor → 60% asymptote.
 fn get_depth_max_ltv_bps(pool_sol: u64) -> u16 {
-    if pool_sol < 5 SOL          { 0 }      // margin operations blocked
-    else if pool_sol < 50 SOL    { 2500 }   // 25% max
-    else if pool_sol < 200 SOL   { 3500 }   // 35% max
-    else if pool_sol < 500 SOL   { 4500 }   // 45% max
-    else                          { 5000 }  // 50% max
+    if pool_sol < DEPTH_FLOOR_SOL { return 0; }           // < 100 SOL: no leverage
+    let span = LTV_MAX_BPS - LTV_MIN_BPS;                 // 6000 − 3000 = 3000
+    let drop = span * DEPTH_FLOOR_SOL / pool_sol;         // division-only (Kani-safe)
+    (LTV_MAX_BPS - drop).clamp(LTV_MIN_BPS, LTV_MAX_BPS)  // 100→30% 200→45% 500→54% ∞→60%
+}
+
+// Rail 2 — size cap: a position's SOL-debt-value ≤ ρ_max of pool SOL, clamped at
+// open. Makes worst-case liquidation-unwind slippage (≈ debt/pool_sol) depth-invariant.
+fn max_debt_value_for_depth(pool_sol: u64) -> u64 {
+    pool_sol as u128 * RHO_MAX_BPS as u128 / 10_000      // RHO_MAX_BPS = 2500 (25%)
 }
 ```
 
-Pool depth IS the manipulation-resistance signal. Deeper pools = harder to move price = higher leverage permitted. No oracle, no keeper, no stored baseline.
+Pool depth IS the manipulation-resistance signal: deeper pools = harder to move price = higher leverage permitted, on a smooth curve with no tier cliffs. Rail 2 then holds any single position's unwind slippage to `ρ_max` regardless of depth, so **Rail 3** — a flat liquidation bonus derived as `1.3 · ρ_max = 32.5%` (ramping 0→full on the TWAP LTV, full at `100/(1+bonus) = 75.5%`) — clears the unwind on every pool. No external oracle, no keeper, no stored baseline; the liquidation mark is a keeperless TWAP from the pool's own price cumulative.
 
 ### Per-user borrow cap (longs)
 
@@ -566,7 +574,7 @@ The protocol's *earned* SOL float must clear the threshold before long borrows a
 
 | Build feature | `MIN_TREASURY_SOL_FOR_LENDING` |
 |---|---|
-| `simnet`  | 0 SOL (unlocked from launch) |
+| `simnet`  | 1 SOL (migration seeds well above this — unlocks naturally after bonding) |
 | `devnet`  | 1 SOL (light e2e activity) |
 | (default — mainnet) | 100 SOL |
 
@@ -590,13 +598,13 @@ Per-cycle lock change: `+interest`, regardless of hold duration. The borrower fu
 
 `interest = principal * rate_bps * slots / (10_000 * EPOCH_DURATION_SLOTS)`
 
-Default rate: 2%/epoch (`DEFAULT_INTEREST_RATE_BPS = 200`). Epoch = 7 days.
+Default rate: 1.5%/epoch (`DEFAULT_INTEREST_RATE_BPS = 150`; [V21] lowered from 200). Epoch = 7 days.
 
 Accrual happens at the start of every position-touching instruction (`borrow`, `repay`, `liquidate`, `open_short`, `close_short`, `liquidate_short`). The pure transition function `math::apply_interest_accrual` (and its short variant) ensures `last_update_slot` always advances to the current slot — including on the zero-debt early-return path. This prevents phantom interest on positions that are fully repaid and later re-borrowed without closing the account.
 
 ### Liquidation
 
-`current_ltv > 65%` (`DEFAULT_LIQUIDATION_THRESHOLD_BPS`). Liquidator covers up to 50% of total debt (`DEFAULT_LIQUIDATION_CLOSE_BPS`), receives collateral at current pool price + 10% bonus. Bad-debt write-off: when collateral can't cover the slice, the shortfall reduces `borrowed` and `total_sol_lent` together — proven equivalent to the simple form by Kani harnesses 63/64.
+`twap_ltv > 65%` (`DEFAULT_LIQUIDATION_THRESHOLD_BPS`), triggered on the hardened TWAP mark with a spot veto that can only refuse a *clearly-healthy* position (`LIQ_SPOT_VETO_MARGIN_BPS`). Liquidator covers up to 50% of total debt (`DEFAULT_LIQUIDATION_CLOSE_BPS`), receives collateral at the **TWAP-priced** seize plus a **distress-scaled bonus** — `effective_liq_bonus_bps` ramps 0 at the threshold to the `32.5%` ceiling at the full-bonus LTV (75.5%), so a manufactured barely-over liquidation earns ≈0. Bad-debt write-off: when collateral can't cover the slice, the shortfall reduces `borrowed` and `total_sol_lent` together — proven equivalent to the simple form by Kani.
 
 ---
 
@@ -673,7 +681,7 @@ DeepPool has its own audit and 16 separate Kani proofs covering swap math (K inv
 Honest about what V20 does not do:
 
 - **Permissionless migration timing.** Anyone can call `migrate_to_dex` after bonding completes, but nobody is forced to. Economic incentive (treasury reimbursement) handles it in practice.
-- **Opening new positions on drained pools.** If pool depth drops below 5 SOL, `borrow` and `open_short` reject new positions (`PoolTooThin`). Existing positions can still be liquidated — the depth gate was removed from the liquidate paths in v20 so trapped positions aren't stranded.
+- **Opening new positions on shallow pools.** `[V21]` If pool depth is below the `DEPTH_FLOOR_SOL` = 100 SOL leverage floor, `borrow` and `open_short` reject new positions (`PoolTooThin` — the curve returns 0 max-LTV). Existing positions can still be liquidated — the depth gate was removed from the liquidate paths so trapped positions aren't stranded.
 - **Upgrade authority revocation.** Live on mainnet during stabilization. Migrate to public timelock or multisig within the 30-90 day window post-launch via `solana program set-upgrade-authority --final`.
 - **Cross-token margin.** Each `(user, mint)` pair has its own isolated LoanPosition and ShortPosition. No portfolio margining. Failure of one position cannot affect another.
 - **Governance.** None. All parameters are immutable at deploy. No vote, no proposal, no token-gated controls.
@@ -692,6 +700,7 @@ Honest about what V20 does not do:
 | **V20 torch_next** | TorchVault + TorchVaultSol split for DeepPool v3.1 compatibility. BondingCurve shrink (243 bytes/curve). Dead-constraint cleanup. New program ID. 7 additional redhat exploit classes (#18-24, all mitigated). |
 | V20 (interest accrual fix) | `apply_interest_accrual` post-condition strengthened: `last_update_slot` advances on every call including zero-debt. Prevents phantom interest on re-borrowed positions. +2 Kani harnesses + 2 proptest properties. |
 | **V20 (current, deep_pool integration)** | (1) Lending unlock gate (`MIN_TREASURY_SOL_FOR_LENDING`) keyed on AVAILABLE SOL (`sol_balance − short_collateral_reserved`), not gross — short collateral cannot cosmetically unlock the gate (V20C-1 fix). (2) Absolute per-user borrow ceiling at 20% of lendable (`MAX_USER_BORROW_SHARE_BPS = 2000`) clamps the formula cap. (3) Per-user short cap unified to flat `MAX_WALLET_TOKENS` (2% supply), matching the bonding-curve anti-whale rule. (4) Token-2022 gross-up on every short close + liquidate so the 300M `TreasuryLock` never bleeds across cycles. (5) New error `LendingNotYetUnlocked`. +12 Kani harnesses (now 84) + 9 proptest properties (now 42). |
+| **V21 (closed-loop leverage)** | Atomic-custodied long/short positions (vault-seeded, vault-routed via-vault variants); keeperless TWAP liquidation mark in DeepPool (D-10) with seize clamp, distress-scaled bonus, and asymmetric spot veto. **Depth-scaled risk rails:** the 4-step LTV ladder → continuous concave curve (30% floor → 60% asymptote, `DEPTH_FLOOR_SOL` = 100 SOL); new per-position **size cap** (`RHO_MAX_BPS = 2500`, debt ≤ 25% of pool); liquidation bonus + full-bonus-LTV **derived** from `ρ_max` (3250 bps / 7547 bps); interest 200 → 150 bps/epoch. New Kani proofs for the depth curve, size cap, and bonus ramp. See [depth-scaled-risk-rails.md](./depth-scaled-risk-rails.md), [v21-closed-loop-leverage.md](./v21-closed-loop-leverage.md). |
 
 ---
 

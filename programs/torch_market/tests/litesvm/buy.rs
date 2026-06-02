@@ -29,8 +29,7 @@ fn happy_path() {
     let bc = env.get_bonding_curve(&t);
     assert!(bc.real_sol_reserves > 0);
     assert!(bc.virtual_sol_reserves > 37_500_000_000); // > initial 37.5 SOL
-    let tr = env.get_treasury(&t);
-    assert!(tr.sol_balance > 0); // received treasury split
+    assert!(env.treasury_sol(&t) > 0); // received treasury split (in the vault now)
 }
 
 #[test]
@@ -169,7 +168,6 @@ fn buy_via_vault_happy() {
     env.buy_via_vault(&vault_owner, &vault, &t, 100_000_000, 0)
         .expect("buy_via_vault");
 
-    let v = env.get_torch_vault(&vault.vault);
-    assert_eq!(v.sol_balance, 2 * LAMPORTS_PER_SOL - 100_000_000);
-    assert_eq!(v.total_spent, 100_000_000);
+    assert_eq!(env.vault_sol(&vault), 2 * LAMPORTS_PER_SOL - 100_000_000);
+    assert_eq!(env.get_torch_vault(&vault.vault).total_spent, 100_000_000);
 }

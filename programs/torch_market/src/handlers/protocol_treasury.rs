@@ -162,21 +162,19 @@ pub fn claim_protocol_rewards_via_vault(
         &ctx.accounts.protocol_treasury,
     )?;
 
-    let vault_info = ctx.accounts.torch_vault.to_account_info();
+    // protocol_treasury is program-owned (direct debit); credit the rewards into
+    // the vault's System-owned SOL home (vault_sol). No vault sol_balance field.
+    let vault_sol_info = ctx.accounts.vault_sol.to_account_info();
     let treasury_info = ctx.accounts.protocol_treasury.to_account_info();
     **treasury_info.try_borrow_mut_lamports()? = treasury_info
         .lamports()
         .checked_sub(claim_amount)
         .ok_or(TorchMarketError::MathOverflow)?;
-    **vault_info.try_borrow_mut_lamports()? = vault_info
+    **vault_sol_info.try_borrow_mut_lamports()? = vault_sol_info
         .lamports()
         .checked_add(claim_amount)
         .ok_or(TorchMarketError::MathOverflow)?;
     let vault = &mut ctx.accounts.torch_vault;
-    vault.sol_balance = vault
-        .sol_balance
-        .checked_add(claim_amount)
-        .ok_or(TorchMarketError::MathOverflow)?;
     vault.total_received = vault
         .total_received
         .checked_add(claim_amount)

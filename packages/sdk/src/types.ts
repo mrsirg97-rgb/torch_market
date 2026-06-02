@@ -164,24 +164,23 @@ export interface SellQuoteResult {
   source: 'bonding' | 'dex'
 }
 
+// [V21] Open-long quote: max SOL borrowable against token collateral. (V20's
+// per-user formula + lending-unlock gate were removed; the on-chain clamp is
+// LTV + treasury lendable headroom.)
 export interface BorrowQuoteResult {
+  /** Max SOL borrowable against the posted token collateral (lamports). */
   max_borrow_sol: number
+  /** SOL value of the posted token collateral (lamports). */
   collateral_value_sol: number
+  /** LTV-bound cap: collateral_value × max_ltv (lamports). */
   ltv_max_sol: number
+  /** Treasury lendable headroom: vault × utilization_cap − already lent (lamports). */
   pool_available_sol: number
-  /** Per-user cap from the formula: max_lendable × collateral_share × 23 / TOTAL_SUPPLY.
-   *  Real cap is `min(per_user_cap_sol, per_user_absolute_cap_sol)`. */
-  per_user_cap_sol: number
-  /** Per-user absolute ceiling: max_lendable × MAX_USER_BORROW_SHARE_BPS / 10000.
-   *  Caps any single borrower at 20% of lendable regardless of collateral size.
-   *  Tighter than the formula whenever user_collateral / supply > ~4.35%. */
-  per_user_absolute_cap_sol: number
-  /** True when treasury has accumulated enough SOL fees to clear the unlock gate.
-   *  When false, the program will reject any borrow with `LendingNotYetUnlocked`. */
-  lending_unlocked: boolean
-  /** Gate threshold in lamports (configurable, default mainnet 100 SOL). */
-  lending_unlock_threshold_sol: number
+  /** [V21] Rail-2 size cap: ρ_max × pool SOL — the max debt value on this pool (lamports). */
+  size_cap_sol: number
   interest_rate_bps: number
+  /** Effective max LTV actually applied = min(depth curve, treasury ceiling). */
+  max_ltv_bps: number
   liquidation_threshold_bps: number
 }
 
@@ -228,17 +227,18 @@ export interface UserStatsInfo {
   last_volume_epoch: number
 }
 
+// [V21] Treasury is accounting-only; lendable SOL lives in the System-owned
+// treasury_sol_vault PDA. Star/creator-reward + V20 single-loan counters are
+// gone; long and short are tracked separately.
 export interface TreasuryInfo {
   address: string
   /** The bonding curve PDA this treasury is associated with */
   bonding_curve: string
   mint: string
-  /** Current treasury SOL balance (SOL) */
-  sol_balance_sol: number
+  /** Lendable SOL custodied in the System-owned treasury_sol_vault PDA (SOL). */
+  treasury_sol_vault_sol: number
   /** True if this token was created as a community token (0% creator fees) */
   is_community_token: boolean
-  /** SOL reserved as collateral by active short positions (lamports) */
-  short_collateral_reserved: number
   /** Harvested Token-2022 transfer fees swapped to SOL — cumulative (SOL) */
   harvested_fees_sol: number
   /** Baseline pool SOL reserves captured at migration (lamports) */
@@ -248,13 +248,16 @@ export interface TreasuryInfo {
   baseline_initialized: boolean
   /** Whether short selling is enabled for this token */
   short_selling_enabled: boolean
+  /** Whether lending (longs) is enabled for this token */
+  lending_enabled: boolean
   /** Slot of the last treasury fee-to-SOL swap */
   last_buyback_slot: number
-  /** Total stars received (sybil-resistant, 0.02 SOL each) */
-  total_stars: number
-  /** Accumulated SOL from stars (SOL) */
-  star_sol_balance_sol: number
-  creator_paid_out: boolean
+  // [V21] Leverage accounting.
+  total_tokens_lent: number
+  active_shorts: number
+  total_sol_lent_to_longs: number
+  active_longs: number
+  total_token_collateral_locked: number
 }
 
 export interface ProtocolTreasuryInfo {
@@ -370,13 +373,6 @@ export interface CreateTokenParams {
   sol_target?: number
   /** [V35] Community token: 0% creator fees, all to treasury. Default true. */
   community_token?: boolean
-}
-
-export interface StarParams {
-  mint: string
-  user: string
-  /** Vault creator pubkey. Vault pays the 0.02 SOL star cost. */
-  vault?: string
 }
 
 // ============================================================================
@@ -504,31 +500,6 @@ export interface CreateTokenResult extends TransactionResult {
 // Lending Params (V2.4)
 // ============================================================================
 
-export interface BorrowParams {
-  mint: string
-  borrower: string
-  collateral_amount: number
-  sol_to_borrow: number
-  /** Vault creator pubkey. Collateral from vault ATA, SOL to vault. */
-  vault?: string
-}
-
-export interface RepayParams {
-  mint: string
-  borrower: string
-  sol_amount: number
-  /** Vault creator pubkey. SOL repaid from vault, collateral returns to vault ATA. */
-  vault?: string
-}
-
-export interface LiquidateParams {
-  mint: string
-  liquidator: string
-  borrower: string
-  /** Vault creator pubkey. SOL paid from vault, collateral received to vault ATA. */
-  vault?: string
-}
-
 export interface ClaimProtocolRewardsParams {
   user: string
   /** Vault creator pubkey. Claimed SOL goes to vault instead of user. */
@@ -543,23 +514,60 @@ export interface ReclaimParams {
 }
 
 // ============================================================================
-// Short Selling Params (V5)
+// [V21] Leverage params — unified closed-loop long + short positions.
+//
+// Open: borrow size = collateral × LTV, then clamped to protocol/user caps (the
+// SDK has no "borrow size" knob — the UI shows the clamped size pre-sign). Close
+// is fractional via `repay_fraction_bps` (10000 = full). A `vault` creator
+// pubkey routes the matching `*_via_vault` variant (position owner = TorchVault
+// PDA). `position_index` lets a wallet hold multiple positions per (mint, side).
 // ============================================================================
+
+export type PositionSide = 'long' | 'short'
 
 export interface OpenShortParams {
   mint: string
   shorter: string
-  sol_collateral: number
-  tokens_to_borrow: number
-  /** Vault creator pubkey. SOL from vault, tokens to vault ATA. */
+  /** Position slot (default 0). A wallet can hold many shorts on one mint. */
+  position_index?: number
+  /** SOL collateral, lamports. Borrowed tokens = collateral × LTV (clamped). */
+  collateral: number
+  /** Min SOL out from selling the borrowed tokens (slippage guard; 0 = none). */
+  min_out?: number
+  /** Vault creator pubkey → routes open_short_via_vault. */
+  vault?: string
+}
+
+export interface OpenLongParams {
+  mint: string
+  borrower: string
+  /** Position slot (default 0). */
+  position_index?: number
+  /** Token collateral (6 decimals). Borrowed SOL = collateral × LTV (clamped). */
+  collateral: number
+  /** Min tokens out from the atomic buy (slippage guard; 0 = none). */
+  min_out?: number
+  /** Vault creator pubkey → routes open_long_via_vault. */
   vault?: string
 }
 
 export interface CloseShortParams {
   mint: string
   shorter: string
-  token_amount: number
-  /** Vault creator pubkey. Tokens from vault ATA, SOL to vault. */
+  position_index?: number
+  /** Fraction of the position to close, in bps (10000 = full close; default). */
+  repay_fraction_bps?: number
+  /** Min surplus SOL returned to the user (slippage guard). */
+  min_surplus_sol_out?: number
+  vault?: string
+}
+
+export interface CloseLongParams {
+  mint: string
+  borrower: string
+  position_index?: number
+  repay_fraction_bps?: number
+  min_surplus_sol_out?: number
   vault?: string
 }
 
@@ -567,12 +575,32 @@ export interface LiquidateShortParams {
   mint: string
   liquidator: string
   borrower: string
-  /** Vault creator pubkey. Tokens from vault ATA, SOL to vault. */
+  position_index?: number
+  /** Set when the position owner is a TorchVault (routes liquidate_short_via_vault). */
+  vault?: string
+  /**
+   * [V21] Auto-acquire the cover tokens. A short's debt is token-denominated, so
+   * the liquidator must SUPPLY tokens to cover it. When true (default), the SDK
+   * prepends a DeepPool buy that funds the liquidator's ATA with the cover
+   * amount, so the liquidator only needs SOL — the seize (debt + bonus) repays
+   * it. Set false if the liquidator already warehouses enough tokens.
+   */
+  acquire_cover_tokens?: boolean
+}
+
+export interface LiquidateLongParams {
+  mint: string
+  liquidator: string
+  borrower: string
+  position_index?: number
+  /** Set when the position owner is a TorchVault (routes liquidate_long_via_vault). */
   vault?: string
 }
 
 // ============================================================================
-// Lending Results (V2.4)
+// [V21] Lending / leverage info — treasury-level rates + custody snapshot.
+// Lendable SOL lives in the System-owned treasury_sol_vault; the Treasury data
+// account holds long/short accounting only.
 // ============================================================================
 
 export interface LendingInfo {
@@ -580,84 +608,61 @@ export interface LendingInfo {
   max_ltv_bps: number
   liquidation_threshold_bps: number
   liquidation_bonus_bps: number
+  liquidation_close_bps: number
   utilization_cap_bps: number
-  borrow_share_multiplier: number
-  /** Absolute per-user borrow ceiling in bps of max_lendable. 2000 = 20%. */
-  max_user_borrow_share_bps: number
-  /** Treasury SOL gate (lamports) — lending refuses borrows below this. */
-  lending_unlock_threshold_lamports: number
-  /** True when treasury available SOL (sol_balance − short_collateral_reserved)
-   *  is ≥ the gate. Short collateral is escrowed user funds, not protocol
-   *  float, so it is excluded from the gate. */
-  lending_unlocked: boolean
-  /** Gross treasury sol_balance in lamports (includes short collateral). */
-  treasury_sol_lamports: number
-  /** Protocol-earned float: sol_balance − short_collateral_reserved. This is
-   *  the figure the on-chain gate (and the UI progress bar) compares against
-   *  `lending_unlock_threshold_lamports`. */
-  treasury_sol_available_lamports: number
-  total_sol_lent: number | null
-  active_loans: number | null
-  treasury_sol_available: number
+  lending_enabled: boolean
+  short_selling_enabled: boolean
+  /** Lendable SOL custodied in the System-owned treasury_sol_vault (lamports). */
+  treasury_sol_vault_lamports: number
+  /** V21 long-side accounting (from the Treasury data account). */
+  total_sol_lent_to_longs: number
+  active_longs: number
+  /** V21 short-side accounting. */
+  total_tokens_lent: number
+  active_shorts: number
+  total_token_collateral_locked: number
   warnings?: string[]
 }
 
-export interface LoanPositionInfo {
+// ============================================================================
+// [V21] Position results — unified long + short (replaces Loan*/Short* infos).
+// Unit-by-side: short → collateral = SOL, debt = tokens; long → collateral =
+// tokens, debt = SOL.
+// ============================================================================
+
+export interface PositionInfo {
+  side: PositionSide
+  position_index: number
+  /** Unit-by-side: short → SOL lamports; long → tokens (6 decimals). */
   collateral_amount: number
-  borrowed_amount: number
-  /** Accrued interest projected to the current slot using the on-chain simple-linear formula.
-   *  Interest is only actually written on-chain when an instruction touches the loan; this value
-   *  matches what the program will compute at the next touch. Use `accrued_interest_stored` for
-   *  the raw on-chain value as of `last_update_slot`. */
+  /** Unit-by-side: short → tokens; long → SOL lamports. */
+  debt_amount: number
+  /** Accrued interest projected to the current slot (token units for short, SOL
+   *  for long), matching what the program writes at the next touch. */
   accrued_interest: number
-  /** Raw stored accrued_interest from the LoanPosition account (as of last_update_slot). */
+  /** Raw stored accrued_interest from the Position account (as of last_slot). */
   accrued_interest_stored: number
   /** Slot at which `accrued_interest_stored` was last written. */
   last_update_slot: number
+  /** Debt incl. projected interest (token units for short, SOL lamports for long). */
   total_owed: number
-  collateral_value_sol: number | null
-  current_ltv_bps: number | null
-  health: 'healthy' | 'at_risk' | 'liquidatable' | 'none'
-  warnings?: string[]
-}
-
-export interface LoanPositionWithKey extends LoanPositionInfo {
-  borrower: string
-}
-
-export interface AllLoanPositionsResult {
-  positions: LoanPositionWithKey[]
-  pool_price_sol: number | null
-}
-
-// ============================================================================
-// Short Position Results (V5)
-// ============================================================================
-
-export interface ShortPositionInfo {
-  sol_collateral: number
-  tokens_borrowed: number
-  /** Accrued interest (in tokens) projected to the current slot. See `LoanPositionInfo.accrued_interest`. */
-  accrued_interest: number
-  /** Raw stored accrued_interest from the ShortPosition account (as of last_update_slot). */
-  accrued_interest_stored: number
-  /** Slot at which `accrued_interest_stored` was last written. */
-  last_update_slot: number
-  total_owed_tokens: number
-  /** SOL value of the token debt (null if pool price unavailable) */
+  /** SOL value of the debt (null if pool price unavailable). */
   debt_value_sol: number | null
-  /** Current LTV in basis points: debt_value_sol / sol_collateral (null if price unavailable) */
+  /** Current LTV in bps off the pool mark (null if price unavailable). */
   current_ltv_bps: number | null
   health: 'healthy' | 'at_risk' | 'liquidatable' | 'none'
+  /** True when the position is owned by a TorchVault PDA (opened via_vault). */
+  owner_is_vault: boolean
   warnings?: string[]
 }
 
-export interface ShortPositionWithKey extends ShortPositionInfo {
-  shorter: string
+export interface PositionWithKey extends PositionInfo {
+  /** Position owner — wallet (direct) or TorchVault PDA (via_vault). */
+  owner: string
 }
 
-export interface AllShortPositionsResult {
-  positions: ShortPositionWithKey[]
+export interface AllPositionsResult {
+  positions: PositionWithKey[]
   pool_price_sol: number | null
 }
 

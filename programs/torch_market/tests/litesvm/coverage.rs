@@ -77,6 +77,18 @@ const EXEMPT: &[(&str, &str)] = &[
         "InsufficientTreasury",
         "shift_lamports underflow; handler invariants prevent",
     ),
+    // Defensive debt>0 guards. V21 can't open a debt-0 position (floored at the
+    // minimum), and a full close removes the Position PDA — so re-closing fails
+    // at account resolution (Anchor AccountNotInitialized) before these handler
+    // checks run. Unreachable as custom errors; kept as defense-in-depth.
+    (
+        "NoActiveShort",
+        "closed Position PDA → AccountNotInitialized before the debt>0 check; unreachable in V21",
+    ),
+    (
+        "NoActiveLoan",
+        "closed Position PDA → AccountNotInitialized before the debt>0 check; unreachable in V21",
+    ),
 ];
 
 const ERRORS_SRC: &str = include_str!("../../src/errors.rs");
@@ -91,7 +103,6 @@ const LITESVM_FILES: &[(&str, &str)] = &[
     ("vault", include_str!("vault.rs")),
     ("treasury", include_str!("treasury.rs")),
     ("protocol_treasury", include_str!("protocol_treasury.rs")),
-    ("rewards", include_str!("rewards.rs")),
     ("tier_b", include_str!("tier_b.rs")),
 ];
 

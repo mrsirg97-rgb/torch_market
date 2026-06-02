@@ -75,8 +75,10 @@ fn build_buy_ix(env: &Env, buyer: &Keypair, t: &TokenCtx) -> Instruction {
             dev_wallet: env.dev_wallet.pubkey(),
             mint: t.mint,
             bonding_curve: t.bonding_curve,
+            bonding_curve_sol: t.bonding_curve_sol,
             token_vault: t.token_vault,
             token_treasury: t.treasury,
+            treasury_sol_vault: t.treasury_sol_vault,
             treasury_token_account: t.treasury_token_account,
             buyer_token_account: buyer_token,
             user_position,
@@ -120,10 +122,12 @@ fn build_sell_ix(env: &Env, seller: &Keypair, t: &TokenCtx) -> Instruction {
             seller: seller.pubkey(),
             mint: t.mint,
             bonding_curve: t.bonding_curve,
+            bonding_curve_sol: t.bonding_curve_sol,
             token_vault: t.token_vault,
             seller_token_account: seller_token,
             user_position: Some(user_position),
             token_treasury: t.treasury,
+            treasury_sol_vault: t.treasury_sol_vault,
             user_stats: Some(user_stats),
             protocol_treasury: Some(crate::harness::Env::new().protocol_treasury), // not used in size calc
             token_program: TOKEN_2022_PROGRAM_ID,
@@ -167,14 +171,17 @@ fn build_buy_via_vault_ix(env: &Env, signer: &Keypair, vault: &VaultCtx, t: &Tok
             dev_wallet: env.dev_wallet.pubkey(),
             mint: t.mint,
             bonding_curve: t.bonding_curve,
+            bonding_curve_sol: t.bonding_curve_sol,
             token_vault: t.token_vault,
             token_treasury: t.treasury,
+            treasury_sol_vault: t.treasury_sol_vault,
             treasury_token_account: t.treasury_token_account,
             user_position,
             user_stats: Some(user_stats),
             protocol_treasury: env.protocol_treasury,
             creator: t.creator,
             torch_vault: vault.vault,
+            vault_sol: vault.vault_sol,
             vault_wallet_link: link,
             vault_token_account: vault_token,
             token_program: TOKEN_2022_PROGRAM_ID,
@@ -205,30 +212,18 @@ fn build_migrate_ixs(env: &Env, payer: &Keypair, t: &TokenCtx) -> Vec<Instructio
         &payer.pubkey(),
         &t.mint,
     );
-    let fund = Instruction {
-        program_id: torch_market::ID,
-        accounts: torch_market::accounts::FundMigrationSol {
-            payer: payer.pubkey(),
-            mint: t.mint,
-            bonding_curve: t.bonding_curve,
-        }
-        .to_account_metas(None),
-        data: torch_market::instruction::FundMigrationSol {}.data(),
-    };
     let migrate = Instruction {
         program_id: torch_market::ID,
         accounts: torch_market::accounts::MigrateToDex {
             event_authority: anchor_lang::solana_program::pubkey::Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
             program: torch_market::ID,
             payer: payer.pubkey(),
-            global_config: env.global_config,
             mint: t.mint,
             bonding_curve: t.bonding_curve,
             treasury: t.treasury,
+            treasury_sol_vault: t.treasury_sol_vault,
+            bonding_curve_sol: t.bonding_curve_sol,
             token_vault: t.token_vault,
-            treasury_token_account: t.treasury_token_account,
-            treasury_lock_token_account: t.treasury_lock_token_account,
-            treasury_lock: t.treasury_lock,
             payer_token,
             deep_pool_program: deep_pool::ID,
             torch_config: env.torch_config,
@@ -238,7 +233,6 @@ fn build_migrate_ixs(env: &Env, payer: &Keypair, t: &TokenCtx) -> Vec<Instructio
             payer_lp_account: payer_lp,
             deep_pool_lp_account: pool_lp,
             deep_pool_event_authority: pool_validation::derive_deep_pool_event_authority(),
-            token_program: TOKEN_2022_PROGRAM_ID,
             token_2022_program: TOKEN_2022_PROGRAM_ID,
             associated_token_program: ASSOCIATED_TOKEN_PROGRAM_ID,
             system_program: solana_sdk::system_program::ID,
@@ -246,5 +240,5 @@ fn build_migrate_ixs(env: &Env, payer: &Keypair, t: &TokenCtx) -> Vec<Instructio
         .to_account_metas(None),
         data: torch_market::instruction::MigrateToDex {}.data(),
     };
-    vec![cu, ata, fund, migrate]
+    vec![cu, ata, migrate]
 }

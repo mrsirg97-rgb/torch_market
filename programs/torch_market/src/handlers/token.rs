@@ -140,9 +140,7 @@ pub fn create_token(ctx: Context<CreateToken2022>, args: CreateTokenArgs) -> Res
     let treasury = &mut ctx.accounts.treasury;
     treasury.bonding_curve = bonding_curve_key;
     treasury.mint = mint_key;
-    treasury.sol_balance = 0;
     treasury.is_community_token = args.community_token;
-    treasury.short_collateral_reserved = 0;
     treasury.last_buyback_slot = 0;
     treasury.harvested_fees = 0;
     treasury.bump = ctx.bumps.treasury;
@@ -150,17 +148,18 @@ pub fn create_token(ctx: Context<CreateToken2022>, args: CreateTokenArgs) -> Res
     treasury.baseline_token_reserves = 0;
     treasury.min_buyback_interval_slots = DEFAULT_MIN_BUYBACK_INTERVAL_SLOTS;
     treasury.baseline_initialized = false;
-    treasury.total_stars = 0;
-    treasury.star_sol_balance = 0;
-    treasury.creator_paid_out = false;
 
     let treasury_lock = &mut ctx.accounts.treasury_lock;
     treasury_lock.mint = mint_key;
     treasury_lock.bump = ctx.bumps.treasury_lock;
-    treasury.total_sol_lent = 0;
-    treasury.total_collateral_locked = 0;
-    treasury.active_loans = 0;
-    treasury.total_interest_collected = 0;
+    // [V21] aggregate-exposure counters (collateral lives in per-position vaults)
+    treasury.total_tokens_lent = 0;
+    treasury.active_shorts = 0;
+    treasury.short_interest_collected = 0;
+    treasury.total_sol_lent_to_longs = 0;
+    treasury.active_longs = 0;
+    treasury.long_interest_collected = 0;
+    treasury.total_token_collateral_locked = 0;
     treasury.lending_enabled = true;
     treasury.interest_rate_bps = DEFAULT_INTEREST_RATE_BPS;
     treasury.max_ltv_bps = DEFAULT_MAX_LTV_BPS;
@@ -257,6 +256,21 @@ pub fn create_token(ctx: Context<CreateToken2022>, args: CreateTokenArgs) -> Res
             bonding_curve.to_account_info(),
         ],
         signer_seeds,
+    )?;
+
+    // Materialize the System-owned SOL custody vault (rent-exempt, 0 data). All
+    // later treasury SOL flows are system_program::transfers to/from this PDA.
+    invoke(
+        &anchor_lang::solana_program::system_instruction::transfer(
+            &ctx.accounts.creator.key(),
+            &ctx.accounts.treasury_sol_vault.key(),
+            Rent::get()?.minimum_balance(0),
+        ),
+        &[
+            ctx.accounts.creator.to_account_info(),
+            ctx.accounts.treasury_sol_vault.to_account_info(),
+            ctx.accounts.system_program.to_account_info(),
+        ],
     )?;
 
     emit_cpi!(MarketCreated {

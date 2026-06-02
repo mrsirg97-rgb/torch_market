@@ -19,13 +19,10 @@
 use solana_sdk::{native_token::LAMPORTS_PER_SOL, signature::Keypair, signer::Signer};
 
 use crate::{
-    expect_err,
+    expect_anchor_err, expect_err,
     harness::{Env, TokenCtx},
 };
-use torch_market::{
-    constants::*, errors::TorchMarketError,
-    token_2022_utils::TOKEN_2022_PROGRAM_ID,
-};
+use torch_market::{constants::*, errors::TorchMarketError, state::PositionSide};
 
 // `position.tokens_borrowed` records the GROSS amount the lock sent at open
 // (v20-current lock-conservation design). The shorter received `gross − fee`
@@ -45,21 +42,30 @@ fn migrated() -> (Env, TokenCtx, Keypair) {
 }
 
 // ============================================================================
-// open_short (8)
+// open_short (5: 4 active + 1 ignored vault stub)
 // ============================================================================
 
 #[test]
 fn open_short_happy() {
     let (mut env, t, _) = migrated();
     let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
-    env.open_short(&shorter, &t, LAMPORTS_PER_SOL, MIN_SHORT_TOKENS)
+    // V21: collateral SOL in (index 0, min_out=1); the handler SIZES the token
+    // borrow (collateral × LTV, clamped to lock + wallet caps).
+    env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1)
         .expect("open_short");
 
-    let pos = env.get_short(&t, &shorter.pubkey()).expect("short pos");
-    assert_eq!(pos.sol_collateral, LAMPORTS_PER_SOL);
-    assert_eq!(pos.tokens_borrowed, MIN_SHORT_TOKENS);
-    let tr = env.get_treasury(&t);
-    assert_eq!(tr.short_collateral_reserved, LAMPORTS_PER_SOL);
+    let pos = env
+        .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+        .expect("short pos");
+    assert_eq!(pos.side, PositionSide::Short);
+    // collateral_amount is the post-open-fee net (≤ the 1 SOL posted).
+    assert!(pos.collateral_amount > 0 && pos.collateral_amount <= LAMPORTS_PER_SOL);
+    // Debt is sized by the handler, above the dust floor.
+    assert!(pos.debt_amount >= MIN_SHORT_TOKENS, "sized above dust floor");
+    // Collateral lives in the per-position SOL vault now, NOT in the treasury.
+    let vault = short_vault_pda(&t, &shorter.pubkey(), 0);
+    let vault_lamports = env.svm.get_account(&vault).map(|a| a.lamports).unwrap_or(0);
+    assert!(vault_lamports > 0, "collateral + sale proceeds in position vault");
 }
 
 #[test]
@@ -71,7 +77,7 @@ fn open_short_short_not_enabled() {
 
     let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
     expect_err!(
-        env.open_short(&shorter, &t, LAMPORTS_PER_SOL, MIN_SHORT_TOKENS),
+        env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1),
         TorchMarketError::ShortNotEnabled
     );
 }
@@ -84,95 +90,91 @@ fn open_short_not_migrated() {
     // Don't migrate.
     let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
     expect_err!(
-        env.open_short(&shorter, &t, LAMPORTS_PER_SOL, MIN_SHORT_TOKENS),
+        env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1),
         TorchMarketError::NotMigrated
     );
 }
 
 #[test]
 fn open_short_too_small() {
+    // V21: no user token amount — the borrow is sized from collateral. Tiny
+    // collateral → sized borrow falls below MIN_SHORT_TOKENS → ShortTooSmall.
+    // TUNE: this collateral must be small enough that collateral×LTV (priced
+    // into tokens) < MIN_SHORT_TOKENS at the migrated pool ratio.
     let (mut env, t, _) = migrated();
     let shorter = env.new_funded(LAMPORTS_PER_SOL);
     expect_err!(
-        env.open_short(&shorter, &t, LAMPORTS_PER_SOL, MIN_SHORT_TOKENS - 1),
+        env.open_short(&shorter, &t, 0, 10_000, 1), // 10k lamports collateral
         TorchMarketError::ShortTooSmall
     );
 }
 
 #[test]
-fn open_short_ltv_exceeded() {
-    let (mut env, t, _) = migrated();
-    let shorter = env.new_funded(LAMPORTS_PER_SOL);
-    // 1 SOL collateral. At 35% LTV cap, max debt_value = 0.35 SOL. That maps
-    // to ~524k display tokens (5.24e11 raw). Borrowing 1B tokens raw (= ~668 SOL
-    // debt_value) blows the LTV cap by 4 orders of magnitude.
-    let huge_borrow = 1_000_000_000_000_000; // 1B display tokens raw
-    expect_err!(
-        env.open_short(&shorter, &t, LAMPORTS_PER_SOL / 10, huge_borrow),
-        TorchMarketError::LtvExceeded
-    );
-}
-
-#[test]
-fn open_short_cap_exceeded() {
-    let (mut env, t, _) = migrated();
-    // Set utilization cap to 0% → max_lendable_tokens = 0. Any short fails ShortCap.
-    let mut tr = env.get_treasury(&t);
-    tr.lending_utilization_cap_bps = 0;
-    env.poke_anchor(t.treasury, tr);
-
-    let shorter = env.new_funded(2 * LAMPORTS_PER_SOL); // 2 SOL — covers 1 SOL collateral + tx fee
-    expect_err!(
-        env.open_short(&shorter, &t, LAMPORTS_PER_SOL, MIN_SHORT_TOKENS),
-        TorchMarketError::ShortCapExceeded
-    );
-}
-
-#[test]
-fn open_short_user_cap_exceeded() {
-    // Per-user short cap is now a flat MAX_WALLET_TOKENS = 2% of supply
-    // (= 20M display tokens × 1e6 decimals = 2e13 raw). Decoupled from
-    // treasury size — no formula scaling. Trigger by:
-    //  - shorting MAX_WALLET_TOKENS + 1
-    //  - with treasury_lock having enough tokens for global utilization OK
-    //  - with sufficient SOL collateral so LTV doesn't fire first
-    //  - with sufficient pool depth so LTV math is permissive
+fn open_short_clamps_to_caps() {
+    // Folds the old ltv/cap/user-cap REJECT tests. V21 clamps instead of
+    // rejecting: an oversized collateral implies a borrow above the wallet cap
+    // (MAX_WALLET_TOKENS), so the handler opens the position AT the clamped size
+    // rather than erroring. The UI shows the clamped size pre-sign; min_out
+    // guards the swap. Assert: position opens, debt == the cap (not larger).
     let (mut env, t, _) = migrated();
 
-    // Stage treasury_lock with way more than the per-user cap so global
-    // utilization (80%) doesn't bind first.
-    env.poke_token_amount(t.treasury_lock_token_account, 100_000_000_000_000_000); // 100M display
-
-    // Pool depth pumps so LTV at 50% allows shorting MAX_WALLET_TOKENS+1
-    // with realistic SOL collateral.
+    // Stage the lock with plenty so the lock-balance clamp doesn't bind first;
+    // the wallet cap (MAX_WALLET_TOKENS) is the intended binding clamp.
+    env.poke_token_amount(t.treasury_lock_token_account, 100_000_000_000_000_000);
+    // Deep pool: enough SOL depth that a large collateral prices to a borrow
+    // well above MAX_WALLET_TOKENS.
     env.poke_pool_sol(&t, 1000 * LAMPORTS_PER_SOL);
-    env.poke_token_amount(t.deep_pool_token_vault, 100_000_000_000_000); // 100M
+    env.poke_token_amount(t.deep_pool_token_vault, 100_000_000_000_000);
 
-    // 1000 SOL collateral → 50% LTV permits 500 SOL of position value.
-    // MAX_WALLET_TOKENS+1 ≈ 20M tokens × (1000 SOL / 100M tokens) = 200 SOL value.
-    // 200 < 500 → LTV passes. User cap (20M) fires.
+    // TUNE: collateral large enough that collateral×LTV in tokens > MAX_WALLET_TOKENS.
     let shorter = env.new_funded(1500 * LAMPORTS_PER_SOL);
-    expect_err!(
-        env.open_short(&shorter, &t, 1000 * LAMPORTS_PER_SOL, MAX_WALLET_TOKENS + 1),
-        TorchMarketError::UserShortCapExceeded
+    env.open_short(&shorter, &t, 0, 1000 * LAMPORTS_PER_SOL, 1)
+        .expect("open_short clamps, does not reject");
+
+    let pos = env
+        .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+        .expect("short pos");
+    assert_eq!(
+        pos.debt_amount, MAX_WALLET_TOKENS,
+        "borrow clamped to the per-wallet cap"
     );
 }
 
 #[test]
 fn open_short_via_vault_happy() {
-    let (mut env, t, _) = migrated();
-    let vault_owner = env.new_funded(5 * LAMPORTS_PER_SOL);
-    let vault = env.create_vault(&vault_owner);
-    env.deposit_vault(&vault_owner, &vault, 2 * LAMPORTS_PER_SOL)
-        .expect("fund");
-    env.open_short_via_vault(&vault_owner, &vault, &t, LAMPORTS_PER_SOL, MIN_SHORT_TOKENS)
+    // A linked wallet opens a short funded by the VAULT. The position is
+    // vault-seeded (owned by the vault); the collateral comes from vault_sol; the
+    // signer only pays rent — it never touches the vault funds beyond the trade.
+    let (mut env, t, _liquidator) = migrated();
+    let owner = env.new_funded(5 * LAMPORTS_PER_SOL);
+    let vault = env.create_vault(&owner); // owner is the auto-linked wallet
+    env.deposit_vault(&owner, &vault, 3 * LAMPORTS_PER_SOL)
+        .expect("deposit");
+
+    let vault_sol_before = env.vault_sol(&vault);
+    env.open_short_via_vault(&owner, &vault, &t, 0, LAMPORTS_PER_SOL, 1)
         .expect("open_short_via_vault");
 
-    let pos = env.get_short(&t, &vault_owner.pubkey()).expect("short pos");
-    assert_eq!(pos.tokens_borrowed, MIN_SHORT_TOKENS);
-    let v = env.get_torch_vault(&vault.vault);
-    assert_eq!(v.sol_balance, LAMPORTS_PER_SOL); // 2 - 1 collateral
-    assert_eq!(v.total_spent, LAMPORTS_PER_SOL);
+    // Position is VAULT-SEEDED and owned by the vault.
+    let pos = env
+        .get_position(&t, &vault.vault, POSITION_SIDE_SHORT, 0)
+        .expect("vault-seeded position exists");
+    assert!(pos.debt_amount > 0, "borrowed tokens against the vault");
+    assert_eq!(pos.user, vault.vault, "position owned by the vault, not a wallet");
+
+    // The vault funded the collateral (vault_sol dropped by exactly `collateral`);
+    // the SOL is now in the per-position vault, not back in the linked wallet.
+    assert_eq!(
+        env.vault_sol(&vault),
+        vault_sol_before - LAMPORTS_PER_SOL,
+        "collateral came from the vault"
+    );
+    let pos_vault = short_vault_pda(&t, &vault.vault, 0);
+    let pos_vault_sol = env.svm.get_account(&pos_vault).map(|a| a.lamports).unwrap_or(0);
+    assert!(
+        pos_vault_sol > 0,
+        "per-position vault holds net collateral + sale proceeds"
+    );
 }
 
 // ============================================================================
@@ -183,33 +185,52 @@ fn open_short_via_vault_happy() {
 fn close_short_partial() {
     let (mut env, t, _) = migrated();
     let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
-    env.open_short(&shorter, &t, LAMPORTS_PER_SOL, MIN_SHORT_TOKENS)
-        .expect("open");
+    env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1).expect("open");
+    let before = env
+        .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+        .expect("pos");
 
-    // Close half of MIN_SHORT_TOKENS — sender has enough even after the
-    // open-side transfer fee (got 1e9 - 700 raw ≈ 999.3M; sending 500M).
-    env.close_short(&shorter, &t, MIN_SHORT_TOKENS / 2)
+    // V21: partial close by FRACTION. Vault SOL buys back half the debt; the
+    // shorter no longer needs a token balance (the vault funds the buy).
+    env.close_short(&shorter, &t, 0, 5_000, 0)
         .expect("partial close");
-    let pos = env.get_short(&t, &shorter.pubkey()).expect("pos still");
-    // Position records gross at open; partial close subtracts the close
-    // request amount from tokens_borrowed (after interest-first).
-    assert_eq!(pos.tokens_borrowed, MIN_SHORT_TOKENS - MIN_SHORT_TOKENS / 2);
-    assert_eq!(pos.sol_collateral, LAMPORTS_PER_SOL); // unchanged on partial
+
+    let after = env
+        .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+        .expect("pos still open");
+    // Debt reduced ~half (allow ±1 for fractional rounding); position stays open.
+    let repaid = before.debt_amount - after.debt_amount;
+    assert!(
+        repaid >= before.debt_amount / 2 - 1 && repaid <= before.debt_amount / 2 + 1,
+        "≈half the debt repaid (before={}, after={})",
+        before.debt_amount,
+        after.debt_amount
+    );
+    assert!(after.debt_amount > 0, "still open after partial");
 }
 
 #[test]
 fn close_short_full() {
-    // Tier B: short PDA is closed on full close. Uses first_buyer who has
-    // spare tokens to cover the Token-2022 fee on the close-side transfer.
+    // Full close: vault SOL buys back the whole debt, leftover surplus → user.
+    // (PDA-close itself is covered in tier_b; here we assert the surplus payout.)
     let (mut env, t, shorter) = migrated();
-    env.open_short(&shorter, &t, LAMPORTS_PER_SOL, MIN_SHORT_TOKENS)
-        .expect("open");
+    env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1).expect("open");
 
-    env.close_short(&shorter, &t, MIN_SHORT_TOKENS * 2)
-        .expect("full close");
+    let before_lamports = env.svm.get_account(&shorter.pubkey()).unwrap().lamports;
+    env.close_short(&shorter, &t, 0, 10_000, 0).expect("full close");
+
     assert!(
-        env.get_short(&t, &shorter.pubkey()).is_none(),
-        "short PDA closed after full close"
+        env.get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+            .is_none(),
+        "position closed after full close"
+    );
+    let after_lamports = env.svm.get_account(&shorter.pubkey()).unwrap().lamports;
+    // Surplus vault SOL + reclaimed rent flow back to the shorter on full close.
+    assert!(
+        after_lamports > before_lamports,
+        "surplus + rent returned to user (before={}, after={})",
+        before_lamports,
+        after_lamports
     );
 }
 
@@ -217,37 +238,43 @@ fn close_short_full() {
 fn close_short_interest_first() {
     let (mut env, t, _) = migrated();
     let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
-    env.open_short(&shorter, &t, LAMPORTS_PER_SOL, MIN_SHORT_TOKENS)
-        .expect("open");
+    env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1).expect("open");
+    let opened = env
+        .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+        .expect("pos");
 
-    // Warp to accrue interest in token terms.
-    // calc_short_interest(1e9 raw, 200 bps, 1e6 slots) over
-    //   EPOCH_DURATION_SLOTS (~1.512M slots) yields ~13M raw tokens accrued.
-    env.warp_to_slot(env.current_slot() + 1_000_000);
+    // Warp to accrue token-denominated interest, then close a tiny fraction.
+    // Interest is credited before principal, so a small fractional close eats
+    // into accrued_interest while leaving the principal (debt_amount) intact.
+    // 150 bps/epoch over ~1.5M slots ≈ 1.49% interest, comfortably above 1%.
+    env.warp_to_slot(env.current_slot() + 1_500_000);
+    // TUNE: 1% fraction should be ≤ accrued interest at this warp; if principal
+    // moves, lower the fraction or lengthen the warp.
+    env.close_short(&shorter, &t, 0, 100, 0)
+        .expect("tiny interest-first close");
 
-    // Pay 1000 raw tokens — far below accrued interest, so entirely interest, no principal.
-    env.close_short(&shorter, &t, 1000)
-        .expect("interest-only close");
-    let pos = env.get_short(&t, &shorter.pubkey()).expect("pos");
-    assert_eq!(pos.tokens_borrowed, MIN_SHORT_TOKENS, "principal untouched");
-    assert!(
-        pos.accrued_interest > 0,
-        "interest remains after small partial pay"
+    let pos = env
+        .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+        .expect("pos");
+    assert_eq!(
+        pos.debt_amount, opened.debt_amount,
+        "principal untouched (interest paid first)"
     );
 }
 
 #[test]
 fn close_short_no_active_short() {
-    let (mut env, t, _) = migrated();
-    let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
-    // Open a collateral-only short — context allows tokens_to_borrow=0
-    // (EmptyBorrowRequest gate uses ||, not &&).
-    env.open_short(&shorter, &t, LAMPORTS_PER_SOL, 0)
-        .expect("open coll-only");
+    // V21 can't open a debt-0 short (handler floors at MIN_SHORT_TOKENS), and a
+    // full close removes the Position PDA — so the handler's `NoActiveShort`
+    // guard is unreachable as a custom error. Re-closing a closed position fails
+    // at account resolution with Anchor's AccountNotInitialized (the PDA is gone).
+    let (mut env, t, shorter) = migrated();
+    env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1).expect("open");
+    env.close_short(&shorter, &t, 0, 10_000, 0).expect("full close");
 
-    expect_err!(
-        env.close_short(&shorter, &t, 100),
-        TorchMarketError::NoActiveShort
+    expect_anchor_err!(
+        env.close_short(&shorter, &t, 0, 10_000, 0),
+        crate::harness::ANCHOR_ACCOUNT_NOT_INITIALIZED
     );
 }
 
@@ -255,34 +282,43 @@ fn close_short_no_active_short() {
 fn close_short_zero_amount() {
     let (mut env, t, _) = migrated();
     let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
-    env.open_short(&shorter, &t, LAMPORTS_PER_SOL, MIN_SHORT_TOKENS)
-        .expect("open");
+    env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1).expect("open");
+    // repay_fraction_bps = 0 is rejected by the context constraint.
     expect_err!(
-        env.close_short(&shorter, &t, 0),
+        env.close_short(&shorter, &t, 0, 0, 0),
         TorchMarketError::ZeroAmount
     );
 }
 
 #[test]
 fn close_short_via_vault_happy() {
-    // Vault owner uses one of the bonding buyers (first_buyer) as the linked
-    // signer so vault has access to extra tokens for the close-fee top-up.
-    let (mut env, t, first_buyer) = migrated();
-    let vault = env.create_vault(&first_buyer);
-    env.deposit_vault(&first_buyer, &vault, 2 * LAMPORTS_PER_SOL)
-        .expect("fund");
+    // Open + full-close a vault-owned short. Surplus P&L must return to the VAULT
+    // (vault_sol), NOT the linked wallet that signed the close — the signer only
+    // gets its own position rent back.
+    let (mut env, t, _liq) = migrated();
+    let owner = env.new_funded(5 * LAMPORTS_PER_SOL);
+    let vault = env.create_vault(&owner);
+    env.deposit_vault(&owner, &vault, 3 * LAMPORTS_PER_SOL)
+        .expect("deposit");
+    env.open_short_via_vault(&owner, &vault, &t, 0, LAMPORTS_PER_SOL, 1)
+        .expect("open");
 
-    // Move first_buyer's tokens into the vault ATA so close-side transfer has
-    // a balance to draw from. Use a tiny transfer via withdraw_tokens... actually
-    // simpler: just have the vault open a short and partially close.
-    env.open_short_via_vault(&first_buyer, &vault, &t, LAMPORTS_PER_SOL, MIN_SHORT_TOKENS)
-        .expect("open_short_via_vault");
+    let vault_sol_after_open = env.vault_sol(&vault);
 
-    env.close_short_via_vault(&first_buyer, &vault, &t, MIN_SHORT_TOKENS / 2)
+    env.close_short_via_vault(&owner, &vault, &t, 0, 10_000, 0)
         .expect("close_short_via_vault");
 
-    let pos = env.get_short(&t, &first_buyer.pubkey()).expect("pos");
-    assert_eq!(pos.tokens_borrowed, MIN_SHORT_TOKENS - MIN_SHORT_TOKENS / 2);
+    // Position is gone (vault-seeded).
+    assert!(
+        env.get_position(&t, &vault.vault, POSITION_SIDE_SHORT, 0)
+            .is_none(),
+        "position closed"
+    );
+    // Surplus (most of the collateral on an immediate close) returned to the vault.
+    assert!(
+        env.vault_sol(&vault) > vault_sol_after_open,
+        "surplus returned to vault_sol, not the signer wallet"
+    );
 }
 
 // ============================================================================
@@ -291,36 +327,46 @@ fn close_short_via_vault_happy() {
 
 #[test]
 fn liquidate_short_happy() {
-    // Open a near-max-LTV short. Pump pool_sol to push debt_value above
-    // liquidation_threshold (65%). Liquidator covers half the debt.
-    let (mut env, t, liquidator) = migrated(); // first_buyer has tokens
+    // Open a short, pump pool_sol so the token debt is worth more SOL (LTV
+    // breaches 65%), warm the TWAP AFTER the pump so both the spot and TWAP
+    // marks breach, then liquidate. Liquidator covers up to 50% of the debt.
+    let (mut env, t, liquidator) = migrated(); // first_buyer has tokens to cover
     let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
+    let cranker = env.new_funded(2 * LAMPORTS_PER_SOL);
+    env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1).expect("open");
+    let before = env
+        .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+        .expect("pos");
 
-    // 1 SOL collateral, 500k display tokens (5e11 raw) → LTV ≈ 33.4%
-    let borrow_amount = 500_000_000_000;
-    env.open_short(&shorter, &t, LAMPORTS_PER_SOL, borrow_amount)
-        .expect("open");
+    // TUNE: pump to cross the 65% liq threshold at the TWAP mark (≈3× spot →
+    // ~77% LTV for this short; the keeperless mark = the held/poked price).
+    env.poke_pool_sol(&t, 300 * LAMPORTS_PER_SOL);
+    env.warm_twap(&cranker, &t); // warms at the pumped price → twap_ltv breaches
 
-    // Double pool_sol → debt_value doubles to ~0.668 SOL → LTV ≈ 66.8% > 65%.
-    env.poke_pool_sol(&t, 200 * LAMPORTS_PER_SOL);
-
-    env.liquidate_short(&liquidator, shorter.pubkey(), &t)
+    env.liquidate_short(&liquidator, shorter.pubkey(), &t, 0)
         .expect("liquidate_short");
 
-    let pos = env.get_short(&t, &shorter.pubkey()).expect("pos");
-    assert!(pos.tokens_borrowed < borrow_amount, "debt reduced");
-    assert!(pos.sol_collateral < LAMPORTS_PER_SOL, "collateral seized");
+    let after = env
+        .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+        .expect("pos");
+    assert!(after.debt_amount < before.debt_amount, "debt reduced");
+    // Collateral is in the per-position SOL vault; seizure drains it.
+    let vault = short_vault_pda(&t, &shorter.pubkey(), 0);
+    let vault_lamports = env.svm.get_account(&vault).map(|a| a.lamports).unwrap_or(0);
+    assert!(vault_lamports < LAMPORTS_PER_SOL, "vault SOL seized");
 }
 
 #[test]
 fn liquidate_short_not_liquidatable() {
+    // Healthy short, TWAP warmed at the healthy price → trigger refuses.
     let (mut env, t, liquidator) = migrated();
     let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
-    env.open_short(&shorter, &t, LAMPORTS_PER_SOL, MIN_SHORT_TOKENS)
-        .expect("open"); // LTV 0.0668% — trivially healthy
+    let cranker = env.new_funded(2 * LAMPORTS_PER_SOL);
+    env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1).expect("open");
+    env.warm_twap(&cranker, &t); // warm at healthy price; LTV well below 65%
 
     expect_err!(
-        env.liquidate_short(&liquidator, shorter.pubkey(), &t),
+        env.liquidate_short(&liquidator, shorter.pubkey(), &t, 0),
         TorchMarketError::ShortNotLiquidatable
     );
 }
@@ -329,112 +375,194 @@ fn liquidate_short_not_liquidatable() {
 fn liquidate_short_partial_close_bps() {
     let (mut env, t, liquidator) = migrated();
     let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
-    let borrow_amount = 500_000_000_000;
-    env.open_short(&shorter, &t, LAMPORTS_PER_SOL, borrow_amount)
-        .expect("open");
-    let before = env.get_short(&t, &shorter.pubkey()).unwrap();
+    let cranker = env.new_funded(2 * LAMPORTS_PER_SOL);
+    env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1).expect("open");
+    let before = env
+        .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+        .unwrap();
 
-    env.poke_pool_sol(&t, 200 * LAMPORTS_PER_SOL);
-    env.liquidate_short(&liquidator, shorter.pubkey(), &t)
+    env.poke_pool_sol(&t, 300 * LAMPORTS_PER_SOL); // TUNE: ~77% LTV at the mark
+    env.warm_twap(&cranker, &t);
+    env.liquidate_short(&liquidator, shorter.pubkey(), &t, 0)
         .expect("liquidate");
 
-    let after = env.get_short(&t, &shorter.pubkey()).unwrap();
-    let tokens_covered = before.tokens_borrowed - after.tokens_borrowed;
-    // close_bps = 50%: at most half the debt covered per call.
-    assert!(tokens_covered <= before.tokens_borrowed / 2 + 1);
-    assert!(after.tokens_borrowed > 0, "still has debt after partial");
+    let after = env
+        .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+        .unwrap();
+    let covered = before.debt_amount - after.debt_amount;
+    // DEFAULT_LIQUIDATION_CLOSE_BPS = 50%: at most half the debt per call.
+    assert!(covered <= before.debt_amount / 2 + 1, "≤50% covered per call");
+    assert!(after.debt_amount > 0, "still has debt after partial");
 }
 
 #[test]
 fn liquidate_short_bad_debt() {
-    // Push pool_sol so high that the SOL value of the FULL debt-to-cover
-    // exceeds the entire collateral. Seizure caps at collateral_amount,
-    // bad_debt > 0 written off.
+    // Pump pool_sol so high the debt value far exceeds the vault collateral: the
+    // seize is vault-capped (insolvent), so the position is FULLY resolved in one
+    // liquidation — entire residual debt written off, position + vault closed,
+    // total_tokens_lent returns to truth. (Pre-fix this left an un-liquidatable tail.)
     let (mut env, t, liquidator) = migrated();
     let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
-    let borrow_amount = 500_000_000_000;
-    env.open_short(&shorter, &t, LAMPORTS_PER_SOL, borrow_amount)
-        .expect("open");
+    let cranker = env.new_funded(2 * LAMPORTS_PER_SOL);
+    env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1).expect("open");
+    let lent_before = env.get_treasury(&t).total_tokens_lent;
+    assert!(lent_before > 0);
 
-    // Pump pool_sol 10x → debt_value ~6.68 SOL, collateral 1 SOL.
-    // Half of 6.68 = 3.34 SOL with 10% bonus = 3.67 SOL seizure target. > 1 SOL collateral → bad debt.
+    // TUNE: large pump so target seize > vault → insolvent / bad debt path.
     env.poke_pool_sol(&t, 1000 * LAMPORTS_PER_SOL);
-    env.liquidate_short(&liquidator, shorter.pubkey(), &t)
+    env.warm_twap(&cranker, &t);
+    env.liquidate_short(&liquidator, shorter.pubkey(), &t, 0)
         .expect("liquidate");
 
-    let pos = env.get_short(&t, &shorter.pubkey()).unwrap();
-    assert_eq!(pos.sol_collateral, 0, "all collateral seized");
-    assert_eq!(pos.accrued_interest, 0, "interest written off");
+    // Position fully resolved: PDA closed (no stuck tail), vault drained + reaped.
+    assert!(
+        env.get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+            .is_none(),
+        "insolvent short fully liquidated + closed"
+    );
+    let vault = short_vault_pda(&t, &shorter.pubkey(), 0);
+    let vault_lamports = env.svm.get_account(&vault).map(|a| a.lamports).unwrap_or(0);
+    assert_eq!(vault_lamports, 0, "all vault SOL seized");
+    // Residual debt written off the global counter.
+    let tr = env.get_treasury(&t);
+    assert_eq!(tr.active_shorts, 0, "active_shorts decremented");
+    assert!(
+        tr.total_tokens_lent < lent_before,
+        "residual token debt written off the lent counter"
+    );
 }
 
 #[test]
-fn liquidate_short_proceeds_when_pool_thin() {
-    // Tier B fix: depth gate removed from liquidate_short. Position is still
-    // not liquidatable at this LTV (token price implied by thin pool keeps
-    // debt_value tiny relative to collateral), so we use ShortNotLiquidatable
-    // as the assertion instead — the point is no longer "blocked by depth."
+fn liquidate_short_warmup_fail_closed() {
+    // D-10: with NO warm TWAP (ring < 2 observations), the liquidation trigger
+    // has no hardened mark to read and MUST fail closed — even when the position
+    // is genuinely underwater at spot. This is the manipulation guard's core:
+    // an atomic spot pump can't manufacture a liquidation without a warm ring.
     let (mut env, t, liquidator) = migrated();
     let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
-    env.open_short(&shorter, &t, LAMPORTS_PER_SOL, MIN_SHORT_TOKENS)
-        .expect("open");
-    env.poke_pool_sol(&t, 4 * LAMPORTS_PER_SOL);
-    // Pool drain makes the token CHEAPER, which makes the short MORE healthy.
-    // The handler runs past the depth check (which we just removed) and reaches
-    // the LTV check, which says "not liquidatable." That's the correct outcome.
+    env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1).expect("open");
+
+    // Pump spot underwater but DO NOT warm the ring.
+    env.poke_pool_sol(&t, 200 * LAMPORTS_PER_SOL);
+
     expect_err!(
-        env.liquidate_short(&liquidator, shorter.pubkey(), &t),
+        env.liquidate_short(&liquidator, shorter.pubkey(), &t, 0),
         TorchMarketError::ShortNotLiquidatable
     );
 }
 
 #[test]
-fn liquidate_short_via_vault_happy() {
-    let (mut env, t, first_buyer) = migrated(); // first_buyer is the liquidator (has tokens)
+fn liquidate_short_spot_veto_when_recovered() {
+    // Asymmetric spot veto (MEDIUM-2 fix): IDENTICAL setup to liquidate_short_happy
+    // (warm the TWAP at the pumped price → twap_ltv breaches), but then spot RECOVERS
+    // to clearly healthy before the liquidation. The spot veto must refuse — a
+    // genuinely-recovered borrower isn't liquidated on the stale-high TWAP. The only
+    // difference vs the happy test is the recovery poke, so the refusal is the spot
+    // gate (the TWAP mark is unchanged: liquidate runs in the same slot, the
+    // current-spot extrapolation over the ~0 gap is negligible).
+    let (mut env, t, liquidator) = migrated();
     let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
-    let borrow_amount = 500_000_000_000;
-    env.open_short(&shorter, &t, LAMPORTS_PER_SOL, borrow_amount)
+    let cranker = env.new_funded(2 * LAMPORTS_PER_SOL);
+    env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1).expect("open");
+
+    env.poke_pool_sol(&t, 300 * LAMPORTS_PER_SOL); // underwater at the mark
+    env.warm_twap(&cranker, &t); // TWAP marks the pumped price (twap_ltv > 65%)
+    env.poke_pool_sol(&t, 50 * LAMPORTS_PER_SOL); // spot recovers CLEARLY healthy (< floor)
+
+    expect_err!(
+        env.liquidate_short(&liquidator, shorter.pubkey(), &t, 0),
+        TorchMarketError::ShortNotLiquidatable
+    );
+}
+
+#[test]
+fn liquidate_short_proceeds_when_spot_in_gray_zone() {
+    // Dodge-resistance (MEDIUM-2 fix): TWAP breaches, and spot is only MILDLY healthy
+    // (in the gray zone between the veto floor and the liq threshold — i.e. spot was
+    // nudged just under the threshold, as a dodging borrower would). The asymmetric
+    // veto requires spot to be CLEARLY healthy (< floor) to refuse, so the
+    // liquidation PROCEEDS. (Pre-fix, `spot_ltv > threshold` would have refused here,
+    // which is exactly the cheap atomic dodge we closed.)
+    let (mut env, t, liquidator) = migrated();
+    let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
+    let cranker = env.new_funded(2 * LAMPORTS_PER_SOL);
+    env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1).expect("open");
+    let before = env
+        .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+        .expect("pos");
+
+    env.poke_pool_sol(&t, 300 * LAMPORTS_PER_SOL); // underwater at the mark
+    env.warm_twap(&cranker, &t); // TWAP marks the pumped price
+    // Spot nudged into the gray zone (veto-floor 5500 < ltv < threshold 6500). The
+    // [V21] depth curve opens this floor-depth (~100 SOL) pool's short at 30% LTV
+    // (LTV_MIN), so the gray band lands at ~260 SOL of poked spot (≈5990 bps), not
+    // the old ladder's 35%-LTV calibration. See docs/depth-scaled-risk-rails.md.
+    env.poke_pool_sol(&t, 260 * LAMPORTS_PER_SOL);
+
+    env.liquidate_short(&liquidator, shorter.pubkey(), &t, 0)
+        .expect("liquidates despite gray-zone spot (no clear-recovery veto)");
+    let after = env
+        .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+        .expect("pos");
+    assert!(after.debt_amount < before.debt_amount, "debt reduced");
+}
+
+#[test]
+fn liquidate_short_via_vault_happy() {
+    // Open a VAULT-OWNED short, pump pool_sol so the token debt breaches the 65%
+    // LTV at the TWAP mark, then liquidate as an EXTERNAL actor (no link). Seized
+    // SOL → liquidator; the position's vault SOL is drained by the seizure.
+    let (mut env, t, liquidator) = migrated();
+    let owner = env.new_funded(5 * LAMPORTS_PER_SOL);
+    let cranker = env.new_funded(2 * LAMPORTS_PER_SOL);
+    let vault = env.create_vault(&owner);
+    env.deposit_vault(&owner, &vault, 3 * LAMPORTS_PER_SOL)
+        .expect("deposit");
+    env.open_short_via_vault(&owner, &vault, &t, 0, LAMPORTS_PER_SOL, 1)
         .expect("open");
+    let before = env
+        .get_position(&t, &vault.vault, POSITION_SIDE_SHORT, 0)
+        .expect("pos");
 
-    let vault = env.create_vault(&first_buyer);
-    env.deposit_vault(&first_buyer, &vault, LAMPORTS_PER_SOL)
-        .expect("fund");
-    // Vault needs tokens to cover the short debt. Move some from first_buyer to vault.
-    // The simplest path: first_buyer sends tokens to vault ATA directly via the
-    // Token-2022 program. We piggy-back on the auto-ATA-creation in the vault helpers
-    // and just use a small short to keep numbers tractable.
-    env.poke_pool_sol(&t, 200 * LAMPORTS_PER_SOL);
+    // TUNE: pump to cross the 65% liq threshold at the TWAP mark (mirror of the
+    // wallet-custodied liquidate_short_happy tuning).
+    env.poke_pool_sol(&t, 300 * LAMPORTS_PER_SOL);
+    env.warm_twap(&cranker, &t);
 
-    // first_buyer (vault authority) signs the liquidation. The vault's ATA gets
-    // auto-created. The vault's token balance is 0, so the transfer of tokens
-    // from vault to treasury_lock will fail with insufficient funds — UNLESS
-    // we first stage tokens in the vault.
-    //
-    // To stage: first_buyer transfers some of their 16M tokens to vault ATA.
-    use solana_sdk::instruction::{AccountMeta, Instruction};
-    use torch_market::token_2022_utils::get_associated_token_address_2022;
-    env.ensure_token2022_ata(&first_buyer, &vault.vault, &t.mint)
-        .expect("create vault ATA");
-    let vault_ata = get_associated_token_address_2022(&vault.vault, &t.mint);
-    let fb_ata = get_associated_token_address_2022(&first_buyer.pubkey(), &t.mint);
-    let mut data = vec![12u8]; // TransferChecked discriminator
-    data.extend_from_slice(&500_000_000_000u64.to_le_bytes());
-    data.push(TOKEN_DECIMALS);
-    let transfer_ix = Instruction {
-        program_id: TOKEN_2022_PROGRAM_ID,
-        accounts: vec![
-            AccountMeta::new(fb_ata, false),
-            AccountMeta::new_readonly(t.mint, false),
-            AccountMeta::new(vault_ata, false),
-            AccountMeta::new_readonly(first_buyer.pubkey(), true),
-        ],
-        data,
-    };
-    env.send(&[transfer_ix], &[&first_buyer])
-        .expect("stage tokens in vault");
-
-    env.liquidate_short_via_vault(&first_buyer, &vault, shorter.pubkey(), &t)
+    let liq_before = env.svm.get_account(&liquidator.pubkey()).unwrap().lamports;
+    env.liquidate_short_via_vault(&liquidator, &vault, &t, 0)
         .expect("liquidate_short_via_vault");
 
-    let v = env.get_torch_vault(&vault.vault);
-    assert!(v.total_received > 0, "vault received seized SOL");
+    let after = env
+        .get_position(&t, &vault.vault, POSITION_SIDE_SHORT, 0)
+        .expect("pos");
+    assert!(after.debt_amount < before.debt_amount, "debt reduced");
+    // Seizure drains the per-position vault SOL (keyed by the vault).
+    let pos_vault = short_vault_pda(&t, &vault.vault, 0);
+    let pos_vault_lamports = env.svm.get_account(&pos_vault).map(|a| a.lamports).unwrap_or(0);
+    assert!(pos_vault_lamports < LAMPORTS_PER_SOL, "position vault SOL seized");
+    // Seized SOL paid out to the external liquidator (net of tx fee it covered).
+    let liq_after = env.svm.get_account(&liquidator.pubkey()).unwrap().lamports;
+    assert!(liq_after > liq_before, "liquidator received seized SOL");
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+fn short_vault_pda(
+    t: &TokenCtx,
+    user: &solana_sdk::pubkey::Pubkey,
+    index: u32,
+) -> solana_sdk::pubkey::Pubkey {
+    solana_sdk::pubkey::Pubkey::find_program_address(
+        &[
+            SHORT_VAULT_SEED,
+            user.as_ref(),
+            t.mint.as_ref(),
+            &index.to_le_bytes(),
+        ],
+        &torch_market::ID,
+    )
+    .0
 }

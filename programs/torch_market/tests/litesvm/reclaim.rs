@@ -26,7 +26,7 @@ fn happy_path() {
     env.buy(&buyer, &t, 100_000_000, 0).expect("seed buy");
 
     let curve_sol_before = env.get_bonding_curve(&t).real_sol_reserves;
-    let treasury_sol_before = env.get_treasury(&t).sol_balance;
+    let treasury_sol_before = env.treasury_sol(&t);
     let pt_before = env.get_protocol_treasury().total_fees_received;
     let expected = curve_sol_before + treasury_sol_before;
 
@@ -37,7 +37,7 @@ fn happy_path() {
     let bc = env.get_bonding_curve(&t);
     assert!(bc.reclaimed);
     assert_eq!(bc.real_sol_reserves, 0);
-    assert_eq!(env.get_treasury(&t).sol_balance, 0);
+    assert_eq!(env.treasury_sol(&t), 0);
     let pt_after = env.get_protocol_treasury().total_fees_received;
     assert_eq!(pt_after - pt_before, expected);
 }

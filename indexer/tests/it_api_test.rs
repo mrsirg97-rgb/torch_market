@@ -294,17 +294,17 @@ async fn list_trades_filters_by_mint() {
     assert_eq!(arr[0]["is_buy"].as_bool().unwrap(), true);
 }
 
-// ─── /api/shorts ─────────────────────────────────────────────────────────
+// ─── /api/positions (V21) ────────────────────────────────────────────────
 
 #[tokio::test]
-async fn list_shorts_returns_seeded_position() {
+async fn list_positions_returns_seeded_short() {
     let db = TestDb::new().await;
     write_events_no_checkpoint(
         &db.pool,
         100,
         vec![
             de(ev_market_created(1, 2), 100, 0),
-            de(ev_short_opened(1, 5, 999_300_000), 100, 1),
+            de(ev_open_short(1, 5, 999_300_000), 100, 1),
         ],
     )
     .await
@@ -314,7 +314,7 @@ async fn list_shorts_returns_seeded_position() {
     let resp = app
         .oneshot(
             Request::builder()
-                .uri(format!("/api/shorts?mint={}", pk58(1)))
+                .uri(format!("/api/positions?mint={}&side=short", pk58(1)))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -324,9 +324,52 @@ async fn list_shorts_returns_seeded_position() {
     let arr = body_json(resp).await;
     let arr = arr.as_array().unwrap();
     assert_eq!(arr.len(), 1);
-    assert_eq!(arr[0]["shorter"].as_str().unwrap(), pk58(5));
-    // i64 in PG → JSON number; net amount preserved.
-    assert_eq!(arr[0]["tokens_borrowed"].as_i64().unwrap(), 999_300_000);
+    assert_eq!(arr[0]["owner"].as_str().unwrap(), pk58(5));
+    assert_eq!(arr[0]["side"].as_str().unwrap(), "short");
+    // short debt = net tokens borrowed; i64 in PG → JSON number.
+    assert_eq!(arr[0]["debt_amount"].as_i64().unwrap(), 999_300_000);
+}
+
+// ─── /api/liquidations (V21 event log) ───────────────────────────────────
+
+#[tokio::test]
+async fn list_liquidations_returns_liquidation_analytics() {
+    let db = TestDb::new().await;
+    write_events_no_checkpoint(
+        &db.pool,
+        100,
+        vec![
+            de(ev_market_created(1, 2), 100, 0),
+            de(ev_open_short(1, 5, 999_300_000), 100, 1),
+        ],
+    )
+    .await
+    .unwrap();
+    write_events_no_checkpoint(
+        &db.pool,
+        200,
+        vec![de(ev_liquidate_short(1, 9, 5, 999_300_000, true), 200, 0)],
+    )
+    .await
+    .unwrap();
+
+    let app = build_app(&db).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/liquidations?mint={}", pk58(1)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let arr = body_json(resp).await;
+    let arr = arr.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["kind"].as_str().unwrap(), "liquidate");
+    assert_eq!(arr[0]["liquidator"].as_str().unwrap(), pk58(9));
+    assert_eq!(arr[0]["twap_ltv"].as_i64().unwrap(), 9200);
 }
 
 // ─── /api/candles ────────────────────────────────────────────────────────

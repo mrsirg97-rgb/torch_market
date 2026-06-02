@@ -5,7 +5,14 @@
  * works for both bonding curve tokens and migrated (DeepPool DEX) tokens.
  */
 import { Connection, PublicKey } from '@solana/web3.js'
-import { calculateTokensOut, calculateSolOut, calculatePrice, getDeepPoolAccounts } from './program'
+import {
+  calculateTokensOut,
+  calculateSolOut,
+  calculatePrice,
+  getDeepPoolAccounts,
+  getDepthMaxLtvBps,
+  maxDebtValueForDepth,
+} from './program'
 import { LAMPORTS_PER_SOL, TOKEN_MULTIPLIER, TOTAL_SUPPLY } from './constants'
 import { fetchTokenRaw, getToken, getLendingInfo } from './tokens'
 import { BuyQuoteResult, SellQuoteResult, BorrowQuoteResult } from './types'
@@ -30,6 +37,28 @@ const fetchPoolReserves = async (
   const solReserves = BigInt(poolInfo.lamports) - BigInt(rentExempt)
   const tokenReserves = BigInt(vaultBalance.value.amount)
   return { solReserves, tokenReserves }
+}
+
+// Inverse CPMM buy quote: minimum SOL (lamports) to receive at least `tokensOut`
+// tokens GROSS out of the pool (before the Token-2022 transfer fee on the
+// pool→recipient leg). Ceil-rounded so the result never under-delivers.
+//   effectiveIn = tokensOut * solReserves / (tokenReserves - tokensOut)   [ceil]
+//   solIn       = effectiveIn * 10000 / (10000 - poolFee)                 [ceil]
+// Used to size the cover-token buy in a one-click short liquidation.
+export const quoteSolInForTokensOut = async (
+  connection: Connection,
+  mintStr: string,
+  tokensOut: number,
+): Promise<number> => {
+  const mint = new PublicKey(mintStr)
+  const { solReserves, tokenReserves } = await fetchPoolReserves(connection, mint)
+  const out = BigInt(Math.ceil(tokensOut))
+  if (out <= 0n) return 0
+  if (out >= tokenReserves) throw new Error('tokensOut exceeds pool depth')
+  const effectiveIn = (solReserves * out + (tokenReserves - out) - 1n) / (tokenReserves - out)
+  const feeDenom = BigInt(10000 - DEEP_POOL_FEE_BPS)
+  const amountIn = (effectiveIn * 10000n + feeDenom - 1n) / feeDenom
+  return Number(amountIn)
 }
 
 // CPMM swap calculation: constant product with fee.
@@ -172,61 +201,55 @@ export const getSellQuote = async (
   }
 }
 
-// get a borrow quote: maximum borrowable SOL for a given collateral amount on a migrated token.
-// collateralAmount in token base units (with 6 decimals).
+// [V21] Open-long quote: the maximum SOL borrowable against a given token
+// collateral amount on a migrated token. Maps to `open_long` (borrow SOL vs
+// token collateral). collateralAmount is in token base units (6 decimals).
 //
-// v20: applies the new lending-unlock gate (returns max_borrow_sol = 0 when
-// treasury below threshold) AND the new 20% per-user absolute cap.
-//
-// `lendingUnlockThresholdLamports` defaults to mainnet 100 SOL; frontend
-// passes the right value per network (simnet 0, devnet 1 SOL).
+// V21 dropped the per-user formula cap and the lending-unlock gate; the on-chain
+// clamp is LTV-bound × treasury lendable headroom (vault × utilization_cap −
+// already lent to longs). The result is an estimate — the program re-clamps.
 export const getBorrowQuote = async (
   connection: Connection,
   mintStr: string,
   collateralAmount: number,
-  lendingUnlockThresholdLamports?: number,
 ): Promise<BorrowQuoteResult> => {
   const TRANSFER_FEE_BPS = 7
-  const [lending, detail] = await Promise.all([
-    getLendingInfo(connection, mintStr, lendingUnlockThresholdLamports),
+  const mint = new PublicKey(mintStr)
+  const [lending, detail, pool] = await Promise.all([
+    getLendingInfo(connection, mintStr),
     getToken(connection, mintStr),
+    fetchPoolReserves(connection, mint),
   ])
   const pricePerToken = detail.price_sol
-  const collateralDisplayTokens = collateralAmount / TOKEN_MULTIPLIER
-  const collateralValueSol = collateralDisplayTokens * pricePerToken * LAMPORTS_PER_SOL
-  // 1. LTV cap
-  const ltvMaxSol = collateralValueSol * (lending.max_ltv_bps / 10000)
-  // 2. pool available
-  const treasurySol = detail.treasury_sol_balance * LAMPORTS_PER_SOL
-  const maxLendableSol = (treasurySol * lending.utilization_cap_bps) / 10000
-  const totalLent = lending.total_sol_lent ?? 0
-  const poolAvailableSol = Math.max(0, maxLendableSol - totalLent)
-  // 3a. per-user formula cap (accounts for transfer fee reducing net collateral)
+  const poolSol = Number(pool.solReserves) // live pool SOL depth (lamports)
+  // Token-2022 transfer fee reduces the net collateral that actually lands.
   const netCollateral = collateralAmount * (1 - TRANSFER_FEE_BPS / 10000)
-  const borrowMultiplier = lending.borrow_share_multiplier || 5
-  const perUserCapSol = (maxLendableSol * netCollateral * borrowMultiplier) / Number(TOTAL_SUPPLY)
-  // 3b. per-user absolute ceiling (v20: max_lendable × 20%)
-  const perUserAbsoluteCapSol =
-    (maxLendableSol * lending.max_user_borrow_share_bps) / 10000
+  const collateralDisplayTokens = netCollateral / TOKEN_MULTIPLIER
+  const collateralValueSol = collateralDisplayTokens * pricePerToken * LAMPORTS_PER_SOL
+  // 1. LTV-bound cap. [V21] Effective LTV is the depth CURVE, not the flat ceiling —
+  //    min(get_depth_max_ltv_bps(pool_sol), treasury.max_ltv_bps).
+  const effectiveMaxLtvBps = Math.min(getDepthMaxLtvBps(poolSol), lending.max_ltv_bps)
+  const ltvMaxSol = collateralValueSol * (effectiveMaxLtvBps / 10000)
+  // 2. Treasury lendable headroom.
+  const maxLendableSol = (lending.treasury_sol_vault_lamports * lending.utilization_cap_bps) / 10000
+  const poolAvailableSol = Math.max(0, maxLendableSol - lending.total_sol_lent_to_longs)
+  // 3. [V21] Rail-2 size cap: debt value ≤ ρ_max of pool SOL.
+  const sizeCapSol = maxDebtValueForDepth(poolSol)
 
-  // v20 gate: lending refuses if treasury below threshold. Return all bounds
-  // computed but max_borrow forced to 0 with `lending_unlocked: false`.
-  const allBoundsMax = Math.max(
-    0,
-    Math.min(ltvMaxSol, poolAvailableSol, perUserCapSol, perUserAbsoluteCapSol),
-  )
-  const maxBorrowSol = lending.lending_unlocked ? allBoundsMax : 0
+  // Lending is also gated on a minimum pool depth (the curve returns 0 below the
+  // 100-SOL floor → no leverage), captured by effectiveMaxLtvBps === 0.
+  const maxBorrowSol = lending.lending_enabled && effectiveMaxLtvBps > 0
+    ? Math.max(0, Math.min(ltvMaxSol, poolAvailableSol, sizeCapSol))
+    : 0
 
   return {
     max_borrow_sol: Math.floor(maxBorrowSol),
     collateral_value_sol: Math.floor(collateralValueSol),
     ltv_max_sol: Math.floor(ltvMaxSol),
     pool_available_sol: Math.floor(poolAvailableSol),
-    per_user_cap_sol: Math.floor(perUserCapSol),
-    per_user_absolute_cap_sol: Math.floor(perUserAbsoluteCapSol),
-    lending_unlocked: lending.lending_unlocked,
-    lending_unlock_threshold_sol: lending.lending_unlock_threshold_lamports,
+    size_cap_sol: Math.floor(sizeCapSol),
     interest_rate_bps: lending.interest_rate_bps,
+    max_ltv_bps: effectiveMaxLtvBps,
     liquidation_threshold_bps: lending.liquidation_threshold_bps,
   }
 }

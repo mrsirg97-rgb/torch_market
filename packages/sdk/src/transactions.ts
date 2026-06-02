@@ -27,25 +27,26 @@ import {
   getTransferFeeAmount,
 } from '@solana/spl-token'
 import { BN, Program, AnchorProvider, Wallet } from '@coral-xyz/anchor'
-import { buildSwapTransaction as buildDeepPoolSwapTransaction } from 'deeppoolsdk'
+import { buildSwapInstructions as buildDeepPoolSwapInstructions } from 'deeppoolsdk'
 import {
   getBondingCurvePda,
+  getBondingCurveSolPda,
   getTokenTreasuryPda,
+  getTreasurySolVaultPda,
   getTreasuryTokenAccount,
   getUserPositionPda,
   getUserStatsPda,
   getGlobalConfigPda,
   getProtocolTreasuryPda,
-  getStarRecordPda,
-  getLoanPositionPda,
-  getCollateralVaultPda,
   getTorchVaultPda,
   getVaultSolPda,
   getVaultWalletLinkPda,
   getTreasuryLockPda,
   getTreasuryLockTokenAccount,
-  getShortPositionPda,
-  getShortConfigPda,
+  getPositionPda,
+  getShortVaultPda,
+  getLongSolVaultPda,
+  getPositionTokenVault,
   getDeepPoolAccounts,
   getTorchConfigPda,
   calculateTokensOut,
@@ -53,22 +54,21 @@ import {
   GlobalConfig,
 } from './program'
 import { MEMO_PROGRAM_ID, DEEP_POOL_PROGRAM_ID } from './constants'
-import { fetchTokenRaw } from './tokens'
-import { getBuyQuote, getSellQuote } from './quotes'
+import { fetchTokenRaw, getPosition, grossUpForTransferFee } from './tokens'
+import { getBuyQuote, getSellQuote, quoteSolInForTokensOut } from './quotes'
 import {
   BuyParams,
   DirectBuyParams,
   SellParams,
   BuyQuoteResult,
   CreateTokenParams,
-  StarParams,
   MigrateParams,
-  BorrowParams,
-  RepayParams,
-  LiquidateParams,
   OpenShortParams,
   CloseShortParams,
   LiquidateShortParams,
+  OpenLongParams,
+  CloseLongParams,
+  LiquidateLongParams,
   ClaimProtocolRewardsParams,
   VaultSwapParams,
   HarvestFeesParams,
@@ -157,6 +157,49 @@ const addMemoIx = (
 /**
  * Compile instructions into a VersionedTransaction (v0 message).
  */
+// ── Priority fees ────────────────────────────────────────────────────────
+//
+// Global compute-unit price (priority fee) in micro-lamports per CU, applied to
+// every transaction this SDK builds. 0 = none (default — backwards compatible).
+// The on-chain priority fee paid = price × compute_units, so it composes with
+// the per-builder setComputeUnitLimit values. Set once at startup:
+//   setPriorityFeeMicroLamports(50_000)   // 50k µ-lamports/CU
+// or estimate from recent network conditions with estimatePriorityFee().
+let priorityFeeMicroLamports = 0
+
+/** Set the global priority fee (compute-unit price) in micro-lamports per CU. */
+export const setPriorityFeeMicroLamports = (microLamports: number): void => {
+  priorityFeeMicroLamports = Math.max(0, Math.floor(microLamports))
+}
+
+/** Current global priority fee (micro-lamports per CU). */
+export const getPriorityFeeMicroLamports = (): number => priorityFeeMicroLamports
+
+/**
+ * Estimate a priority fee from recent on-chain prioritization fees. Returns a
+ * micro-lamports/CU value at the given percentile of the recent window
+ * (default p75), floored to `min`. Does NOT mutate the global — pass the result
+ * to `setPriorityFeeMicroLamports` (or use per-call) as you see fit.
+ */
+export const estimatePriorityFee = async (
+  connection: Connection,
+  opts: { percentile?: number; min?: number } = {},
+): Promise<number> => {
+  const { percentile = 75, min = 0 } = opts
+  try {
+    const recent = await connection.getRecentPrioritizationFees()
+    const fees = recent
+      .map((r) => r.prioritizationFee)
+      .filter((f) => f > 0)
+      .sort((a, b) => a - b)
+    if (fees.length === 0) return min
+    const idx = Math.min(fees.length - 1, Math.floor((percentile / 100) * fees.length))
+    return Math.max(min, fees[idx])
+  } catch {
+    return min
+  }
+}
+
 const finalizeTransaction = async (
   connection: Connection,
   tx: Transaction,
@@ -164,10 +207,24 @@ const finalizeTransaction = async (
 ): Promise<VersionedTransaction> => {
   const { blockhash } = await connection.getLatestBlockhash()
 
+  // Prepend the priority fee (compute-unit price) when configured. ComputeBudget
+  // instructions are order-independent, but conventionally lead the tx.
+  const hasPrice = tx.instructions.some(
+    (ix) =>
+      ix.programId.equals(ComputeBudgetProgram.programId) && (ix.data?.[0] ?? -1) === 3, // SetComputeUnitPrice
+  )
+  const instructions =
+    priorityFeeMicroLamports > 0 && !hasPrice
+      ? [
+          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFeeMicroLamports }),
+          ...tx.instructions,
+        ]
+      : tx.instructions
+
   const message = new TransactionMessage({
     payerKey: feePayer,
     recentBlockhash: blockhash,
-    instructions: tx.instructions,
+    instructions,
   }).compileToV0Message()
 
   return new VersionedTransaction(message)
@@ -187,7 +244,9 @@ const buildDirectDexSwapTransaction = async (
 ): Promise<TransactionResult> => {
   const [torchConfigPda] = getTorchConfigPda()
 
-  const { transaction: legacyTx } = await buildDeepPoolSwapTransaction(connection, {
+  // [V8] deep_pool returns instructions; torch composes (memo + priority fee)
+  // and finalizes its own v0 tx via finalizeTransaction.
+  const swapInstructions = await buildDeepPoolSwapInstructions(connection, {
     user: userStr,
     config: torchConfigPda.toString(),
     tokenMint: mintStr,
@@ -197,8 +256,9 @@ const buildDirectDexSwapTransaction = async (
   })
 
   const user = new PublicKey(userStr)
-  addMemoIx(legacyTx, user, message, 280)
-  const versionedTx = await finalizeTransaction(connection, legacyTx, user)
+  const tx = new Transaction().add(...swapInstructions)
+  addMemoIx(tx, user, message, 280)
+  const versionedTx = await finalizeTransaction(connection, tx, user)
 
   const direction = isBuy ? 'Buy' : 'Sell'
   const amountLabel = isBuy ? `${amountIn / 1e9} SOL` : `${amountIn / 1e6} tokens`
@@ -357,8 +417,11 @@ const buildBuyTransactionInternal = async (
     creator: bondingCurve.creator,
     mint,
     bondingCurve: bondingCurvePda,
+    // [V21] curve SOL custodied in the System-owned bonding_curve_sol vault.
+    bondingCurveSol: getBondingCurveSolPda(mint)[0],
     tokenVault: bondingCurveTokenAccount,
     tokenTreasury: treasuryPda,
+    treasurySolVault: getTreasurySolVaultPda(mint)[0],
     treasuryTokenAccount,
     buyerTokenAccount,
     userPosition: userPositionPda,
@@ -667,10 +730,13 @@ export const buildSellTransaction = async (
     seller,
     mint,
     bondingCurve: bondingCurvePda,
+    // [V21] curve SOL custodied in the System-owned bonding_curve_sol vault.
+    bondingCurveSol: getBondingCurveSolPda(mint)[0],
     tokenVault: bondingCurveTokenAccount,
     sellerTokenAccount,
     userPosition: userPositionAccount as PublicKey,
     tokenTreasury: treasuryPda,
+    treasurySolVault: getTreasurySolVaultPda(mint)[0],
     userStats: userStatsAccount as PublicKey,
     tokenProgram: TOKEN_2022_PROGRAM_ID,
     systemProgram: SystemProgram.programId,
@@ -761,6 +827,10 @@ export const buildCreateTokenTransaction = async (
   const treasuryLockTokenAccount = getTreasuryLockTokenAccount(mint.publicKey, treasuryLock)
 
   const tx = new Transaction()
+  // create_token is heavy (mint + metadata + bonding curve + treasury +
+  // treasury_sol_vault + treasury_lock + ATAs) and can exceed the default
+  // 200k CU limit — raise it so creation doesn't intermittently fail.
+  tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }))
 
   const provider = makeDummyProvider(connection, creator)
   const program = new Program(idl as unknown, provider)
@@ -830,91 +900,6 @@ export const sendCreateToken = async (
   const { signature } = await wallet.signAndSendTransaction(transaction)
   return { signature, mint }
 }
-
-// ============================================================================
-// Star
-// ============================================================================
-
-/**
- * Build an unsigned star transaction (costs 0.05 SOL).
- *
- * @param connection - Solana RPC connection
- * @param params - Star parameters (mint, user)
- * @returns Unsigned transaction and descriptive message
- */
-export const buildStarTransaction = async (
-  connection: Connection,
-  params: StarParams,
-): Promise<TransactionResult> => {
-  const { mint: mintStr, user: userStr, vault: vaultCreatorStr } = params
-
-  const mint = new PublicKey(mintStr)
-  const user = new PublicKey(userStr)
-
-  const tokenData = await fetchTokenRaw(connection, mint)
-  if (!tokenData) throw new Error(`Token not found: ${mintStr}`)
-
-  const { bondingCurve } = tokenData
-
-  if (user.equals(bondingCurve.creator)) {
-    throw new Error('Cannot star your own token')
-  }
-
-  // Check if already starred
-  const [starRecordPda] = getStarRecordPda(user, mint)
-  const starRecord = await connection.getAccountInfo(starRecordPda)
-  if (starRecord) throw new Error('Already starred this token')
-
-  // Derive PDAs
-  const [bondingCurvePda] = getBondingCurvePda(mint)
-  const [treasuryPda] = getTokenTreasuryPda(mint)
-
-  // Vault accounts (optional — vault pays star cost)
-  const { torchVault: torchVaultAccount, walletLink: vaultWalletLinkAccount } = deriveVaultAccounts(
-    vaultCreatorStr,
-    user,
-  )
-
-  const tx = new Transaction()
-
-  const provider = makeDummyProvider(connection, user)
-  const program = new Program(idl as unknown, provider)
-
-  const starBaseAccounts = {
-    user,
-    mint,
-    bondingCurve: bondingCurvePda,
-    tokenTreasury: treasuryPda,
-    creator: bondingCurve.creator,
-    starRecord: starRecordPda,
-    systemProgram: SystemProgram.programId,
-  }
-
-  const starIx =
-    torchVaultAccount && vaultWalletLinkAccount
-      ? await program.methods
-          .starTokenViaVault()
-          .accounts({
-            ...starBaseAccounts,
-            torchVault: torchVaultAccount,
-            vaultWalletLink: vaultWalletLinkAccount,
-          })
-          .instruction()
-      : await program.methods.starToken().accounts(starBaseAccounts).instruction()
-
-  tx.add(starIx)
-  const versionedTx = await finalizeTransaction(connection, tx, user)
-
-  const vaultLabel = vaultCreatorStr ? ' (via vault)' : ''
-  return {
-    transaction: versionedTx,
-    message: `Star token (costs 0.05 SOL)${vaultLabel}`,
-  }
-}
-
-// ============================================================================
-// Message
-// ============================================================================
 
 // ============================================================================
 // Vault (V2.0)
@@ -1159,333 +1144,6 @@ export const buildTransferAuthorityTransaction = async (
 }
 
 // ============================================================================
-// Borrow (V2.4)
-// ============================================================================
-
-/**
- * Build an unsigned borrow transaction.
- *
- * Lock tokens as collateral in the collateral vault and receive SOL from treasury.
- * Token must be migrated (has DeepPool for price calculation).
- *
- * @param connection - Solana RPC connection
- * @param params - Borrow parameters (mint, borrower, collateral_amount, sol_to_borrow)
- * @returns Unsigned transaction and descriptive message
- */
-export const buildBorrowTransaction = async (
-  connection: Connection,
-  params: BorrowParams,
-): Promise<TransactionResult> => {
-  const {
-    mint: mintStr,
-    borrower: borrowerStr,
-    collateral_amount,
-    sol_to_borrow,
-    vault: vaultCreatorStr,
-  } = params
-
-  const mint = new PublicKey(mintStr)
-  const borrower = new PublicKey(borrowerStr)
-
-  // Derive PDAs
-  const [bondingCurvePda] = getBondingCurvePda(mint)
-  const [treasuryPda] = getTokenTreasuryPda(mint)
-  const [collateralVaultPda] = getCollateralVaultPda(mint)
-  const [loanPositionPda] = getLoanPositionPda(mint, borrower)
-
-  const borrowerTokenAccount = getAssociatedTokenAddressSync(
-    mint,
-    borrower,
-    false,
-    TOKEN_2022_PROGRAM_ID,
-  )
-
-  // DeepPool accounts for price calculation
-  const deepPool = getDeepPoolAccounts(mint)
-
-  // Vault accounts (optional — collateral from vault ATA, SOL to vault)
-  const { torchVault: torchVaultAccount, walletLink: vaultWalletLinkAccount } = deriveVaultAccounts(
-    vaultCreatorStr,
-    borrower,
-  )
-  const vaultTokenAccount = torchVaultAccount ? getVaultTokenAta(mint, torchVaultAccount) : null
-
-  const tx = new Transaction()
-
-  // borrower_token_account is mut + non-optional in the borrow instruction,
-  // so the on-chain handler requires it to exist even in vault mode (collateral
-  // flows vault → borrower ATA → collateral_vault).
-  tx.add(
-    createAssociatedTokenAccountIdempotentInstruction(
-      borrower,
-      borrowerTokenAccount,
-      borrower,
-      mint,
-      TOKEN_2022_PROGRAM_ID,
-      ASSOCIATED_TOKEN_PROGRAM_ID,
-    ),
-  )
-
-  if (torchVaultAccount) {
-    tx.add(createVaultTokenAtaIx(borrower, mint, torchVaultAccount))
-  }
-
-  const provider = makeDummyProvider(connection, borrower)
-  const program = new Program(idl as unknown, provider)
-
-  const borrowArgs = {
-    collateralAmount: new BN(collateral_amount.toString()),
-    solToBorrow: new BN(sol_to_borrow.toString()),
-  }
-  const borrowBaseAccounts = {
-    borrower,
-    mint,
-    bondingCurve: bondingCurvePda,
-    treasury: treasuryPda,
-    collateralVault: collateralVaultPda,
-    borrowerTokenAccount,
-    loanPosition: loanPositionPda,
-    deepPool: deepPool.pool,
-    deepPoolTokenVault: deepPool.tokenVault,
-    tokenProgram: TOKEN_2022_PROGRAM_ID,
-    systemProgram: SystemProgram.programId,
-  }
-
-  const borrowIx =
-    torchVaultAccount && vaultWalletLinkAccount && vaultTokenAccount
-      ? await program.methods
-          .borrowViaVault(borrowArgs)
-          .accounts({
-            ...borrowBaseAccounts,
-            torchVault: torchVaultAccount,
-            vaultWalletLink: vaultWalletLinkAccount,
-            vaultTokenAccount,
-          })
-          .instruction()
-      : await program.methods.borrow(borrowArgs).accounts(borrowBaseAccounts).instruction()
-
-  tx.add(borrowIx)
-  const versionedTx = await finalizeTransaction(connection, tx, borrower)
-
-  const vaultLabel = vaultCreatorStr ? ' (via vault)' : ''
-  return {
-    transaction: versionedTx,
-    message: `Borrow ${Number(sol_to_borrow) / 1e9} SOL with ${Number(collateral_amount) / 1e6} tokens as collateral${vaultLabel}`,
-  }
-}
-
-// ============================================================================
-// Repay (V2.4)
-// ============================================================================
-
-/**
- * Build an unsigned repay transaction.
- *
- * Repay SOL debt. Interest is paid first, then principal.
- * Full repay returns all collateral and closes the position.
- *
- * @param connection - Solana RPC connection
- * @param params - Repay parameters (mint, borrower, sol_amount)
- * @returns Unsigned transaction and descriptive message
- */
-export const buildRepayTransaction = async (
-  connection: Connection,
-  params: RepayParams,
-): Promise<TransactionResult> => {
-  const { mint: mintStr, borrower: borrowerStr, sol_amount, vault: vaultCreatorStr } = params
-
-  const mint = new PublicKey(mintStr)
-  const borrower = new PublicKey(borrowerStr)
-
-  // Derive PDAs
-  const [treasuryPda] = getTokenTreasuryPda(mint)
-  const [collateralVaultPda] = getCollateralVaultPda(mint)
-  const [loanPositionPda] = getLoanPositionPda(mint, borrower)
-
-  const borrowerTokenAccount = getAssociatedTokenAddressSync(
-    mint,
-    borrower,
-    false,
-    TOKEN_2022_PROGRAM_ID,
-  )
-
-  // Vault accounts (optional — SOL from vault, collateral returns to vault ATA)
-  const { torchVault: torchVaultAccount, walletLink: vaultWalletLinkAccount } = deriveVaultAccounts(
-    vaultCreatorStr,
-    borrower,
-  )
-  const vaultTokenAccount = torchVaultAccount ? getVaultTokenAta(mint, torchVaultAccount) : null
-
-  const tx = new Transaction()
-
-  // borrower_token_account is mut + non-optional; must exist even in vault mode.
-  tx.add(
-    createAssociatedTokenAccountIdempotentInstruction(
-      borrower,
-      borrowerTokenAccount,
-      borrower,
-      mint,
-      TOKEN_2022_PROGRAM_ID,
-      ASSOCIATED_TOKEN_PROGRAM_ID,
-    ),
-  )
-
-  if (torchVaultAccount) {
-    tx.add(createVaultTokenAtaIx(borrower, mint, torchVaultAccount))
-  }
-
-  const provider = makeDummyProvider(connection, borrower)
-  const program = new Program(idl as unknown, provider)
-
-  const repayArg = new BN(sol_amount.toString())
-  const repayBaseAccounts = {
-    borrower,
-    mint,
-    treasury: treasuryPda,
-    collateralVault: collateralVaultPda,
-    borrowerTokenAccount,
-    loanPosition: loanPositionPda,
-    tokenProgram: TOKEN_2022_PROGRAM_ID,
-    systemProgram: SystemProgram.programId,
-  }
-
-  const repayIx =
-    torchVaultAccount && vaultWalletLinkAccount && vaultTokenAccount
-      ? await program.methods
-          .repayViaVault(repayArg)
-          .accounts({
-            ...repayBaseAccounts,
-            torchVault: torchVaultAccount,
-            vaultWalletLink: vaultWalletLinkAccount,
-            vaultTokenAccount,
-          })
-          .instruction()
-      : await program.methods.repay(repayArg).accounts(repayBaseAccounts).instruction()
-
-  tx.add(repayIx)
-  const versionedTx = await finalizeTransaction(connection, tx, borrower)
-
-  const vaultLabel = vaultCreatorStr ? ' (via vault)' : ''
-  return {
-    transaction: versionedTx,
-    message: `Repay ${Number(sol_amount) / 1e9} SOL${vaultLabel}`,
-  }
-}
-
-// ============================================================================
-// Liquidate (V2.4)
-// ============================================================================
-
-/**
- * Build an unsigned liquidate transaction.
- *
- * Permissionless — anyone can call when a borrower's LTV exceeds the
- * liquidation threshold. Liquidator pays SOL and receives collateral + bonus.
- *
- * @param connection - Solana RPC connection
- * @param params - Liquidate parameters (mint, liquidator, borrower)
- * @returns Unsigned transaction and descriptive message
- */
-export const buildLiquidateTransaction = async (
-  connection: Connection,
-  params: LiquidateParams,
-): Promise<TransactionResult> => {
-  const {
-    mint: mintStr,
-    liquidator: liquidatorStr,
-    borrower: borrowerStr,
-    vault: vaultCreatorStr,
-  } = params
-
-  const mint = new PublicKey(mintStr)
-  const liquidator = new PublicKey(liquidatorStr)
-  const borrower = new PublicKey(borrowerStr)
-
-  // Derive PDAs
-  const [bondingCurvePda] = getBondingCurvePda(mint)
-  const [treasuryPda] = getTokenTreasuryPda(mint)
-  const [collateralVaultPda] = getCollateralVaultPda(mint)
-  const [loanPositionPda] = getLoanPositionPda(mint, borrower)
-
-  const liquidatorTokenAccount = getAssociatedTokenAddressSync(
-    mint,
-    liquidator,
-    false,
-    TOKEN_2022_PROGRAM_ID,
-  )
-
-  // DeepPool accounts for price calculation
-  const deepPool = getDeepPoolAccounts(mint)
-
-  // Vault accounts (optional — SOL from vault, collateral to vault ATA)
-  const { torchVault: torchVaultAccount, walletLink: vaultWalletLinkAccount } = deriveVaultAccounts(
-    vaultCreatorStr,
-    liquidator,
-  )
-  const vaultTokenAccount = torchVaultAccount ? getVaultTokenAta(mint, torchVaultAccount) : null
-
-  const tx = new Transaction()
-
-  // Create liquidator ATA if needed
-  tx.add(
-    createAssociatedTokenAccountIdempotentInstruction(
-      liquidator,
-      liquidatorTokenAccount,
-      liquidator,
-      mint,
-      TOKEN_2022_PROGRAM_ID,
-      ASSOCIATED_TOKEN_PROGRAM_ID,
-    ),
-  )
-
-  if (torchVaultAccount) {
-    tx.add(createVaultTokenAtaIx(liquidator, mint, torchVaultAccount))
-  }
-
-  const provider = makeDummyProvider(connection, liquidator)
-  const program = new Program(idl as unknown, provider)
-
-  const liquidateSharedAccounts = {
-    liquidator,
-    borrower,
-    mint,
-    bondingCurve: bondingCurvePda,
-    treasury: treasuryPda,
-    collateralVault: collateralVaultPda,
-    loanPosition: loanPositionPda,
-    deepPool: deepPool.pool,
-    deepPoolTokenVault: deepPool.tokenVault,
-    tokenProgram: TOKEN_2022_PROGRAM_ID,
-    associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-    systemProgram: SystemProgram.programId,
-  }
-  const liquidateIx =
-    torchVaultAccount && vaultWalletLinkAccount && vaultTokenAccount
-      ? await program.methods
-          .liquidateViaVault()
-          .accounts({
-            ...liquidateSharedAccounts,
-            torchVault: torchVaultAccount,
-            vaultWalletLink: vaultWalletLinkAccount,
-            vaultTokenAccount,
-          })
-          .instruction()
-      : await program.methods
-          .liquidate()
-          .accounts({ ...liquidateSharedAccounts, liquidatorTokenAccount })
-          .instruction()
-
-  tx.add(liquidateIx)
-  const versionedTx = await finalizeTransaction(connection, tx, liquidator)
-
-  const vaultLabel = vaultCreatorStr ? ' (via vault)' : ''
-  return {
-    transaction: versionedTx,
-    message: `Liquidate loan position for ${borrowerStr.slice(0, 8)}...${vaultLabel}`,
-  }
-}
-
-// ============================================================================
 // Claim Protocol Rewards
 // ============================================================================
 
@@ -1539,10 +1197,7 @@ export const buildClaimProtocolRewardsTransaction = async (
             vaultWalletLink: vaultWalletLinkAccount,
           })
           .instruction()
-      : await program.methods
-          .claimProtocolRewards()
-          .accounts(claimBaseAccounts)
-          .instruction()
+      : await program.methods.claimProtocolRewards().accounts(claimBaseAccounts).instruction()
 
   tx.add(claimIx)
   const versionedTx = await finalizeTransaction(connection, tx, user)
@@ -1703,11 +1358,11 @@ export const buildMigrateTransaction = async (
   const payer = new PublicKey(payerStr)
 
   const [bondingCurvePda] = getBondingCurvePda(mint)
-  const [globalConfigPda] = getGlobalConfigPda()
+  // [V21] System-owned vault holding the curve's real SOL reserves (split out
+  // of the program-owned data account). Seeds the deep_pool on migration.
+  const [bondingCurveSolPda] = getBondingCurveSolPda(mint)
   const [treasuryPda] = getTokenTreasuryPda(mint)
-  const treasuryTokenAccount = getTreasuryTokenAccount(mint, treasuryPda)
-  const [treasuryLock] = getTreasuryLockPda(mint)
-  const treasuryLockTokenAccount = getTreasuryLockTokenAccount(mint, treasuryLock)
+  const [treasurySolVaultPda] = getTreasurySolVaultPda(mint)
 
   // Token vault = bonding curve's Token-2022 ATA
   const tokenVault = getAssociatedTokenAddressSync(
@@ -1758,29 +1413,19 @@ export const buildMigrateTransaction = async (
   const provider = makeDummyProvider(connection, payer)
   const program = new Program(idl as unknown, provider)
 
-  // Step 1: Fund payer with bonding curve SOL (direct lamport manipulation, no CPI)
-  const fundIx = await program.methods
-    .fundMigrationSol()
-    .accounts({
-      payer,
-      mint,
-      bondingCurve: bondingCurvePda,
-    })
-    .instruction()
-
-  // Step 2: Migrate to DeepPool (all CPI-based)
+  // [V21] Single atomic migration. `fund_migration_sol` was removed — curve SOL
+  // now lives in the System-owned bonding_curve_sol vault and seeds the pool
+  // directly via seed-signed transfer (no permissionless drain step).
   const migrateIx = await program.methods
     .migrateToDex()
     .accounts({
       payer,
-      globalConfig: globalConfigPda,
       mint,
       bondingCurve: bondingCurvePda,
       treasury: treasuryPda,
+      treasurySolVault: treasurySolVaultPda,
+      bondingCurveSol: bondingCurveSolPda,
       tokenVault,
-      treasuryTokenAccount,
-      treasuryLockTokenAccount,
-      treasuryLock,
       payerToken,
       deepPoolProgram: DEEP_POOL_PROGRAM_ID,
       torchConfig: deepPool.config,
@@ -1790,14 +1435,13 @@ export const buildMigrateTransaction = async (
       payerLpAccount,
       deepPoolLpAccount,
       deepPoolEventAuthority: deepPool.eventAuthority,
-      tokenProgram: TOKEN_PROGRAM_ID,
       token2022Program: TOKEN_2022_PROGRAM_ID,
       associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
     })
     .instruction()
 
-  tx.add(fundIx, migrateIx)
+  tx.add(migrateIx)
   const versionedTx = await finalizeTransaction(connection, tx, payer)
 
   return {
@@ -2200,246 +1844,165 @@ export const buildSwapFeesToSolTransaction = async (
 }
 
 // ============================================================================
-// Open Short (V5)
+// [V21] Leverage — unified closed-loop long + short positions.
+//
+// Open: borrow size = collateral × LTV, then clamped to caps on-chain (the SDK
+// passes only `collateral` + `min_out`). Close is fractional via
+// `repay_fraction_bps` (10000 = full). A `vault` creator pubkey routes the
+// matching `*_via_vault` variant (position owner = TorchVault PDA; for liquidate,
+// `vault` identifies the BORROWER's vault). `position_index` lets a wallet hold
+// multiple positions per (mint, side).
 // ============================================================================
 
-/**
- * Build an unsigned open_short transaction.
- *
- * Post SOL collateral and borrow tokens from treasury.
- * Mirror of borrow: same LTV, same liquidation, opposite direction.
- *
- * @param connection - Solana RPC connection
- * @param params - Open short parameters (mint, shorter, sol_collateral, tokens_to_borrow)
- * @returns Unsigned transaction and descriptive message
- */
+// ─── Open Short ─────────────────────────────────────────────────────────────
 export const buildOpenShortTransaction = async (
   connection: Connection,
   params: OpenShortParams,
 ): Promise<TransactionResult> => {
-  const {
-    mint: mintStr,
-    shorter: shorterStr,
-    sol_collateral,
-    tokens_to_borrow,
-    vault: vaultCreatorStr,
-  } = params
-
+  const { mint: mintStr, shorter: shorterStr, vault: vaultCreatorStr } = params
+  const positionIndex = params.position_index ?? 0
   const mint = new PublicKey(mintStr)
   const shorter = new PublicKey(shorterStr)
 
-  // Derive PDAs
+  // Position owner: the wallet (direct) or the TorchVault PDA (via_vault).
+  const { torchVault, walletLink } = deriveVaultAccounts(vaultCreatorStr, shorter)
+  const owner = torchVault ?? shorter
+
   const [bondingCurvePda] = getBondingCurvePda(mint)
   const [treasuryPda] = getTokenTreasuryPda(mint)
+  const [treasurySolVaultPda] = getTreasurySolVaultPda(mint)
   const [treasuryLockPda] = getTreasuryLockPda(mint)
   const treasuryLockTokenAccount = getTreasuryLockTokenAccount(mint, treasuryLockPda)
-  const [shortConfigPda] = getShortConfigPda(mint)
-  const [shortPositionPda] = getShortPositionPda(mint, shorter)
-
-  const shorterTokenAccount = getAssociatedTokenAddressSync(
-    mint,
-    shorter,
-    false,
-    TOKEN_2022_PROGRAM_ID,
-  )
-
-  // DeepPool accounts for price calculation
+  const [positionPda] = getPositionPda(owner, mint, 'short', positionIndex)
+  const [positionSolVaultPda] = getShortVaultPda(owner, mint, positionIndex)
   const deepPool = getDeepPoolAccounts(mint)
-
-  // Vault accounts (optional — SOL from vault, tokens to vault ATA)
-  const { torchVault: torchVaultAccount, walletLink: vaultWalletLinkAccount } = deriveVaultAccounts(
-    vaultCreatorStr,
-    shorter,
-  )
-  const vaultTokenAccount = torchVaultAccount ? getVaultTokenAta(mint, torchVaultAccount) : null
-
-  const tx = new Transaction()
-
-  // Create shorter's token ATA if needed (to receive borrowed tokens)
-  tx.add(
-    createAssociatedTokenAccountIdempotentInstruction(
-      shorter,
-      shorterTokenAccount,
-      shorter,
-      mint,
-      TOKEN_2022_PROGRAM_ID,
-      ASSOCIATED_TOKEN_PROGRAM_ID,
-    ),
-  )
-
-  if (torchVaultAccount) {
-    tx.add(createVaultTokenAtaIx(shorter, mint, torchVaultAccount))
-  }
 
   const provider = makeDummyProvider(connection, shorter)
   const program = new Program(idl as unknown, provider)
 
-  const openShortArgs = {
-    solCollateral: new BN(sol_collateral.toString()),
-    tokensToBorrow: new BN(tokens_to_borrow.toString()),
+  const args = {
+    positionIndex,
+    collateral: new BN(params.collateral.toString()),
+    minOut: new BN((params.min_out ?? 0).toString()),
   }
-  const openShortSharedAccounts = {
-    shorter,
+  const shared = {
     mint,
     bondingCurve: bondingCurvePda,
     treasury: treasuryPda,
+    treasurySolVault: treasurySolVaultPda,
     treasuryLock: treasuryLockPda,
     treasuryLockTokenAccount,
-    shortConfig: shortConfigPda,
-    shortPosition: shortPositionPda,
+    position: positionPda,
+    positionSolVault: positionSolVaultPda,
+    deepPoolProgram: DEEP_POOL_PROGRAM_ID,
     deepPool: deepPool.pool,
     deepPoolTokenVault: deepPool.tokenVault,
-    tokenProgram: TOKEN_2022_PROGRAM_ID,
+    deepPoolEventAuthority: deepPool.eventAuthority,
+    token2022Program: TOKEN_2022_PROGRAM_ID,
     systemProgram: SystemProgram.programId,
   }
 
-  const openShortIx =
-    torchVaultAccount && vaultWalletLinkAccount && vaultTokenAccount
+  const ix =
+    torchVault && walletLink
       ? await program.methods
-          .openShortViaVault(openShortArgs)
+          .openShortViaVault(args)
           .accounts({
-            ...openShortSharedAccounts,
-            torchVault: torchVaultAccount,
-            vaultWalletLink: vaultWalletLinkAccount,
-            vaultTokenAccount,
+            ...shared,
+            signer: shorter,
+            torchVault,
+            vaultSol: getVaultSolPda(new PublicKey(vaultCreatorStr as string))[0],
+            vaultWalletLink: walletLink,
           })
           .instruction()
       : await program.methods
-          .openShort(openShortArgs)
-          .accounts({ ...openShortSharedAccounts, shorterTokenAccount })
+          .openShort(args)
+          .accounts({ ...shared, shorter })
           .instruction()
 
-  tx.add(openShortIx)
+  const tx = new Transaction()
+  tx.add(ix)
   const versionedTx = await finalizeTransaction(connection, tx, shorter)
-
   const vaultLabel = vaultCreatorStr ? ' (via vault)' : ''
   return {
     transaction: versionedTx,
-    message: `Open short: ${Number(tokens_to_borrow) / 1e6} tokens with ${Number(sol_collateral) / 1e9} SOL collateral${vaultLabel}`,
+    message: `Open short with ${Number(params.collateral) / 1e9} SOL collateral${vaultLabel}`,
   }
 }
 
-// ============================================================================
-// Close Short (V5)
-// ============================================================================
-
-/**
- * Build an unsigned close_short transaction.
- *
- * Return tokens to close or partially repay a short position.
- * Interest paid first (in tokens), then principal.
- * Full close returns all SOL collateral.
- *
- * @param connection - Solana RPC connection
- * @param params - Close short parameters (mint, shorter, token_amount)
- * @returns Unsigned transaction and descriptive message
- */
+// ─── Close Short ────────────────────────────────────────────────────────────
 export const buildCloseShortTransaction = async (
   connection: Connection,
   params: CloseShortParams,
 ): Promise<TransactionResult> => {
-  const { mint: mintStr, shorter: shorterStr, token_amount, vault: vaultCreatorStr } = params
-
+  const { mint: mintStr, shorter: shorterStr, vault: vaultCreatorStr } = params
+  const positionIndex = params.position_index ?? 0
   const mint = new PublicKey(mintStr)
   const shorter = new PublicKey(shorterStr)
 
-  // Derive PDAs
+  const { torchVault, walletLink } = deriveVaultAccounts(vaultCreatorStr, shorter)
+  const owner = torchVault ?? shorter
+
   const [bondingCurvePda] = getBondingCurvePda(mint)
   const [treasuryPda] = getTokenTreasuryPda(mint)
   const [treasuryLockPda] = getTreasuryLockPda(mint)
   const treasuryLockTokenAccount = getTreasuryLockTokenAccount(mint, treasuryLockPda)
-  const [shortConfigPda] = getShortConfigPda(mint)
-  const [shortPositionPda] = getShortPositionPda(mint, shorter)
-
-  const shorterTokenAccount = getAssociatedTokenAddressSync(
-    mint,
-    shorter,
-    false,
-    TOKEN_2022_PROGRAM_ID,
-  )
-
-  // Vault accounts (optional — tokens from vault ATA, SOL to vault)
-  const { torchVault: torchVaultAccount, walletLink: vaultWalletLinkAccount } = deriveVaultAccounts(
-    vaultCreatorStr,
-    shorter,
-  )
-  const vaultTokenAccount = torchVaultAccount ? getVaultTokenAta(mint, torchVaultAccount) : null
-
-  const tx = new Transaction()
-
-  // shorter_token_account is mut + non-optional; must exist even in vault mode.
-  tx.add(
-    createAssociatedTokenAccountIdempotentInstruction(
-      shorter,
-      shorterTokenAccount,
-      shorter,
-      mint,
-      TOKEN_2022_PROGRAM_ID,
-      ASSOCIATED_TOKEN_PROGRAM_ID,
-    ),
-  )
-
-  if (torchVaultAccount) {
-    tx.add(createVaultTokenAtaIx(shorter, mint, torchVaultAccount))
-  }
+  const [positionPda] = getPositionPda(owner, mint, 'short', positionIndex)
+  const [positionSolVaultPda] = getShortVaultPda(owner, mint, positionIndex)
+  const deepPool = getDeepPoolAccounts(mint)
 
   const provider = makeDummyProvider(connection, shorter)
   const program = new Program(idl as unknown, provider)
 
-  const closeShortArg = new BN(token_amount.toString())
-  const closeShortSharedAccounts = {
-    shorter,
+  const args = {
+    positionIndex,
+    repayFractionBps: params.repay_fraction_bps ?? 10000,
+    minSurplusSolOut: new BN((params.min_surplus_sol_out ?? 0).toString()),
+  }
+  const shared = {
     mint,
     bondingCurve: bondingCurvePda,
     treasury: treasuryPda,
     treasuryLock: treasuryLockPda,
     treasuryLockTokenAccount,
-    shortConfig: shortConfigPda,
-    shortPosition: shortPositionPda,
-    tokenProgram: TOKEN_2022_PROGRAM_ID,
+    position: positionPda,
+    positionSolVault: positionSolVaultPda,
+    deepPoolProgram: DEEP_POOL_PROGRAM_ID,
+    deepPool: deepPool.pool,
+    deepPoolTokenVault: deepPool.tokenVault,
+    deepPoolEventAuthority: deepPool.eventAuthority,
+    token2022Program: TOKEN_2022_PROGRAM_ID,
     systemProgram: SystemProgram.programId,
   }
 
-  const closeShortIx =
-    torchVaultAccount && vaultWalletLinkAccount && vaultTokenAccount
+  const ix =
+    torchVault && walletLink
       ? await program.methods
-          .closeShortViaVault(closeShortArg)
+          .closeShortViaVault(args)
           .accounts({
-            ...closeShortSharedAccounts,
-            torchVault: torchVaultAccount,
-            vaultWalletLink: vaultWalletLinkAccount,
-            vaultTokenAccount,
+            ...shared,
+            signer: shorter,
+            torchVault,
+            vaultSol: getVaultSolPda(new PublicKey(vaultCreatorStr as string))[0],
+            vaultWalletLink: walletLink,
           })
           .instruction()
       : await program.methods
-          .closeShort(closeShortArg)
-          .accounts({ ...closeShortSharedAccounts, shorterTokenAccount })
+          .closeShort(args)
+          .accounts({ ...shared, shorter })
           .instruction()
 
-  tx.add(closeShortIx)
+  const tx = new Transaction()
+  tx.add(ix)
   const versionedTx = await finalizeTransaction(connection, tx, shorter)
-
   const vaultLabel = vaultCreatorStr ? ' (via vault)' : ''
+  const pct = (params.repay_fraction_bps ?? 10000) / 100
   return {
     transaction: versionedTx,
-    message: `Close short: return ${Number(token_amount) / 1e6} tokens${vaultLabel}`,
+    message: `Close short (${pct}% of position)${vaultLabel}`,
   }
 }
 
-// ============================================================================
-// Liquidate Short (V5)
-// ============================================================================
-
-/**
- * Build an unsigned liquidate_short transaction.
- *
- * Permissionless — anyone can call when a short position's LTV exceeds the
- * liquidation threshold (65%). Liquidator sends tokens and receives SOL + bonus.
- *
- * @param connection - Solana RPC connection
- * @param params - Liquidate short parameters (mint, liquidator, borrower)
- * @returns Unsigned transaction and descriptive message
- */
+// ─── Liquidate Short ──────────────────────────────────────────────────────────
 export const buildLiquidateShortTransaction = async (
   connection: Connection,
   params: LiquidateShortParams,
@@ -2450,39 +2013,31 @@ export const buildLiquidateShortTransaction = async (
     borrower: borrowerStr,
     vault: vaultCreatorStr,
   } = params
-
+  const positionIndex = params.position_index ?? 0
   const mint = new PublicKey(mintStr)
   const liquidator = new PublicKey(liquidatorStr)
   const borrower = new PublicKey(borrowerStr)
 
-  // Derive PDAs
+  // For via_vault, `vault` identifies the BORROWER's vault (position owner).
+  const torchVault = vaultCreatorStr ? getTorchVaultPda(new PublicKey(vaultCreatorStr))[0] : null
+  const owner = torchVault ?? borrower
+
   const [bondingCurvePda] = getBondingCurvePda(mint)
   const [treasuryPda] = getTokenTreasuryPda(mint)
   const [treasuryLockPda] = getTreasuryLockPda(mint)
   const treasuryLockTokenAccount = getTreasuryLockTokenAccount(mint, treasuryLockPda)
-  const [shortConfigPda] = getShortConfigPda(mint)
-  const [shortPositionPda] = getShortPositionPda(mint, borrower)
-
+  const [positionPda] = getPositionPda(owner, mint, 'short', positionIndex)
+  const [positionSolVaultPda] = getShortVaultPda(owner, mint, positionIndex)
   const liquidatorTokenAccount = getAssociatedTokenAddressSync(
     mint,
     liquidator,
     false,
     TOKEN_2022_PROGRAM_ID,
   )
-
-  // DeepPool accounts for price calculation
   const deepPool = getDeepPoolAccounts(mint)
 
-  // Vault accounts (optional — tokens from vault ATA, SOL to vault)
-  const { torchVault: torchVaultAccount, walletLink: vaultWalletLinkAccount } = deriveVaultAccounts(
-    vaultCreatorStr,
-    liquidator,
-  )
-  const vaultTokenAccount = torchVaultAccount ? getVaultTokenAta(mint, torchVaultAccount) : null
-
   const tx = new Transaction()
-
-  // Create liquidator's token ATA if needed (source of covering tokens)
+  // Liquidator supplies covering tokens from its ATA.
   tx.add(
     createAssociatedTokenAccountIdempotentInstruction(
       liquidator,
@@ -2494,48 +2049,73 @@ export const buildLiquidateShortTransaction = async (
     ),
   )
 
-  if (torchVaultAccount) {
-    tx.add(createVaultTokenAtaIx(liquidator, mint, torchVaultAccount))
+  // [V21] One-click liquidation: a short's debt is token-denominated, so the
+  // liquidator must HOLD cover tokens for `liquidate_short`'s TransferChecked.
+  // Prepend a DeepPool buy that funds the ATA, so the liquidator only needs SOL
+  // (the seize repays it + the bonus). Skipped if the caller warehouses tokens.
+  if (params.acquire_cover_tokens !== false) {
+    const pos = await getPosition(connection, mintStr, owner.toBase58(), 'short', positionIndex)
+    const totalDebt = pos.debt_amount + pos.accrued_interest
+    // debt_to_cover = 50% close factor (DEFAULT_LIQUIDATION_CLOSE_BPS). On-chain
+    // cover_gross = gross_up(actual_covered) ≤ gross_up(debt_to_cover); proration
+    // only lowers it, so sizing to the solvent-case max always suffices.
+    const debtToCover = Math.floor(totalDebt * 0.5)
+    if (debtToCover > 0) {
+      // Must HOLD gross_up(debt_to_cover); the buy delivers NET (after the
+      // pool→liquidator transfer fee), so buy gross_up of that, +2% for interest
+      // drift between read and execution.
+      const mustHold = grossUpForTransferFee(debtToCover)
+      const tokensOutGross = Math.ceil(grossUpForTransferFee(mustHold) * 1.02)
+      const solIn = await quoteSolInForTokensOut(connection, mintStr, tokensOutGross)
+      const amountIn = Math.ceil(solIn * 1.03) // slippage headroom
+      const coverBuyIxs = await buildDeepPoolSwapInstructions(connection, {
+        user: liquidatorStr,
+        config: getTorchConfigPda()[0].toString(),
+        tokenMint: mintStr,
+        amountIn,
+        minimumOut: debtToCover, // conservative floor; overbuy is kept as dust
+        buy: true,
+      })
+      tx.add(...coverBuyIxs)
+    }
   }
 
   const provider = makeDummyProvider(connection, liquidator)
   const program = new Program(idl as unknown, provider)
 
-  const liquidateShortSharedAccounts = {
-    liquidator,
-    borrower,
+  const args = { positionIndex }
+  const shared = {
     mint,
     bondingCurve: bondingCurvePda,
     treasury: treasuryPda,
     treasuryLock: treasuryLockPda,
     treasuryLockTokenAccount,
-    shortConfig: shortConfigPda,
-    shortPosition: shortPositionPda,
+    position: positionPda,
+    positionSolVault: positionSolVaultPda,
+    liquidatorTokenAccount,
     deepPool: deepPool.pool,
     deepPoolTokenVault: deepPool.tokenVault,
-    tokenProgram: TOKEN_2022_PROGRAM_ID,
+    token2022Program: TOKEN_2022_PROGRAM_ID,
     systemProgram: SystemProgram.programId,
   }
 
-  const liquidateShortIx =
-    torchVaultAccount && vaultWalletLinkAccount && vaultTokenAccount
-      ? await program.methods
-          .liquidateShortViaVault()
-          .accounts({
-            ...liquidateShortSharedAccounts,
-            torchVault: torchVaultAccount,
-            vaultWalletLink: vaultWalletLinkAccount,
-            vaultTokenAccount,
-          })
-          .instruction()
-      : await program.methods
-          .liquidateShort()
-          .accounts({ ...liquidateShortSharedAccounts, liquidatorTokenAccount })
-          .instruction()
+  const ix = torchVault
+    ? await program.methods
+        .liquidateShortViaVault(args)
+        .accounts({
+          ...shared,
+          liquidator,
+          torchVault,
+          vaultSol: getVaultSolPda(new PublicKey(vaultCreatorStr as string))[0],
+        })
+        .instruction()
+    : await program.methods
+        .liquidateShort(args)
+        .accounts({ ...shared, liquidator, borrower })
+        .instruction()
 
-  tx.add(liquidateShortIx)
+  tx.add(ix)
   const versionedTx = await finalizeTransaction(connection, tx, liquidator)
-
   const vaultLabel = vaultCreatorStr ? ' (via vault)' : ''
   return {
     transaction: versionedTx,
@@ -2543,3 +2123,281 @@ export const buildLiquidateShortTransaction = async (
   }
 }
 
+// ─── Open Long ──────────────────────────────────────────────────────────────
+export const buildOpenLongTransaction = async (
+  connection: Connection,
+  params: OpenLongParams,
+): Promise<TransactionResult> => {
+  const { mint: mintStr, borrower: borrowerStr, vault: vaultCreatorStr } = params
+  const positionIndex = params.position_index ?? 0
+  const mint = new PublicKey(mintStr)
+  const borrower = new PublicKey(borrowerStr)
+
+  const { torchVault, walletLink } = deriveVaultAccounts(vaultCreatorStr, borrower)
+  const owner = torchVault ?? borrower
+
+  const [bondingCurvePda] = getBondingCurvePda(mint)
+  const [treasuryPda] = getTokenTreasuryPda(mint)
+  const [treasurySolVaultPda] = getTreasurySolVaultPda(mint)
+  const [positionPda] = getPositionPda(owner, mint, 'long', positionIndex)
+  const positionTokenVault = getPositionTokenVault(mint, positionPda)
+  const [longSolVaultPda] = getLongSolVaultPda(owner, mint, positionIndex)
+  const deepPool = getDeepPoolAccounts(mint)
+
+  const tx = new Transaction()
+  const provider = makeDummyProvider(connection, borrower)
+  const program = new Program(idl as unknown, provider)
+
+  const args = {
+    positionIndex,
+    collateral: new BN(params.collateral.toString()),
+    minOut: new BN((params.min_out ?? 0).toString()),
+  }
+  const shared = {
+    mint,
+    bondingCurve: bondingCurvePda,
+    treasury: treasuryPda,
+    treasurySolVault: treasurySolVaultPda,
+    position: positionPda,
+    positionTokenVault,
+    longSolVault: longSolVaultPda,
+    deepPoolProgram: DEEP_POOL_PROGRAM_ID,
+    deepPool: deepPool.pool,
+    deepPoolTokenVault: deepPool.tokenVault,
+    deepPoolEventAuthority: deepPool.eventAuthority,
+    token2022Program: TOKEN_2022_PROGRAM_ID,
+    associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+    systemProgram: SystemProgram.programId,
+  }
+
+  let ix: TransactionInstruction
+  if (torchVault && walletLink) {
+    const vaultTokenAccount = getVaultTokenAta(mint, torchVault)
+    tx.add(createVaultTokenAtaIx(borrower, mint, torchVault))
+    ix = await program.methods
+      .openLongViaVault(args)
+      .accounts({
+        ...shared,
+        signer: borrower,
+        torchVault,
+        vaultWalletLink: walletLink,
+        vaultTokenAccount,
+      })
+      .instruction()
+  } else {
+    const borrowerTokenAccount = getAssociatedTokenAddressSync(
+      mint,
+      borrower,
+      false,
+      TOKEN_2022_PROGRAM_ID,
+    )
+    // Borrower posts token collateral from its ATA.
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction(
+        borrower,
+        borrowerTokenAccount,
+        borrower,
+        mint,
+        TOKEN_2022_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+      ),
+    )
+    ix = await program.methods
+      .openLong(args)
+      .accounts({ ...shared, borrower, borrowerTokenAccount })
+      .instruction()
+  }
+
+  tx.add(ix)
+  const versionedTx = await finalizeTransaction(connection, tx, borrower)
+  const vaultLabel = vaultCreatorStr ? ' (via vault)' : ''
+  return {
+    transaction: versionedTx,
+    message: `Open long with ${Number(params.collateral) / 1e6} tokens collateral${vaultLabel}`,
+  }
+}
+
+// ─── Close Long ─────────────────────────────────────────────────────────────
+export const buildCloseLongTransaction = async (
+  connection: Connection,
+  params: CloseLongParams,
+): Promise<TransactionResult> => {
+  const { mint: mintStr, borrower: borrowerStr, vault: vaultCreatorStr } = params
+  const positionIndex = params.position_index ?? 0
+  const mint = new PublicKey(mintStr)
+  const borrower = new PublicKey(borrowerStr)
+
+  const { torchVault, walletLink } = deriveVaultAccounts(vaultCreatorStr, borrower)
+  const owner = torchVault ?? borrower
+
+  const [bondingCurvePda] = getBondingCurvePda(mint)
+  const [treasuryPda] = getTokenTreasuryPda(mint)
+  const [treasurySolVaultPda] = getTreasurySolVaultPda(mint)
+  const [positionPda] = getPositionPda(owner, mint, 'long', positionIndex)
+  const positionTokenVault = getPositionTokenVault(mint, positionPda)
+  const [longSolVaultPda] = getLongSolVaultPda(owner, mint, positionIndex)
+  const deepPool = getDeepPoolAccounts(mint)
+
+  const provider = makeDummyProvider(connection, borrower)
+  const program = new Program(idl as unknown, provider)
+
+  const args = {
+    positionIndex,
+    repayFractionBps: params.repay_fraction_bps ?? 10000,
+    minSurplusSolOut: new BN((params.min_surplus_sol_out ?? 0).toString()),
+  }
+  const shared = {
+    mint,
+    bondingCurve: bondingCurvePda,
+    treasury: treasuryPda,
+    treasurySolVault: treasurySolVaultPda,
+    position: positionPda,
+    positionTokenVault,
+    longSolVault: longSolVaultPda,
+    deepPoolProgram: DEEP_POOL_PROGRAM_ID,
+    deepPool: deepPool.pool,
+    deepPoolTokenVault: deepPool.tokenVault,
+    deepPoolEventAuthority: deepPool.eventAuthority,
+    token2022Program: TOKEN_2022_PROGRAM_ID,
+    systemProgram: SystemProgram.programId,
+  }
+
+  const ix =
+    torchVault && walletLink
+      ? await program.methods
+          .closeLongViaVault(args)
+          .accounts({
+            ...shared,
+            signer: borrower,
+            torchVault,
+            vaultSol: getVaultSolPda(new PublicKey(vaultCreatorStr as string))[0],
+            vaultWalletLink: walletLink,
+          })
+          .instruction()
+      : await program.methods
+          .closeLong(args)
+          .accounts({ ...shared, borrower })
+          .instruction()
+
+  const tx = new Transaction()
+  tx.add(ix)
+  const versionedTx = await finalizeTransaction(connection, tx, borrower)
+  const vaultLabel = vaultCreatorStr ? ' (via vault)' : ''
+  const pct = (params.repay_fraction_bps ?? 10000) / 100
+  return {
+    transaction: versionedTx,
+    message: `Close long (${pct}% of position)${vaultLabel}`,
+  }
+}
+
+// ─── Liquidate Long ───────────────────────────────────────────────────────────
+export const buildLiquidateLongTransaction = async (
+  connection: Connection,
+  params: LiquidateLongParams,
+): Promise<TransactionResult> => {
+  const {
+    mint: mintStr,
+    liquidator: liquidatorStr,
+    borrower: borrowerStr,
+    vault: vaultCreatorStr,
+  } = params
+  const positionIndex = params.position_index ?? 0
+  const mint = new PublicKey(mintStr)
+  const liquidator = new PublicKey(liquidatorStr)
+  const borrower = new PublicKey(borrowerStr)
+
+  // For via_vault, `vault` identifies the BORROWER's vault (position owner).
+  const torchVault = vaultCreatorStr ? getTorchVaultPda(new PublicKey(vaultCreatorStr))[0] : null
+  const owner = torchVault ?? borrower
+
+  const [bondingCurvePda] = getBondingCurvePda(mint)
+  const [treasuryPda] = getTokenTreasuryPda(mint)
+  const [treasurySolVaultPda] = getTreasurySolVaultPda(mint)
+  const [positionPda] = getPositionPda(owner, mint, 'long', positionIndex)
+  const positionTokenVault = getPositionTokenVault(mint, positionPda)
+  const liquidatorTokenAccount = getAssociatedTokenAddressSync(
+    mint,
+    liquidator,
+    false,
+    TOKEN_2022_PROGRAM_ID,
+  )
+  const deepPool = getDeepPoolAccounts(mint)
+
+  const tx = new Transaction()
+  // Liquidator receives seized tokens into its ATA.
+  tx.add(
+    createAssociatedTokenAccountIdempotentInstruction(
+      liquidator,
+      liquidatorTokenAccount,
+      liquidator,
+      mint,
+      TOKEN_2022_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+    ),
+  )
+
+  const provider = makeDummyProvider(connection, liquidator)
+  const program = new Program(idl as unknown, provider)
+
+  const args = { positionIndex }
+  const shared = {
+    mint,
+    bondingCurve: bondingCurvePda,
+    treasury: treasuryPda,
+    treasurySolVault: treasurySolVaultPda,
+    position: positionPda,
+    positionTokenVault,
+    liquidatorTokenAccount,
+    deepPool: deepPool.pool,
+    deepPoolTokenVault: deepPool.tokenVault,
+    token2022Program: TOKEN_2022_PROGRAM_ID,
+    associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+    systemProgram: SystemProgram.programId,
+  }
+
+  let ix: TransactionInstruction
+  if (torchVault) {
+    const vaultTokenAccount = getVaultTokenAta(mint, torchVault)
+    tx.add(createVaultTokenAtaIx(liquidator, mint, torchVault))
+    ix = await program.methods
+      .liquidateLongViaVault(args)
+      .accounts({
+        ...shared,
+        liquidator,
+        torchVault,
+        vaultSol: getVaultSolPda(new PublicKey(vaultCreatorStr as string))[0],
+        vaultTokenAccount,
+      })
+      .instruction()
+  } else {
+    const borrowerTokenAccount = getAssociatedTokenAddressSync(
+      mint,
+      borrower,
+      false,
+      TOKEN_2022_PROGRAM_ID,
+    )
+    // Token residual (partial seize) returns to the borrower's ATA.
+    tx.add(
+      createAssociatedTokenAccountIdempotentInstruction(
+        liquidator,
+        borrowerTokenAccount,
+        borrower,
+        mint,
+        TOKEN_2022_PROGRAM_ID,
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+      ),
+    )
+    ix = await program.methods
+      .liquidateLong(args)
+      .accounts({ ...shared, liquidator, borrower, borrowerTokenAccount })
+      .instruction()
+  }
+
+  tx.add(ix)
+  const versionedTx = await finalizeTransaction(connection, tx, liquidator)
+  const vaultLabel = vaultCreatorStr ? ' (via vault)' : ''
+  return {
+    transaction: versionedTx,
+    message: `Liquidate long position for ${borrowerStr.slice(0, 8)}...${vaultLabel}`,
+  }
+}

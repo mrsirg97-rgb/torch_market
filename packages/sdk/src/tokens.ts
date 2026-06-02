@@ -18,22 +18,24 @@ import {
   Treasury,
   TorchVault,
   VaultWalletLink,
-  LoanPosition,
-  ShortPosition,
+  Position,
   UserStats,
   ProtocolTreasury,
   getBondingCurvePda,
   getTokenTreasuryPda,
-  getLoanPositionPda,
-  getShortPositionPda,
-  getCollateralVaultPda,
+  getTreasurySolVaultPda,
+  getPositionPda,
+  getShortVaultPda,
+  getPositionTokenVault,
   getTorchVaultPda,
+  getVaultSolPda,
   getVaultWalletLinkPda,
   getUserStatsPda,
   getProtocolTreasuryPda,
   getDeepPoolAccounts,
   calculateBondingProgress,
   calculatePrice,
+  getDepthMaxLtvBps,
 } from './program'
 import {
   PROGRAM_ID,
@@ -60,12 +62,10 @@ import {
   MessagesResult,
   SaidVerification,
   LendingInfo,
-  LoanPositionInfo,
-  ShortPositionInfo,
-  LoanPositionWithKey,
-  AllLoanPositionsResult,
-  ShortPositionWithKey,
-  AllShortPositionsResult,
+  PositionInfo,
+  PositionWithKey,
+  AllPositionsResult,
+  PositionSide,
   VaultInfo,
   VaultWalletLinkInfo,
   UserStatsInfo,
@@ -75,12 +75,12 @@ import {
   ReadOptions,
 } from './types'
 import {
-  fetchLoansFromIndexer,
-  fetchShortsFromIndexer,
+  fetchPositionsFromIndexer,
   fetchMessagesFromIndexer,
   fetchMarketsFromIndexer,
   withFallback,
   type IndexerMarketStatus,
+  type IndexerPositionRow,
 } from './indexer'
 
 // ============================================================================
@@ -374,8 +374,12 @@ const buildTokenDetail = (
   marketCapSol = (priceInSol * Number(TOTAL_SUPPLY)) / TOKEN_MULTIPLIER
   const circulating = TOTAL_SUPPLY - realTokens
 
-  const treasurySol = treasury ? Number(treasury.sol_balance.toString()) / LAMPORTS_PER_SOL : 0
-  const stars = treasury ? Number(treasury.total_stars.toString()) : 0
+  // [V21] Lendable SOL no longer lives on the Treasury data account — it's in
+  // the System-owned treasury_sol_vault PDA. Use getLendingInfo() for that
+  // balance; the token-detail enrichment leaves it 0 to avoid an extra RPC.
+  const treasurySol = 0
+  // [V21] Star/creator-reward feature removed — always 0 (kept for API compat).
+  const stars = 0
 
   return {
     mint,
@@ -492,9 +496,7 @@ export const getTokens = async (
 
 // Map the SDK's TokenStatusFilter to the indexer's MarketStatus filter,
 // or null for "no status filter" (indexer returns all statuses).
-const sdkStatusToIndexer = (
-  s: TokenListParams['status'],
-): IndexerMarketStatus | null => {
+const sdkStatusToIndexer = (s: TokenListParams['status']): IndexerMarketStatus | null => {
   switch (s) {
     case 'bonding':
       return 'RS'
@@ -1032,9 +1034,9 @@ export const getMessages = async (
 // ============================================================================
 
 // Lending constants (matching the Rust program — see programs/torch_market/src/constants.rs)
-const INTEREST_RATE_BPS = 200 // 2% per epoch
+const INTEREST_RATE_BPS = 150 // [V21] 1.5% per epoch (was 200)
 const LIQUIDATION_THRESHOLD_BPS = 6500 // 65%
-const LIQUIDATION_BONUS_BPS = 1000 // 10%
+const LIQUIDATION_BONUS_BPS = 3250 // [V21] 32.5% ceiling = 1.3·ρ_max (was 1000)
 const LENDING_UTILIZATION_CAP_BPS = 8000 // 80% (V4.0, was 70%)
 const BORROW_SHARE_MULTIPLIER = 23 // Per-user cap: max borrow = 23x collateral share of supply (V10.2.5, was 5x)
 
@@ -1099,38 +1101,19 @@ const projectAccruedInterest = (
   return storedAccrued + delta
 }
 
-// Depth-based risk bands (V7): pool SOL depth → max LTV
-const MIN_POOL_SOL_LENDING = 5_000_000_000 // 5 SOL
-const DEPTH_TIER_1 = 50_000_000_000 // 50 SOL
-const DEPTH_TIER_2 = 200_000_000_000 // 200 SOL
-const DEPTH_TIER_3 = 500_000_000_000 // 500 SOL
-const DEPTH_LTV_0 = 2500 // <50 SOL  → 25%
-const DEPTH_LTV_1 = 3500 // 50-200   → 35%
-const DEPTH_LTV_2 = 4500 // 200-500  → 45%
-const DEPTH_LTV_3 = 5000 // 500+     → 50%
-
-const getDepthMaxLtvBps = (poolSol: number): number => {
-  if (poolSol < MIN_POOL_SOL_LENDING) return 0
-  if (poolSol < DEPTH_TIER_1) return DEPTH_LTV_0
-  if (poolSol < DEPTH_TIER_2) return DEPTH_LTV_1
-  if (poolSol < DEPTH_TIER_3) return DEPTH_LTV_2
-  return DEPTH_LTV_3
-}
+// [V21] Depth-scaled max LTV (continuous concave curve) — imported from program.ts
+// (shared with quotes.ts), mirror of pool_validation::get_depth_max_ltv_bps.
 
 /**
- * Get lending info for a migrated token.
+ * [V21] Lending / leverage info for a migrated token.
  *
- * Returns interest rates, LTV limits, and active loan statistics, including
- * the v20 lending-unlock gate state.
- *
- * @param lendingUnlockThresholdLamports - override the gate threshold (default
- *   = mainnet 100 SOL). Frontend passes 1 SOL for devnet, 0 for simnet to
- *   match the deployed program build.
+ * Rates + LTV limits + the long/short custody snapshot. Lendable SOL is read
+ * from the System-owned treasury_sol_vault PDA lamports (the Treasury data
+ * account is accounting-only).
  */
 export const getLendingInfo = async (
   connection: Connection,
   mintStr: string,
-  lendingUnlockThresholdLamports: number = DEFAULT_LENDING_UNLOCK_THRESHOLD_LAMPORTS,
 ): Promise<LendingInfo> => {
   const mint = new PublicKey(mintStr)
 
@@ -1139,160 +1122,92 @@ export const getLendingInfo = async (
 
   const { bondingCurve, treasury } = tokenData
   if (!bondingCurve.migrated) throw new Error('Token not yet migrated, lending not available')
+  if (!treasury) throw new Error(`Treasury not found for ${mintStr}`)
 
-  const treasurySol = treasury ? Number(treasury.sol_balance.toString()) : 0
-  // Available SOL = gross treasury minus short collateral parked in escrow.
-  // This is the protocol-earned float that's actually lendable, and the value
-  // the on-chain gate (check_borrow_caps) uses. Mirroring it here keeps the
-  // SDK gate read consistent with on-chain semantics.
-  const shortReserved = treasury
-    ? Number(treasury.short_collateral_reserved.toString())
-    : 0
-  const availableSol = Math.max(0, treasurySol - shortReserved)
-
-  // Fetch pool SOL depth for depth-band max LTV
-  let poolSol = 0
+  // Lendable SOL lives in the System-owned treasury_sol_vault (lamports).
+  const [treasurySolVaultPda] = getTreasurySolVaultPda(mint)
+  let treasurySolVaultLamports = 0
   try {
-    const reserves = await fetchDeepPoolReserves(connection, mint)
-    poolSol = reserves.solReserves
+    const vaultInfo = await connection.getAccountInfo(treasurySolVaultPda)
+    treasurySolVaultLamports = vaultInfo?.lamports ?? 0
   } catch {
-    // Fall back to minimum tier if pool fetch fails
-  }
-  const effectiveMaxLtv = getDepthMaxLtvBps(poolSol)
-
-  // Scan for active loan positions via collateral vault balance
-  const [collateralVaultPda] = getCollateralVaultPda(mint)
-  const vaultInfo = await connection.getAccountInfo(collateralVaultPda)
-
-  // Count active loans by scanning LoanPosition accounts
-  let activeLoans: number | null = 0
-  let totalSolLent: number | null = 0
-  const warnings: string[] = []
-
-  try {
-    // Derive discriminator from IDL rather than hardcoding
-    const coder = new BorshCoder(idl as Idl)
-    const loanDiscriminator = coder.accounts.accountDiscriminator('LoanPosition')
-    const bs58 = await import('bs58')
-    const accounts = await connection.getProgramAccounts(PROGRAM_ID, {
-      filters: [
-        { memcmp: { offset: 0, bytes: bs58.default.encode(loanDiscriminator) } },
-        { memcmp: { offset: 8 + 32, bytes: mint.toBase58() } }, // mint at offset 40
-      ],
-      dataSlice: { offset: 8 + 32 + 32, length: 16 }, // collateral_amount + borrowed_amount
-    })
-
-    for (const acc of accounts) {
-      try {
-        // Read borrowed_amount (u64 at offset 8 within the slice)
-        const borrowed = acc.account.data.readBigUInt64LE(8)
-        if (borrowed > BigInt(0)) {
-          activeLoans = (activeLoans ?? 0) + 1
-          totalSolLent = (totalSolLent ?? 0) + Number(borrowed)
-        }
-      } catch {
-        // Skip malformed accounts
-      }
-    }
-  } catch (e) {
-    activeLoans = null
-    totalSolLent = null
-    warnings.push(`Loan enumeration failed: ${e instanceof Error ? e.message : String(e)}`)
+    // leave 0 on failure
   }
 
   return {
-    interest_rate_bps: INTEREST_RATE_BPS,
-    max_ltv_bps: effectiveMaxLtv,
-    liquidation_threshold_bps: LIQUIDATION_THRESHOLD_BPS,
-    liquidation_bonus_bps: LIQUIDATION_BONUS_BPS,
-    utilization_cap_bps: LENDING_UTILIZATION_CAP_BPS,
-    borrow_share_multiplier: BORROW_SHARE_MULTIPLIER,
-    max_user_borrow_share_bps: MAX_USER_BORROW_SHARE_BPS,
-    lending_unlock_threshold_lamports: lendingUnlockThresholdLamports,
-    lending_unlocked: availableSol >= lendingUnlockThresholdLamports,
-    treasury_sol_lamports: treasurySol,
-    treasury_sol_available_lamports: availableSol,
-    total_sol_lent: totalSolLent,
-    active_loans: activeLoans,
-    treasury_sol_available: Math.max(
-      0,
-      Math.floor((availableSol * LENDING_UTILIZATION_CAP_BPS) / 10000) - (totalSolLent ?? 0),
-    ),
-    ...(warnings.length > 0 ? { warnings } : {}),
+    interest_rate_bps: treasury.interest_rate_bps,
+    max_ltv_bps: treasury.max_ltv_bps,
+    liquidation_threshold_bps: treasury.liquidation_threshold_bps,
+    liquidation_bonus_bps: treasury.liquidation_bonus_bps,
+    liquidation_close_bps: treasury.liquidation_close_bps,
+    utilization_cap_bps: treasury.lending_utilization_cap_bps,
+    lending_enabled: treasury.lending_enabled,
+    short_selling_enabled: treasury.short_selling_enabled,
+    treasury_sol_vault_lamports: treasurySolVaultLamports,
+    total_sol_lent_to_longs: Number(treasury.total_sol_lent_to_longs.toString()),
+    active_longs: Number(treasury.active_longs.toString()),
+    total_tokens_lent: Number(treasury.total_tokens_lent.toString()),
+    active_shorts: Number(treasury.active_shorts.toString()),
+    total_token_collateral_locked: Number(treasury.total_token_collateral_locked.toString()),
   }
 }
 
-/**
- * Get loan position for a wallet on a specific token.
- *
- * Returns collateral locked, SOL owed, health status, etc.
- * Returns health="none" if no active loan exists.
- */
-export const getLoanPosition = async (
-  connection: Connection,
-  mintStr: string,
-  walletStr: string,
-): Promise<LoanPositionInfo> => {
-  const mint = new PublicKey(mintStr)
-  const wallet = new PublicKey(walletStr)
-  const coder = new BorshCoder(idl as unknown as Idl)
+// Position account on-chain layout (after the 8-byte discriminator):
+//   user(32), mint(32), side(1), position_index(4), collateral_amount(8),
+//   debt_amount(8), accrued_interest(8), last_slot(8), bump(1), vault_bump(1)
+const POSITION_MINT_OFFSET = 8 + 32 // 40
+const POSITION_SIDE_OFFSET = 8 + 32 + 32 // 72
 
-  const [loanPositionPda] = getLoanPositionPda(mint, wallet)
-  const [accountInfo, currentSlot] = await Promise.all([
-    connection.getAccountInfo(loanPositionPda),
-    connection.getSlot('confirmed'),
-  ])
+const decodeSide = (side: unknown): PositionSide =>
+  side && typeof side === 'object' && 'short' in (side as Record<string, unknown>)
+    ? 'short'
+    : 'long'
 
-  if (!accountInfo) {
-    return {
-      collateral_amount: 0,
-      borrowed_amount: 0,
-      accrued_interest: 0,
-      accrued_interest_stored: 0,
-      last_update_slot: 0,
-      total_owed: 0,
-      collateral_value_sol: 0,
-      current_ltv_bps: 0,
-      health: 'none',
-    }
-  }
+// Compute health for a position given live pool reserves. Unit-by-side:
+//   short → collateral = SOL, debt = tokens (debt valued via price)
+//   long  → collateral = tokens (valued via price), debt = SOL
+const computePositionHealth = (
+  side: PositionSide,
+  collateralAmount: number,
+  debtAmount: number,
+  interest: number,
+  solReserves: number,
+  tokenReserves: number,
+): {
+  totalOwed: number
+  debtValueSol: number | null
+  currentLtvBps: number | null
+  health: PositionInfo['health']
+} => {
+  const totalOwed = debtAmount + interest
+  const havePrice = tokenReserves > 0 && solReserves > 0
+  const price = havePrice ? solReserves / tokenReserves : 0
 
-  const loan = coder.accounts.decode('LoanPosition', accountInfo.data) as unknown as LoanPosition
-
-  const collateral = Number(loan.collateral_amount.toString())
-  const borrowed = Number(loan.borrowed_amount.toString())
-  const storedInterest = Number(loan.accrued_interest.toString())
-  const lastUpdateSlot = Number(loan.last_update_slot.toString())
-  const interest = projectAccruedInterest(borrowed, storedInterest, lastUpdateSlot, currentSlot)
-  const totalOwed = borrowed + interest
-
-  // Get collateral value from DeepPool price
-  let collateralValueSol: number | null = 0
-  let poolSol = 0
-  const warnings: string[] = []
-  try {
-    const reserves = await fetchDeepPoolReserves(connection, mint)
-    poolSol = reserves.solReserves
-    if (reserves.tokenReserves > 0) {
-      collateralValueSol = (collateral * poolSol) / reserves.tokenReserves
-    }
-  } catch (e) {
+  let debtValueSol: number | null
+  let collateralValueSol: number | null
+  if (!havePrice) {
+    debtValueSol = null
     collateralValueSol = null
-    warnings.push(`Collateral valuation failed: ${e instanceof Error ? e.message : String(e)}`)
+  } else if (side === 'short') {
+    debtValueSol = totalOwed * price
+    collateralValueSol = collateralAmount // already SOL
+  } else {
+    debtValueSol = totalOwed // already SOL
+    collateralValueSol = collateralAmount * price
   }
 
   let currentLtvBps: number | null
-  if (collateralValueSol === null) {
+  if (debtValueSol === null || collateralValueSol === null) {
     currentLtvBps = null
   } else if (collateralValueSol > 0) {
-    currentLtvBps = Math.floor((totalOwed / collateralValueSol) * 10000)
+    currentLtvBps = Math.floor((debtValueSol / collateralValueSol) * 10000)
   } else {
     currentLtvBps = totalOwed > 0 ? 10000 : 0
   }
 
-  const maxLtvBps = getDepthMaxLtvBps(poolSol)
-  let health: LoanPositionInfo['health']
-  if (borrowed === 0 && interest === 0) {
+  const maxLtvBps = getDepthMaxLtvBps(solReserves)
+  let health: PositionInfo['health']
+  if (debtAmount === 0 && interest === 0) {
     health = 'none'
   } else if (currentLtvBps === null) {
     health = 'healthy'
@@ -1303,162 +1218,183 @@ export const getLoanPosition = async (
   } else {
     health = 'healthy'
   }
+  return { totalOwed, debtValueSol, currentLtvBps, health }
+}
 
-  return {
-    collateral_amount: collateral,
-    borrowed_amount: borrowed,
-    accrued_interest: interest,
-    accrued_interest_stored: storedInterest,
-    last_update_slot: lastUpdateSlot,
-    total_owed: totalOwed,
-    collateral_value_sol: collateralValueSol,
-    current_ltv_bps: currentLtvBps,
-    health,
-    ...(warnings.length > 0 ? { warnings } : {}),
+// [V21] The collateral base the on-chain liquidation trigger uses is the LIVE
+// per-position vault balance, NOT the stored `collateral_amount`:
+//   short → position_sol_vault.lamports()  (posted SOL + sale proceeds)
+//   long  → position_token_vault.amount    (posted + bought tokens)
+// Read it so SDK LTV/health matches the program exactly. Falls back to the
+// posted amount if the vault can't be read.
+const fetchLiveCollateral = async (
+  connection: Connection,
+  mint: PublicKey,
+  owner: PublicKey,
+  side: PositionSide,
+  positionIndex: number,
+  positionPda: PublicKey,
+  fallback: number,
+): Promise<number> => {
+  try {
+    if (side === 'short') {
+      const [solVault] = getShortVaultPda(owner, mint, positionIndex)
+      const info = await connection.getAccountInfo(solVault)
+      return info?.lamports ?? fallback
+    }
+    const bal = await connection.getTokenAccountBalance(getPositionTokenVault(mint, positionPda))
+    return Number(bal.value.amount)
+  } catch {
+    return fallback
   }
 }
 
 /**
- * Get a user's short position for a given token.
- *
- * Reads the ShortPosition PDA on-chain and computes health status
- * using the DeepPool price to value the token debt against SOL collateral.
+ * [V21] Get a single leverage position (replaces getLoanPosition +
+ * getShortPosition). Reads the Position PDA on-chain and computes live health
+ * against DeepPool reserves. Returns health='none' when the position is empty.
  */
-export const getShortPosition = async (
+export const getPosition = async (
   connection: Connection,
   mintStr: string,
-  walletStr: string,
-): Promise<ShortPositionInfo> => {
+  ownerStr: string,
+  side: PositionSide,
+  positionIndex = 0,
+): Promise<PositionInfo> => {
   const mint = new PublicKey(mintStr)
-  const wallet = new PublicKey(walletStr)
+  const owner = new PublicKey(ownerStr)
   const coder = new BorshCoder(idl as unknown as Idl)
 
-  const [shortPositionPda] = getShortPositionPda(mint, wallet)
+  const [positionPda] = getPositionPda(owner, mint, side, positionIndex)
   const [accountInfo, currentSlot] = await Promise.all([
-    connection.getAccountInfo(shortPositionPda),
+    connection.getAccountInfo(positionPda),
     connection.getSlot('confirmed'),
   ])
 
   if (!accountInfo) {
     return {
-      sol_collateral: 0,
-      tokens_borrowed: 0,
+      side,
+      position_index: positionIndex,
+      collateral_amount: 0,
+      debt_amount: 0,
       accrued_interest: 0,
       accrued_interest_stored: 0,
       last_update_slot: 0,
-      total_owed_tokens: 0,
+      total_owed: 0,
       debt_value_sol: 0,
       current_ltv_bps: 0,
       health: 'none',
+      owner_is_vault: false,
     }
   }
 
-  const short = coder.accounts.decode('ShortPosition', accountInfo.data) as unknown as ShortPosition
+  const pos = coder.accounts.decode('Position', accountInfo.data) as unknown as Position
+  const postedCollateral = Number(pos.collateral_amount.toString())
+  const debt = Number(pos.debt_amount.toString())
+  const storedInterest = Number(pos.accrued_interest.toString())
+  const lastUpdateSlot = Number(pos.last_slot.toString())
+  const interest = projectAccruedInterest(debt, storedInterest, lastUpdateSlot, currentSlot)
 
-  const solCollateral = Number(short.sol_collateral.toString())
-  const tokensBorrowed = Number(short.tokens_borrowed.toString())
-  const storedInterest = Number(short.accrued_interest.toString())
-  const lastUpdateSlot = Number(short.last_update_slot.toString())
-  const interest = projectAccruedInterest(
-    tokensBorrowed,
-    storedInterest,
-    lastUpdateSlot,
-    currentSlot,
-  )
-  const totalOwedTokens = tokensBorrowed + interest
-
-  // Get token debt value from DeepPool price
-  let debtValueSol: number | null = 0
-  let poolSol = 0
+  let solReserves = 0
+  let tokenReserves = 0
   const warnings: string[] = []
   try {
     const reserves = await fetchDeepPoolReserves(connection, mint)
-    poolSol = reserves.solReserves
-    if (reserves.tokenReserves > 0) {
-      debtValueSol = (totalOwedTokens * poolSol) / reserves.tokenReserves
-    }
+    solReserves = reserves.solReserves
+    tokenReserves = reserves.tokenReserves
   } catch (e) {
-    debtValueSol = null
-    warnings.push(`Debt valuation failed: ${e instanceof Error ? e.message : String(e)}`)
+    warnings.push(`Pool valuation failed: ${e instanceof Error ? e.message : String(e)}`)
   }
 
-  // For shorts, LTV = debt_value_sol / sol_collateral
-  let currentLtvBps: number | null
-  if (debtValueSol === null) {
-    currentLtvBps = null
-  } else if (solCollateral > 0) {
-    currentLtvBps = Math.floor((debtValueSol / solCollateral) * 10000)
-  } else {
-    currentLtvBps = totalOwedTokens > 0 ? 10000 : 0
-  }
+  // [V21] The on-chain liquidation trigger sizes LTV against the LIVE per-position
+  // vault, not the posted collateral: a short's position_sol_vault also holds the
+  // SOL proceeds from selling the borrowed tokens; a long's position_token_vault
+  // holds posted + bought tokens. Read the vault so SDK health matches the program.
+  const collateral = await fetchLiveCollateral(
+    connection,
+    mint,
+    owner,
+    side,
+    positionIndex,
+    positionPda,
+    postedCollateral,
+  )
 
-  const maxLtvBps = getDepthMaxLtvBps(poolSol)
-  let health: ShortPositionInfo['health']
-  if (tokensBorrowed === 0 && interest === 0) {
-    health = 'none'
-  } else if (currentLtvBps === null) {
-    health = 'healthy'
-  } else if (currentLtvBps >= LIQUIDATION_THRESHOLD_BPS) {
-    health = 'liquidatable'
-  } else if (currentLtvBps >= maxLtvBps) {
-    health = 'at_risk'
-  } else {
-    health = 'healthy'
-  }
+  const { totalOwed, debtValueSol, currentLtvBps, health } = computePositionHealth(
+    side,
+    collateral,
+    debt,
+    interest,
+    solReserves,
+    tokenReserves,
+  )
 
   return {
-    sol_collateral: solCollateral,
-    tokens_borrowed: tokensBorrowed,
+    side,
+    position_index: positionIndex,
+    collateral_amount: collateral,
+    debt_amount: debt,
     accrued_interest: interest,
     accrued_interest_stored: storedInterest,
     last_update_slot: lastUpdateSlot,
-    total_owed_tokens: totalOwedTokens,
+    total_owed: totalOwed,
     debt_value_sol: debtValueSol,
     current_ltv_bps: currentLtvBps,
     health,
+    owner_is_vault: false,
     ...(warnings.length > 0 ? { warnings } : {}),
   }
 }
 
-// Row shape shared by both row-acquisition paths (RPC scan vs indexer fetch).
-// The projection loop in `getAllLoanPositions` consumes this regardless of
-// source — keeps the indexer-first path drop-in compatible.
-interface RawLoanRow {
-  borrower: string
+// Row shape shared by the RPC-scan and indexer-fetch paths.
+interface RawPositionRow {
+  owner: string
+  side: PositionSide
+  position_index: number
   collateral_amount: number
-  borrowed_amount: number
+  debt_amount: number
   accrued_interest_stored: number
   last_update_slot: number
+  owner_is_vault: boolean
 }
 
-async function fetchLoanRowsViaRpc(
+async function fetchPositionRowsViaRpc(
   connection: Connection,
   mint: PublicKey,
-): Promise<RawLoanRow[]> {
+  side?: PositionSide,
+): Promise<RawPositionRow[]> {
   const coder = new BorshCoder(idl as unknown as Idl)
-  const loanDiscriminator = coder.accounts.accountDiscriminator('LoanPosition')
+  const positionDiscriminator = coder.accounts.accountDiscriminator('Position')
   const bs58 = await import('bs58')
-  const accounts = await connection.getProgramAccounts(PROGRAM_ID, {
-    filters: [
-      { memcmp: { offset: 0, bytes: bs58.default.encode(loanDiscriminator) } },
-      { memcmp: { offset: 8 + 32, bytes: mint.toBase58() } }, // mint at offset 40
-    ],
-  })
-  const rows: RawLoanRow[] = []
+  const filters: { memcmp: { offset: number; bytes: string } }[] = [
+    { memcmp: { offset: 0, bytes: bs58.default.encode(positionDiscriminator) } },
+    { memcmp: { offset: POSITION_MINT_OFFSET, bytes: mint.toBase58() } },
+  ]
+  if (side) {
+    const sideByte = side === 'short' ? 1 : 0
+    filters.push({
+      memcmp: {
+        offset: POSITION_SIDE_OFFSET,
+        bytes: bs58.default.encode(Uint8Array.from([sideByte])),
+      },
+    })
+  }
+  const accounts = await connection.getProgramAccounts(PROGRAM_ID, { filters })
+  const rows: RawPositionRow[] = []
   for (const acc of accounts) {
     try {
-      const loan = coder.accounts.decode(
-        'LoanPosition',
-        acc.account.data,
-      ) as unknown as LoanPosition
-      const borrowed = Number(loan.borrowed_amount.toString())
-      if (borrowed > 0) {
+      const pos = coder.accounts.decode('Position', acc.account.data) as unknown as Position
+      const debt = Number(pos.debt_amount.toString())
+      if (debt > 0) {
         rows.push({
-          borrower: loan.user.toString(),
-          collateral_amount: Number(loan.collateral_amount.toString()),
-          borrowed_amount: borrowed,
-          accrued_interest_stored: Number(loan.accrued_interest.toString()),
-          last_update_slot: Number(loan.last_update_slot.toString()),
+          owner: pos.user.toString(),
+          side: decodeSide(pos.side),
+          position_index: pos.position_index,
+          collateral_amount: Number(pos.collateral_amount.toString()),
+          debt_amount: debt,
+          accrued_interest_stored: Number(pos.accrued_interest.toString()),
+          last_update_slot: Number(pos.last_slot.toString()),
+          owner_is_vault: false,
         })
       }
     } catch {
@@ -1468,47 +1404,52 @@ async function fetchLoanRowsViaRpc(
   return rows
 }
 
-async function fetchLoanRowsViaIndexer(
+async function fetchPositionRowsViaIndexer(
   indexer: string,
   mintStr: string,
-): Promise<RawLoanRow[]> {
-  const indexerRows = await fetchLoansFromIndexer(indexer, mintStr, true)
-  return indexerRows.map((r) => ({
-    borrower: r.borrower,
+  side?: PositionSide,
+): Promise<RawPositionRow[]> {
+  const rows: IndexerPositionRow[] = await fetchPositionsFromIndexer(
+    indexer,
+    mintStr,
+    side ?? null,
+    true,
+  )
+  return rows.map((r) => ({
+    owner: r.owner,
+    side: r.side,
+    position_index: r.position_index,
     collateral_amount: r.collateral_amount,
-    borrowed_amount: r.borrowed_amount,
+    debt_amount: r.debt_amount,
     accrued_interest_stored: r.accrued_interest_stored,
     last_update_slot: r.last_update_slot,
+    owner_is_vault: r.owner_is_vault,
   }))
 }
 
 /**
- * Get all active loan positions for a given token mint.
- *
- * Indexer-first when `options.indexer` is provided; falls back silently to
- * an on-chain getProgramAccounts scan on any indexer failure. Either path
- * feeds the same client-side interest projection + health computation,
- * keyed off live DeepPool reserves and currentSlot.
- *
+ * [V21] Get all active leverage positions for a token (replaces
+ * getAllLoanPositions + getAllShortPositions). Pass `side` to scope to long or
+ * short. Indexer-first when `options.indexer` is set; falls back to an on-chain
+ * scan. Both paths feed the same live interest projection + health calc.
  * Sort order: liquidatable first, then at_risk, then healthy.
  */
-export const getAllLoanPositions = async (
+export const getAllPositions = async (
   connection: Connection,
   mintStr: string,
-  options?: ReadOptions,
-): Promise<AllLoanPositionsResult> => {
+  options?: ReadOptions & { side?: PositionSide },
+): Promise<AllPositionsResult> => {
   const mint = new PublicKey(mintStr)
+  const side = options?.side
 
-  // 1+2. Raw rows. Indexer accelerates only the scan; we still hit RPC
-  // for pool reserves + slot below so the health calc reflects live state.
-  const activeLoans = options?.indexer
+  const rows = options?.indexer
     ? await withFallback(
-        () => fetchLoanRowsViaIndexer(options.indexer!, mintStr),
-        () => fetchLoanRowsViaRpc(connection, mint),
+        () => fetchPositionRowsViaIndexer(options.indexer!, mintStr, side),
+        () => fetchPositionRowsViaRpc(connection, mint, side),
       )
-    : await fetchLoanRowsViaRpc(connection, mint)
+    : await fetchPositionRowsViaRpc(connection, mint, side)
 
-  // 3. Fetch DeepPool reserves + current slot ONCE (interest projection needs currentSlot)
+  // Fetch DeepPool reserves + current slot ONCE.
   let poolPriceSol: number | null = null
   let solReserves = 0
   let tokenReserves = 0
@@ -1525,7 +1466,6 @@ export const getAllLoanPositions = async (
       poolPriceSol = solReserves / tokenReserves
     }
   } catch {
-    // Pool price unavailable — fall back to a plain slot fetch so we can still project interest
     try {
       currentSlot = await connection.getSlot('confirmed')
     } catch {
@@ -1533,236 +1473,74 @@ export const getAllLoanPositions = async (
     }
   }
 
-  // 4. Compute health for each position (interest projected to currentSlot)
-  const positions: LoanPositionWithKey[] = activeLoans.map((row) => {
-    const { borrower } = row
-    const collateral = row.collateral_amount
-    const borrowed = row.borrowed_amount
-    const storedInterest = row.accrued_interest_stored
-    const lastUpdateSlot = row.last_update_slot
-    const interest = projectAccruedInterest(borrowed, storedInterest, lastUpdateSlot, currentSlot)
-    const totalOwed = borrowed + interest
-
-    let collateralValueSol: number | null = null
-    if (poolPriceSol !== null && tokenReserves > 0) {
-      collateralValueSol = (collateral * solReserves) / tokenReserves
-    }
-
-    let currentLtvBps: number | null
-    if (collateralValueSol === null) {
-      currentLtvBps = null
-    } else if (collateralValueSol > 0) {
-      currentLtvBps = Math.floor((totalOwed / collateralValueSol) * 10000)
-    } else {
-      currentLtvBps = totalOwed > 0 ? 10000 : 0
-    }
-
-    const maxLtvBps = getDepthMaxLtvBps(solReserves)
-    let health: LoanPositionInfo['health']
-    if (borrowed === 0 && interest === 0) {
-      health = 'none'
-    } else if (currentLtvBps === null) {
-      health = 'healthy'
-    } else if (currentLtvBps >= LIQUIDATION_THRESHOLD_BPS) {
-      health = 'liquidatable'
-    } else if (currentLtvBps >= maxLtvBps) {
-      health = 'at_risk'
-    } else {
-      health = 'healthy'
-    }
-
-    return {
-      borrower,
-      collateral_amount: collateral,
-      borrowed_amount: borrowed,
-      accrued_interest: interest,
-      accrued_interest_stored: storedInterest,
-      last_update_slot: lastUpdateSlot,
-      total_owed: totalOwed,
-      collateral_value_sol: collateralValueSol,
-      current_ltv_bps: currentLtvBps,
-      health,
-    }
+  // [V21] Live per-position vault collateral (the on-chain LTV base — see
+  // fetchLiveCollateral). Derive each position's vault and batch the reads.
+  //   short → position_sol_vault (lamports);  long → position_token_vault (ATA amount)
+  const vaultKeys: PublicKey[] = rows.map((row) => {
+    const owner = new PublicKey(row.owner)
+    if (row.side === 'short') return getShortVaultPda(owner, mint, row.position_index)[0]
+    const [posPda] = getPositionPda(owner, mint, 'long', row.position_index)
+    return getPositionTokenVault(mint, posPda)
   })
-
-  // 5. Sort: liquidatable first, then at_risk, then healthy
-  const healthOrder: Record<string, number> = { liquidatable: 0, at_risk: 1, healthy: 2, none: 3 }
-  positions.sort((a, b) => (healthOrder[a.health] ?? 3) - (healthOrder[b.health] ?? 3))
-
-  return { positions, pool_price_sol: poolPriceSol }
-}
-
-/**
- * Get all active short positions for a given token mint.
- *
- * Mirrors `getAllLoanPositions`: scans on-chain ShortPosition accounts,
- * computes health for each (interest projected to currentSlot), and sorts
- * with liquidatable positions first. Used by the UI's liquidate-shorts list.
- *
- * `ShortPosition` layout: [user(32), mint(32), ...] after the 8-byte
- * discriminator, so the mint filter sits at offset 40 — identical to
- * `LoanPosition`.
- */
-interface RawShortRow {
-  shorter: string
-  sol_collateral: number
-  tokens_borrowed: number
-  accrued_interest_stored: number
-  last_update_slot: number
-}
-
-async function fetchShortRowsViaRpc(
-  connection: Connection,
-  mint: PublicKey,
-): Promise<RawShortRow[]> {
-  const coder = new BorshCoder(idl as unknown as Idl)
-  const shortDiscriminator = coder.accounts.accountDiscriminator('ShortPosition')
-  const bs58 = await import('bs58')
-  const accounts = await connection.getProgramAccounts(PROGRAM_ID, {
-    filters: [
-      { memcmp: { offset: 0, bytes: bs58.default.encode(shortDiscriminator) } },
-      { memcmp: { offset: 8 + 32, bytes: mint.toBase58() } },
-    ],
-  })
-  const rows: RawShortRow[] = []
-  for (const acc of accounts) {
+  const liveCollateral: number[] = rows.map((r) => r.collateral_amount) // fallback to posted
+  if (vaultKeys.length > 0) {
     try {
-      const short = coder.accounts.decode(
-        'ShortPosition',
-        acc.account.data,
-      ) as unknown as ShortPosition
-      const borrowed = Number(short.tokens_borrowed.toString())
-      if (borrowed > 0) {
-        rows.push({
-          shorter: short.user.toString(),
-          sol_collateral: Number(short.sol_collateral.toString()),
-          tokens_borrowed: borrowed,
-          accrued_interest_stored: Number(short.accrued_interest.toString()),
-          last_update_slot: Number(short.last_update_slot.toString()),
-        })
+      const chunks: PublicKey[][] = []
+      for (let i = 0; i < vaultKeys.length; i += 100) chunks.push(vaultKeys.slice(i, i + 100))
+      const results = await Promise.all(
+        chunks.map((c) => connection.getMultipleAccountsInfo(c)),
+      )
+      let idx = 0
+      for (const infos of results) {
+        for (const info of infos) {
+          if (info) {
+            liveCollateral[idx] =
+              rows[idx].side === 'short'
+                ? info.lamports
+                : info.data.length >= 72
+                  ? Number(info.data.readBigUInt64LE(64)) // SPL/Token-2022 amount @ offset 64
+                  : rows[idx].collateral_amount
+          }
+          idx++
+        }
       }
     } catch {
-      // Skip malformed accounts.
-    }
-  }
-  return rows
-}
-
-async function fetchShortRowsViaIndexer(
-  indexer: string,
-  mintStr: string,
-): Promise<RawShortRow[]> {
-  const indexerRows = await fetchShortsFromIndexer(indexer, mintStr, true)
-  return indexerRows.map((r) => ({
-    shorter: r.shorter,
-    sol_collateral: r.sol_collateral,
-    tokens_borrowed: r.tokens_borrowed,
-    accrued_interest_stored: r.accrued_interest_stored,
-    last_update_slot: r.last_update_slot,
-  }))
-}
-
-export const getAllShortPositions = async (
-  connection: Connection,
-  mintStr: string,
-  options?: ReadOptions,
-): Promise<AllShortPositionsResult> => {
-  const mint = new PublicKey(mintStr)
-
-  // 1+2. Raw rows. Same indexer-first pattern as getAllLoanPositions.
-  const activeShorts = options?.indexer
-    ? await withFallback(
-        () => fetchShortRowsViaIndexer(options.indexer!, mintStr),
-        () => fetchShortRowsViaRpc(connection, mint),
-      )
-    : await fetchShortRowsViaRpc(connection, mint)
-
-  // 3. Fetch DeepPool reserves + current slot ONCE
-  let poolPriceSol: number | null = null
-  let solReserves = 0
-  let tokenReserves = 0
-  let currentSlot = 0
-  try {
-    const [reserves, slot] = await Promise.all([
-      fetchDeepPoolReserves(connection, mint),
-      connection.getSlot('confirmed'),
-    ])
-    currentSlot = slot
-    solReserves = reserves.solReserves
-    tokenReserves = reserves.tokenReserves
-    if (tokenReserves > 0) {
-      poolPriceSol = solReserves / tokenReserves
-    }
-  } catch {
-    try {
-      currentSlot = await connection.getSlot('confirmed')
-    } catch {
-      /* ignore */
+      /* keep posted-collateral fallback */
     }
   }
 
-  // 4. Compute health for each position (interest projected to currentSlot)
-  const positions: ShortPositionWithKey[] = activeShorts.map((row) => {
-    const { shorter } = row
-    const solCollateral = row.sol_collateral
-    const tokensBorrowed = row.tokens_borrowed
-    const storedInterest = row.accrued_interest_stored
-    const lastUpdateSlot = row.last_update_slot
+  const positions: PositionWithKey[] = rows.map((row, i) => {
     const interest = projectAccruedInterest(
-      tokensBorrowed,
-      storedInterest,
-      lastUpdateSlot,
+      row.debt_amount,
+      row.accrued_interest_stored,
+      row.last_update_slot,
       currentSlot,
     )
-    const totalOwedTokens = tokensBorrowed + interest
-
-    // Shorts: debt is denominated in tokens, collateral in SOL — inverse of
-    // the lending side. debt_value_sol = totalOwedTokens × pool_price.
-    let debtValueSol: number | null = 0
-    if (poolPriceSol !== null && tokenReserves > 0) {
-      debtValueSol = (totalOwedTokens * solReserves) / tokenReserves
-    } else {
-      debtValueSol = null
-    }
-
-    let currentLtvBps: number | null
-    if (debtValueSol === null) {
-      currentLtvBps = null
-    } else if (solCollateral > 0) {
-      currentLtvBps = Math.floor((debtValueSol / solCollateral) * 10000)
-    } else {
-      currentLtvBps = totalOwedTokens > 0 ? 10000 : 0
-    }
-
-    const maxLtvBps = getDepthMaxLtvBps(solReserves)
-    let health: ShortPositionInfo['health']
-    if (tokensBorrowed === 0 && interest === 0) {
-      health = 'none'
-    } else if (currentLtvBps === null) {
-      health = 'healthy'
-    } else if (currentLtvBps >= LIQUIDATION_THRESHOLD_BPS) {
-      health = 'liquidatable'
-    } else if (currentLtvBps >= maxLtvBps) {
-      health = 'at_risk'
-    } else {
-      health = 'healthy'
-    }
-
+    const { totalOwed, debtValueSol, currentLtvBps, health } = computePositionHealth(
+      row.side,
+      liveCollateral[i],
+      row.debt_amount,
+      interest,
+      solReserves,
+      tokenReserves,
+    )
     return {
-      shorter,
-      sol_collateral: solCollateral,
-      tokens_borrowed: tokensBorrowed,
+      owner: row.owner,
+      side: row.side,
+      position_index: row.position_index,
+      collateral_amount: liveCollateral[i],
+      debt_amount: row.debt_amount,
       accrued_interest: interest,
-      accrued_interest_stored: storedInterest,
-      last_update_slot: lastUpdateSlot,
-      total_owed_tokens: totalOwedTokens,
+      accrued_interest_stored: row.accrued_interest_stored,
+      last_update_slot: row.last_update_slot,
+      total_owed: totalOwed,
       debt_value_sol: debtValueSol,
       current_ltv_bps: currentLtvBps,
       health,
+      owner_is_vault: row.owner_is_vault,
     }
   })
 
-  // 5. Sort: liquidatable first, then at_risk, then healthy
   const healthOrder: Record<string, number> = { liquidatable: 0, at_risk: 1, healthy: 2, none: 3 }
   positions.sort((a, b) => (healthOrder[a.health] ?? 3) - (healthOrder[b.health] ?? 3))
 
@@ -1787,7 +1565,11 @@ export const getVault = async (
   const coder = new BorshCoder(idl as unknown as Idl)
 
   const [vaultPda] = getTorchVaultPda(creator)
-  const accountInfo = await connection.getAccountInfo(vaultPda)
+  const [vaultSolPda] = getVaultSolPda(creator)
+  const [accountInfo, vaultSolInfo] = await Promise.all([
+    connection.getAccountInfo(vaultPda),
+    connection.getAccountInfo(vaultSolPda),
+  ])
 
   if (!accountInfo) return null
 
@@ -1797,7 +1579,8 @@ export const getVault = async (
     address: vaultPda.toString(),
     creator: vault.creator.toString(),
     authority: vault.authority.toString(),
-    sol_balance: Number(vault.sol_balance.toString()) / LAMPORTS_PER_SOL,
+    // [V21] Vault SOL lives in the System-owned torch_vault_sol PDA (lamports).
+    sol_balance: (vaultSolInfo?.lamports ?? 0) / LAMPORTS_PER_SOL,
     total_deposited: Number(vault.total_deposited.toString()) / LAMPORTS_PER_SOL,
     total_withdrawn: Number(vault.total_withdrawn.toString()) / LAMPORTS_PER_SOL,
     total_spent: Number(vault.total_spent.toString()) / LAMPORTS_PER_SOL,
@@ -1830,12 +1613,15 @@ export const getVaultForWallet = async (
   if (!vaultInfo) return null
 
   const vault = coder.accounts.decode('TorchVault', vaultInfo.data) as unknown as TorchVault
+  // [V21] Vault SOL lives in the System-owned torch_vault_sol PDA.
+  const [vaultSolPda] = getVaultSolPda(vault.creator)
+  const vaultSolInfo = await connection.getAccountInfo(vaultSolPda)
 
   return {
     address: link.vault.toString(),
     creator: vault.creator.toString(),
     authority: vault.authority.toString(),
-    sol_balance: Number(vault.sol_balance.toString()) / LAMPORTS_PER_SOL,
+    sol_balance: (vaultSolInfo?.lamports ?? 0) / LAMPORTS_PER_SOL,
     total_deposited: Number(vault.total_deposited.toString()) / LAMPORTS_PER_SOL,
     total_withdrawn: Number(vault.total_withdrawn.toString()) / LAMPORTS_PER_SOL,
     total_spent: Number(vault.total_spent.toString()) / LAMPORTS_PER_SOL,
@@ -1946,7 +1732,11 @@ export const getTreasuryState = async (
   const coder = new BorshCoder(idl as unknown as Idl)
 
   const [treasuryPda] = getTokenTreasuryPda(mint)
-  const accountInfo = await connection.getAccountInfo(treasuryPda)
+  const [treasurySolVaultPda] = getTreasurySolVaultPda(mint)
+  const [accountInfo, vaultInfo] = await Promise.all([
+    connection.getAccountInfo(treasuryPda),
+    connection.getAccountInfo(treasurySolVaultPda),
+  ])
   if (!accountInfo) return null
 
   const t = coder.accounts.decode('Treasury', accountInfo.data) as unknown as Treasury
@@ -1955,18 +1745,20 @@ export const getTreasuryState = async (
     address: treasuryPda.toString(),
     bonding_curve: t.bonding_curve.toString(),
     mint: t.mint.toString(),
-    sol_balance_sol: Number(t.sol_balance.toString()) / LAMPORTS_PER_SOL,
+    treasury_sol_vault_sol: (vaultInfo?.lamports ?? 0) / LAMPORTS_PER_SOL,
     is_community_token: t.is_community_token,
-    short_collateral_reserved: Number(t.short_collateral_reserved.toString()),
     harvested_fees_sol: Number(t.harvested_fees.toString()) / LAMPORTS_PER_SOL,
     baseline_sol_reserves: Number(t.baseline_sol_reserves.toString()),
     baseline_token_reserves: Number(t.baseline_token_reserves.toString()),
     baseline_initialized: t.baseline_initialized,
     short_selling_enabled: t.short_selling_enabled,
+    lending_enabled: t.lending_enabled,
     last_buyback_slot: Number(t.last_buyback_slot.toString()),
-    total_stars: Number(t.total_stars.toString()),
-    star_sol_balance_sol: Number(t.star_sol_balance.toString()) / LAMPORTS_PER_SOL,
-    creator_paid_out: t.creator_paid_out,
+    total_tokens_lent: Number(t.total_tokens_lent.toString()),
+    active_shorts: Number(t.active_shorts.toString()),
+    total_sol_lent_to_longs: Number(t.total_sol_lent_to_longs.toString()),
+    active_longs: Number(t.active_longs.toString()),
+    total_token_collateral_locked: Number(t.total_token_collateral_locked.toString()),
   }
 }
 

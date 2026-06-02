@@ -15,7 +15,7 @@ mod kani_proofs;
 
 use contexts::*;
 
-declare_id!("4nwTCWyR6vapTQRkV39f32xJ3uQztdjBqfhubnR6wQQC");
+declare_id!("E5b4rBqtS5jRvjHcYZ3ZSNo2sdSPJtauQKkEacKmmjqG");
 
 #[program]
 pub mod torch_market {
@@ -57,10 +57,6 @@ pub mod torch_market {
         handlers::revival::contribute_revival(ctx, sol_amount)
     }
 
-    pub fn fund_migration_sol(ctx: Context<FundMigrationSol>) -> Result<()> {
-        handlers::migration::fund_migration_sol(ctx)
-    }
-
     pub fn migrate_to_dex(ctx: Context<MigrateToDex>) -> Result<()> {
         handlers::migration::migrate_to_dex(ctx)
     }
@@ -73,14 +69,6 @@ pub mod torch_market {
 
     pub fn swap_fees_to_sol(ctx: Context<SwapFeesToSol>, minimum_amount_out: u64) -> Result<()> {
         handlers::treasury::swap_fees_to_sol(ctx, minimum_amount_out)
-    }
-
-    pub fn star_token(ctx: Context<StarToken>) -> Result<()> {
-        handlers::rewards::star_token(ctx)
-    }
-
-    pub fn star_token_via_vault(ctx: Context<StarTokenViaVault>) -> Result<()> {
-        handlers::rewards::star_token_via_vault(ctx)
     }
 
     pub fn initialize_protocol_treasury(ctx: Context<InitializeProtocolTreasury>) -> Result<()> {
@@ -101,29 +89,8 @@ pub mod torch_market {
         handlers::protocol_treasury::claim_protocol_rewards_via_vault(ctx)
     }
 
-    pub fn borrow(ctx: Context<Borrow>, args: BorrowArgs) -> Result<()> {
-        handlers::lending::borrow(ctx, args)
-    }
-
-    pub fn borrow_via_vault(ctx: Context<BorrowViaVault>, args: BorrowArgs) -> Result<()> {
-        handlers::lending::borrow_via_vault(ctx, args)
-    }
-
-    pub fn repay(ctx: Context<Repay>, sol_amount: u64) -> Result<()> {
-        handlers::lending::repay(ctx, sol_amount)
-    }
-
-    pub fn repay_via_vault(ctx: Context<RepayViaVault>, sol_amount: u64) -> Result<()> {
-        handlers::lending::repay_via_vault(ctx, sol_amount)
-    }
-
-    pub fn liquidate(ctx: Context<Liquidate>) -> Result<()> {
-        handlers::lending::liquidate(ctx)
-    }
-
-    pub fn liquidate_via_vault(ctx: Context<LiquidateViaVault>) -> Result<()> {
-        handlers::lending::liquidate_via_vault(ctx)
-    }
+    // [V21] V20 generic-margin (borrow/repay/liquidate) instructions removed;
+    // replaced by leverage open/close/liquidate × long/short (wired in step 6).
 
     pub fn create_vault(ctx: Context<CreateVault>) -> Result<()> {
         handlers::vault::create_vault(ctx)
@@ -162,33 +129,77 @@ pub mod torch_market {
         handlers::swap::vault_swap(ctx, amount_in, minimum_amount_out, is_buy)
     }
 
-    pub fn open_short(ctx: Context<OpenShort>, args: OpenShortArgs) -> Result<()> {
-        handlers::short::open_short(ctx, args)
+    // [V21] Per-token closed leverage — atomic-custodied open/close/liquidate
+    // × short/long. Replaces V20 generic margin + wallet-custodied short.
+    pub fn open_short(ctx: Context<OpenShortPosition>, args: OpenPositionArgs) -> Result<()> {
+        handlers::leverage::open_short(ctx, args)
     }
 
     pub fn open_short_via_vault(
         ctx: Context<OpenShortViaVault>,
-        args: OpenShortArgs,
+        args: OpenPositionArgs,
     ) -> Result<()> {
-        handlers::short::open_short_via_vault(ctx, args)
+        handlers::leverage::open_short_via_vault(ctx, args)
     }
 
-    pub fn close_short(ctx: Context<CloseShort>, token_amount: u64) -> Result<()> {
-        handlers::short::close_short(ctx, token_amount)
+    pub fn close_short(ctx: Context<CloseShortPosition>, args: ClosePositionArgs) -> Result<()> {
+        handlers::leverage::close_short(ctx, args)
     }
 
     pub fn close_short_via_vault(
         ctx: Context<CloseShortViaVault>,
-        token_amount: u64,
+        args: ClosePositionArgs,
     ) -> Result<()> {
-        handlers::short::close_short_via_vault(ctx, token_amount)
+        handlers::leverage::close_short_via_vault(ctx, args)
     }
 
-    pub fn liquidate_short(ctx: Context<LiquidateShort>) -> Result<()> {
-        handlers::short::liquidate_short(ctx)
+    pub fn liquidate_short(
+        ctx: Context<LiquidateShortPosition>,
+        args: LiquidatePositionArgs,
+    ) -> Result<()> {
+        handlers::leverage::liquidate_short(ctx, args)
     }
 
-    pub fn liquidate_short_via_vault(ctx: Context<LiquidateShortViaVault>) -> Result<()> {
-        handlers::short::liquidate_short_via_vault(ctx)
+    pub fn liquidate_short_via_vault(
+        ctx: Context<LiquidateShortViaVault>,
+        args: LiquidatePositionArgs,
+    ) -> Result<()> {
+        handlers::leverage::liquidate_short_via_vault(ctx, args)
+    }
+
+    pub fn open_long(ctx: Context<OpenLongPosition>, args: OpenPositionArgs) -> Result<()> {
+        handlers::leverage::open_long(ctx, args)
+    }
+
+    pub fn open_long_via_vault(
+        ctx: Context<OpenLongViaVault>,
+        args: OpenPositionArgs,
+    ) -> Result<()> {
+        handlers::leverage::open_long_via_vault(ctx, args)
+    }
+
+    pub fn close_long(ctx: Context<CloseLongPosition>, args: ClosePositionArgs) -> Result<()> {
+        handlers::leverage::close_long(ctx, args)
+    }
+
+    pub fn close_long_via_vault(
+        ctx: Context<CloseLongViaVault>,
+        args: ClosePositionArgs,
+    ) -> Result<()> {
+        handlers::leverage::close_long_via_vault(ctx, args)
+    }
+
+    pub fn liquidate_long(
+        ctx: Context<LiquidateLongPosition>,
+        args: LiquidatePositionArgs,
+    ) -> Result<()> {
+        handlers::leverage::liquidate_long(ctx, args)
+    }
+
+    pub fn liquidate_long_via_vault(
+        ctx: Context<LiquidateLongViaVault>,
+        args: LiquidatePositionArgs,
+    ) -> Result<()> {
+        handlers::leverage::liquidate_long_via_vault(ctx, args)
     }
 }

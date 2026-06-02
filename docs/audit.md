@@ -1,6 +1,6 @@
-# V20 Audit Report (current)
+# Torch Market Audit Report (V21 current)
 
-Independent adversarial review of the live v20 branch (deep_pool integration, lending unlock, gross-up, absolute per-user cap). Two scopes: the on-chain program (`programs/torch_market`) and the indexer + Postgres stack (`indexer/`).
+Independent adversarial review. The **V21 audit** (closed-loop leverage + depth-scaled risk rails) is the current pass; the V20-current and V20.0.0 sections below remain applicable to the unchanged surface. Two scopes: the on-chain program (`programs/torch_market`) and the indexer + Postgres stack (`indexer/`).
 
 ## Summary
 
@@ -14,6 +14,68 @@ The v20-current surface adds three structural pieces beyond v20.0.0:
 Plus the unified per-user short cap (flat `MAX_WALLET_TOKENS`, 2% of supply), matching the bonding-curve anti-whale policy.
 
 Adversarial coverage focused on the new surface: gate bypass paths, gross-up arithmetic, cap interactions with via_vault contexts, error-code shift impact, and indexer-side ingestion integrity.
+
+## V21 Audit — closed-loop leverage + depth-scaled risk rails
+
+**No critical, high, or medium findings. Seven informational / low-severity items, all hardening or accounting-semantics notes — see below.**
+
+The V21 surface adds, beyond v20: atomic-custodied long/short positions (vault-seeded; `*_via_vault` variants); a keeperless TWAP liquidation mark consumed from deep_pool (D-10: seize clamp, distress-scaled bonus, asymmetric spot veto); and the **depth-scaled risk rails** — a continuous concave max-LTV curve (30% at the 100-SOL floor → 60% asymptote), a per-position size cap (`debt_value ≤ ρ_max·pool_sol`, ρ_max = 25%), a derived liquidation bonus (32.5% = 1.3·ρ_max, full at the derived 75.5% LTV), and interest lowered 200 → 150 bps/epoch.
+
+**Method.** Four parallel adversarial passes over `contexts.rs`, `handlers/leverage.rs` (12 entrypoints: open/close/liquidate × short/long × {wallet, via_vault}), `handlers/token.rs`, `math.rs`, `pool_validation.rs`, `constants.rs`, `state.rs`, cross-referencing the `deep_pool` Swap/create_pool it CPIs into:
+1. **Account constraints & authorization** — signer/owner/seed checks, the via_vault extraction invariant, mint/token-program substitution, manual deep_pool validation.
+2. **Economic invariants** — SOL/token conservation, lock conservation, derive-custody-from-lamports, bad-debt accounting, rounding direction.
+3. **Reentrancy & CPI ordering** — check-effects-interactions, stale-balance reloads, transfer-hook surface, deep_pool callback surface.
+4. **Arithmetic & the rails** — overflow/underflow/div-by-zero, the curve, the derived constants, the four size-cap clamp sites, `effective_liq_bonus_bps` edges.
+
+Each candidate finding was re-verified against the source before inclusion; two auditor-rated findings (a "Medium" on long-fee accounting and a "High" on size-cap arithmetic) were **downgraded** after the code confirmed they are non-exploitable — recorded honestly below with the reasoning.
+
+### V21-1 — `total_sol_lent_to_longs` tracks gross debt owed, not physical SOL disbursed [INFORMATIONAL]
+
+`open_long`/`open_long_via_vault` record `position.debt_amount = desired_borrow_sol` (gross) and `total_sol_lent_to_longs += desired_borrow_sol`, while only `atomic_buy_sol = desired_borrow_sol − open_fee` physically leaves the treasury (the `open_fee` stays as revenue — `leverage.rs:1391-1400`, comment in source). An auditor pass flagged this **Medium** ("fee double-charged; counter never unwinds"). **Both claims are incorrect on inspection:**
+- **No double-charge.** The borrower owes the gross and received `gross − fee` of buying power; the fee is charged exactly once. The treasury realizes it once, at close, when the borrower repays the gross.
+- **It unwinds.** On close, `total_sol_lent_to_longs −= principal_paid`, where a clean full close repays `principal_paid = debt_amount = gross` — the same gross that was added. Bad-debt resolution subtracts `principal_paid + bad_debt = gross`. No permanent drift.
+
+The only real effect: `total_sol_lent_to_longs` is a **debt-owed register** (consistent with `debt_amount`), not a physical-disbursement register, so the lending-headroom calc `available = physical − lent` is **conservative** by the sum of open-fees on currently-open positions — it under-lends slightly, never over-lends. Safe; documented here for clarity. (Recommendation: a one-line comment at the headroom calc noting the register is gross-debt, to preempt re-flagging.)
+
+### V21-2 — `max_debt_value_for_depth` uses unchecked arithmetic [LOW, hardening, FIXED]
+
+`pool_validation.rs`: `((pool_sol as u128 * RHO_MAX_BPS as u128) / 10_000) as u64`. Safe under current constants — the u128 product (`≤ 1.8e19 · 2500 ≈ 4.6e22`) cannot overflow, and `RHO_MAX_BPS < 10000` guarantees the result `≤ pool_sol` so the `as u64` never truncates. An auditor rated this **High** as a latent footgun; downgraded to **Low** because there is no triggering input under current constants.
+
+**Fix applied:** added `const _: () = assert!(RHO_MAX_BPS < 10_000);` (`constants.rs`, next to the rail constants), and changed the body to `u64::try_from(...).unwrap_or(0)` — on the (now compile-time-impossible) overflow path it **denies** via a 0 cap rather than wrapping OPEN to a huge cap. Build + 98 litesvm + 53 proptests green; behavior-identical under current constants.
+
+### V21-3 — Depth-curve span subtraction lacks a `LTV_MAX > LTV_MIN` invariant assert [LOW, hardening, FIXED]
+
+`get_depth_max_ltv_bps` computes `span = (LTV_MAX_BPS − LTV_MIN_BPS)`. Correct for current constants (6000 > 3000); the division `span·S_floor / pool_sol` is overflow-safe (`3e14 ⊂ u64`) and div-by-zero-safe (the `pool_sol < DEPTH_FLOOR_SOL → 0` early return guarantees `pool_sol ≥ floor > 0`).
+
+**Fix applied:** added `const _: () = assert!(LTV_MAX_BPS > LTV_MIN_BPS);` (`constants.rs`, mirroring the existing const-asserts at `constants.rs:69-70`) so a future mis-edit fails the build instead of introducing a u16 underflow.
+
+### V21-4 — close inverse does not model deep_pool's 1-lamport minimum swap fee [INFORMATIONAL]
+
+`calc_close_pool_amount_in` models the pool fee as a pure 25 bps proportional, but deep_pool charges `max(floor(amount_in·25/10000), 1)`. For sub-400-lamport inputs the real fee floors to 1 lamport, so a buy could under-deliver by 1 lamport's worth of tokens. Fully backstopped: the swap CPI passes `minimum_out = debt_gross`, so deep_pool reverts rather than letting the lock be under-repaid — worst case a (practically unreachable, given `MIN_SHORT_TOKENS = 1e9`) spurious dust-sized close failure, never a conservation violation.
+
+### V21-5 — Interactions-before-Effects ordering in the liquidation/open flows [INFORMATIONAL]
+
+The handlers write protocol state *after* their CPIs (cover transfer → seize → debt write-off). This is the opposite of textbook check-effects-interactions, and is **safe here only because of two properties**: (a) every flow is a single atomic instruction — any CPI failure reverts all prior writes, so no half-updated state is observable across a tx boundary; and (b) reentrancy is structurally impossible (V21-VP below). The liquidation cover and seize are therefore inseparable. Recommendation: pin the no-reentrancy assumption with a comment (or move debt-credit writes ahead of the seize transfer) so a future reentrant CPI target can't silently turn this into a seize-then-reenter bug.
+
+### V21-6 — `short_interest_collected` is not physically reconcilable [INFORMATIONAL]
+
+On close/liquidate, the buy is sized to deliver `≥ debt_gross` to the lock; any overshoot (interest overpay + gross-up ceil) stays in the lock as protocol revenue, but `short_interest_collected += interest_paid` records the *intended* credit, not the physical lock delta. Token conservation and lock-non-decreasing hold; only the stat counter is an estimate. By design; documented.
+
+### V21-7 — Leverage contexts rely on shared-seed coupling rather than explicit `has_one` [INFORMATIONAL]
+
+`treasury`, `treasury_lock`, `bonding_curve`, and the vaults are each independently seeded by the same `mint` account, which forces consistency — an attacker cannot substitute a foreign treasury/lock for a given mint. Sound, but the coupling is implicit. Optional defense-in-depth: add `constraint = treasury.mint == mint.key()` so the coupling survives future seed refactors.
+
+### V21-VP — Verified properties (no findings)
+
+**Authorization / vault security model.** Every state-mutating instruction has a `Signer`. The core invariant holds across all 12 leverage handlers: linked wallets trade vault → position → vault but can **never** drain vault → wallet — `WithdrawVault`/`WithdrawTokens` both require `has_one = authority`, and `*_via_vault` closes route surplus to `vault_sol`, never to the signer (the linked signer receives only the position-account rent it paid at `init`). `VaultWalletLink` is seeded by the signer key and constrained to the vault, so a non-linked wallet has no link PDA.
+
+**deep_pool CPI signer model.** `deep_pool::Swap` requires BOTH `user` and `sol_source` as `Signer`; every torch CPI fills them with the correct PDAs (`treasury_lock`/`position_sol_vault` for shorts, `position`/`long_sol_vault` for longs) and signs with canonical bumps. Verified no seed reused across wallet vs via_vault variants.
+
+**Reentrancy surface is closed.** The mint carries **no transfer-hook extension** (`token.rs` initializes only TransferFeeConfig, MetadataPointer, TokenMetadata), so `transfer_checked` runs no attacker code. deep_pool's swap CPIs out only to System + Token-2022 — it cannot call back into torch — and deep_pool independently *rejects* hook-bearing mints at pool creation. Opens write state strictly post-CPI (atomic rollback on slippage); post-CPI balances are read live via `reload()` (token vaults) or `.lamports()` (SOL vaults). No stale-balance accounting, no TOCTOU (pool/vault accounts are address-constrained PDAs; single-tx serialization; `min_out` backstops every swap).
+
+**Conservation & accounting.** SOL and token conservation hold across open/close/liquidate. The 300M `TreasuryLock` is non-decreasing across any *solvent* short cycle via gross-up (insolvent liquidations intentionally draw the reserve, bounded by per-position custody). Custody is derived from lamports/vault balances, never a stored field (no `sol_balance` on Treasury/vault). Bad-debt write-off reduces position debt and `total_*_lent` together, once. Every floor/ceil favors the protocol (transfer-fee/gross-up/close-inverse ceil; borrow-sizing/seize floor) — no value leaks to users.
+
+**Rails & arithmetic.** `get_depth_max_ltv_bps` returns 0 below the floor, exactly `LTV_MIN` at the floor, is monotone non-decreasing and clamped to `[LTV_MIN, LTV_MAX]`, with no overflow. The derived constants compute correctly (`DEFAULT_LIQUIDATION_BONUS_BPS = 3250`, `LIQ_FULL_BONUS_LTV_BPS = 7547`). The size-cap clamp is present, identical, and applied to the SOL-debt-value variable at all four open sites. `effective_liq_bonus_bps` handles all edges (≤ threshold → 0, ≥ full → ceiling, `ltv = u64::MAX` short-circuits before any multiply, `span = 0` → 0). `close_long`/`close_long_via_vault` **revert** (`require!(sol_out >= debt_to_repay)`) on an underwater voluntary close rather than partial-repaying. Every adversarial-magnitude multiply either fits its u128 intermediate or fails closed via `checked_*`/`.try_into()`.
 
 ## V20-current Findings
 
@@ -231,7 +293,9 @@ These aren't findings — they're hardening steps that move beyond the code into
 
 ## Verdict
 
-V20-current is safe to deploy. The audit found one real semantic issue (V20C-1, gate bypass via short collateral) which has been fixed with both a Kani harness and a litesvm regression test. The remaining notes are accounting nuances or admin-misconfiguration edge cases, not exploits.
+**V21 (closed-loop leverage + depth-scaled rails) is safe to deploy.** The four-pass adversarial audit found no critical, high, or medium exploitable issue. The seven V21 notes are hardening recommendations (two const-asserts on the rails constants), accounting-semantics clarifications (the gross-debt register, stat-counter estimates), or design boundaries (insolvent liquidation draws the lock reserve) — none are exploits. The central guarantees hold: the vault security model (linked wallets can trade but never extract), a closed reentrancy surface (no transfer hook; deep_pool cannot call back), conservation with protocol-favoring rounding throughout, and the new rails math (curve, size cap, derived bonus) verified correct including overflow/clamp edges. The two hardening items (V21-2, V21-3) — const-asserts plus a fail-closed size-cap downcast — have been **applied**, so a future edit of the rails constants now fails the build rather than silently corrupting a cap.
+
+V20-current remains safe to deploy: the one real semantic issue (V20C-1, gate bypass via short collateral) was fixed with a Kani harness and a litesvm regression. The remaining V20 notes are accounting nuances or admin-misconfiguration edge cases, not exploits.
 
 The indexer + Postgres stack has a strong security posture: loopback-only bindings, least-privilege DB role, authenticated TLS upstream, no SQL injection surface, no write API, idempotent inserts. The recommendations above are deployment hardening, not code fixes.
 

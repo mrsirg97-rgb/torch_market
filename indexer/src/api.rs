@@ -40,12 +40,13 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{debug, warn};
 
 use crate::contracts::{
-    AppState, LiquidityRow, LoanRow, MarketRow, MarketStatus, MarketTier, MessageRow,
-    MigrationRow, PoolRow, PositionHealth, ReservesRow, ShortRow, SwapRow, TradeRow,
+    AppState, LiquidityRow, MarketRow, MarketStatus, MarketTier, MessageRow, MigrationRow,
+    PoolRow, PositionEventKind, PositionEventRow, PositionHealth, PositionRow, PositionSide,
+    ReservesRow, SwapRow, TradeRow,
 };
 use crate::domain::{
-    LiquidityFilter, LoanFilter, MarketFilter, MessageFilter, MigrationFilter, PoolFilter,
-    ShortFilter, SwapFilter, TradeFilter,
+    LiquidityFilter, MarketFilter, MessageFilter, MigrationFilter, PoolFilter, PositionEventFilter,
+    PositionFilter, SwapFilter, TradeFilter,
 };
 use crate::services::RequestCtx;
 
@@ -58,8 +59,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/markets/:mint", get(get_market))
         .route("/api/trades", get(list_trades))
         .route("/api/messages", get(list_messages))
-        .route("/api/loans", get(list_loans))
-        .route("/api/shorts", get(list_shorts))
+        .route("/api/positions", get(list_positions))
+        .route("/api/liquidations", get(list_liquidations))
         .route("/api/migrations", get(list_migrations))
         .route("/api/candles", get(list_candles))
         .route("/api/user-pnl/:wallet", get(get_user_pnl))
@@ -229,66 +230,74 @@ async fn list_messages(
     Ok(Json(arc_owned(messages)))
 }
 
-// ---------- /api/loans ----------
+// ---------- /api/positions ----------
+// [V21] Unified leverage positions (replaces /api/loans + /api/shorts).
+// Filter by `side` (long|short) to recover the old per-kind endpoints.
 
 #[derive(Debug, Deserialize)]
-struct LoansQuery {
+struct PositionsQuery {
     mint: Option<String>,
-    borrower: Option<String>,
+    owner: Option<String>,
+    side: Option<PositionSide>,
     health: Option<PositionHealth>,
     is_active: Option<bool>,
     limit: Option<i64>,
 }
 
-async fn list_loans(
+async fn list_positions(
     State(state): State<AppState>,
-    Query(q): Query<LoansQuery>,
-) -> Result<Json<Vec<LoanRow>>, ApiError> {
+    Query(q): Query<PositionsQuery>,
+) -> Result<Json<Vec<PositionRow>>, ApiError> {
     let mut ctx = RequestCtx::begin(&state.pool).await?;
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
-    let loans = ctx
-        .loans()
-        .list(LoanFilter {
+    let positions = ctx
+        .positions()
+        .list(PositionFilter {
             mint: q.mint,
-            borrower: q.borrower,
+            owner: q.owner,
+            side: q.side,
             health: q.health,
             is_active: q.is_active,
             limit: Some(limit),
         })
         .await?;
     ctx.commit().await?;
-    Ok(Json(arc_owned(loans)))
+    Ok(Json(arc_owned(positions)))
 }
 
-// ---------- /api/shorts ----------
+// ---------- /api/liquidations ----------
+// [V21] Append-only leverage event log filtered to liquidations — the
+// analytics surface for bad_debt / twap_ltv / bonus_bps / seized. Pass
+// `?kind=open|close|liquidate` to see other event kinds (defaults to
+// liquidations).
 
 #[derive(Debug, Deserialize)]
-struct ShortsQuery {
+struct LiquidationsQuery {
     mint: Option<String>,
-    shorter: Option<String>,
-    health: Option<PositionHealth>,
-    is_active: Option<bool>,
+    owner: Option<String>,
+    side: Option<PositionSide>,
+    kind: Option<PositionEventKind>,
     limit: Option<i64>,
 }
 
-async fn list_shorts(
+async fn list_liquidations(
     State(state): State<AppState>,
-    Query(q): Query<ShortsQuery>,
-) -> Result<Json<Vec<ShortRow>>, ApiError> {
+    Query(q): Query<LiquidationsQuery>,
+) -> Result<Json<Vec<PositionEventRow>>, ApiError> {
     let mut ctx = RequestCtx::begin(&state.pool).await?;
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
-    let shorts = ctx
-        .shorts()
-        .list(ShortFilter {
+    let events = ctx
+        .positions()
+        .events(PositionEventFilter {
             mint: q.mint,
-            shorter: q.shorter,
-            health: q.health,
-            is_active: q.is_active,
+            owner: q.owner,
+            side: q.side,
+            kind: Some(q.kind.unwrap_or(PositionEventKind::Liquidate)),
             limit: Some(limit),
         })
         .await?;
     ctx.commit().await?;
-    Ok(Json(arc_owned(shorts)))
+    Ok(Json(arc_owned(events)))
 }
 
 // ---------- /api/migrations ----------

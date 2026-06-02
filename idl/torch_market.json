@@ -1,8 +1,8 @@
 {
-  "address": "4nwTCWyR6vapTQRkV39f32xJ3uQztdjBqfhubnR6wQQC",
+  "address": "E5b4rBqtS5jRvjHcYZ3ZSNo2sdSPJtauQKkEacKmmjqG",
   "metadata": {
     "name": "torch_market",
-    "version": "20.0.0",
+    "version": "21.0.0",
     "spec": "0.1.0",
     "description": "torch.market"
   },
@@ -61,557 +61,6 @@
         }
       ],
       "args": []
-    },
-    {
-      "name": "borrow",
-      "discriminator": [
-        228,
-        253,
-        131,
-        202,
-        207,
-        116,
-        89,
-        18
-      ],
-      "accounts": [
-        {
-          "name": "borrower",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "mint"
-        },
-        {
-          "name": "bonding_curve",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  99,
-                  117,
-                  114,
-                  118,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "treasury",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  116,
-                  114,
-                  101,
-                  97,
-                  115,
-                  117,
-                  114,
-                  121
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "collateral_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  108,
-                  108,
-                  97,
-                  116,
-                  101,
-                  114,
-                  97,
-                  108,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "borrower_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "borrower"
-              },
-              {
-                "kind": "account",
-                "path": "token_program"
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
-        },
-        {
-          "name": "loan_position",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  108,
-                  111,
-                  97,
-                  110
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              },
-              {
-                "kind": "account",
-                "path": "borrower"
-              }
-            ]
-          }
-        },
-        {
-          "name": "deep_pool"
-        },
-        {
-          "name": "deep_pool_token_vault"
-        },
-        {
-          "name": "token_program"
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        },
-        {
-          "name": "event_authority",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  95,
-                  95,
-                  101,
-                  118,
-                  101,
-                  110,
-                  116,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "program"
-        }
-      ],
-      "args": [
-        {
-          "name": "args",
-          "type": {
-            "defined": {
-              "name": "BorrowArgs"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "borrow_via_vault",
-      "discriminator": [
-        144,
-        118,
-        49,
-        17,
-        19,
-        85,
-        179,
-        197
-      ],
-      "accounts": [
-        {
-          "name": "borrower",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "mint"
-        },
-        {
-          "name": "bonding_curve",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  99,
-                  117,
-                  114,
-                  118,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "treasury",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  116,
-                  114,
-                  101,
-                  97,
-                  115,
-                  117,
-                  114,
-                  121
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "collateral_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  108,
-                  108,
-                  97,
-                  116,
-                  101,
-                  114,
-                  97,
-                  108,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "loan_position",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  108,
-                  111,
-                  97,
-                  110
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              },
-              {
-                "kind": "account",
-                "path": "borrower"
-              }
-            ]
-          }
-        },
-        {
-          "name": "deep_pool"
-        },
-        {
-          "name": "deep_pool_token_vault"
-        },
-        {
-          "name": "torch_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  116,
-                  111,
-                  114,
-                  99,
-                  104,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "torch_vault.creator",
-                "account": "TorchVault"
-              }
-            ]
-          }
-        },
-        {
-          "name": "vault_wallet_link",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  118,
-                  97,
-                  117,
-                  108,
-                  116,
-                  95,
-                  119,
-                  97,
-                  108,
-                  108,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "borrower"
-              }
-            ]
-          }
-        },
-        {
-          "name": "vault_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "torch_vault"
-              },
-              {
-                "kind": "account",
-                "path": "token_program"
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
-        },
-        {
-          "name": "token_program"
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        },
-        {
-          "name": "event_authority",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  95,
-                  95,
-                  101,
-                  118,
-                  101,
-                  110,
-                  116,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "program"
-        }
-      ],
-      "args": [
-        {
-          "name": "args",
-          "type": {
-            "defined": {
-              "name": "BorrowArgs"
-            }
-          }
-        }
-      ]
     },
     {
       "name": "buy",
@@ -695,6 +144,14 @@
           }
         },
         {
+          "name": "bonding_curve_sol",
+          "docs": [
+            "Address validated in the handler — bare AccountInfo to spare try_accounts",
+            "stack on this heavy event_cpi context."
+          ],
+          "writable": true
+        },
+        {
           "name": "token_vault",
           "writable": true,
           "pda": {
@@ -767,6 +224,41 @@
                   117,
                   114,
                   121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury_sol_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
                 ]
               },
               {
@@ -1127,6 +619,14 @@
           }
         },
         {
+          "name": "bonding_curve_sol",
+          "docs": [
+            "Address validated in the handler — bare AccountInfo to spare try_accounts",
+            "stack on this heavy event_cpi context."
+          ],
+          "writable": true
+        },
+        {
           "name": "token_vault",
           "writable": true,
           "pda": {
@@ -1199,6 +699,41 @@
                   117,
                   114,
                   121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury_sol_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
                 ]
               },
               {
@@ -1384,6 +919,39 @@
                   117,
                   108,
                   116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault.creator",
+                "account": "TorchVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_sol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  114,
+                  99,
+                  104,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116,
+                  95,
+                  115,
+                  111,
+                  108
                 ]
               },
               {
@@ -1729,6 +1297,39 @@
           }
         },
         {
+          "name": "vault_sol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  114,
+                  99,
+                  104,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116,
+                  95,
+                  115,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault.creator",
+                "account": "TorchVault"
+              }
+            ]
+          }
+        },
+        {
           "name": "vault_wallet_link",
           "pda": {
             "seeds": [
@@ -1762,6 +1363,661 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "close_long",
+      "discriminator": [
+        71,
+        130,
+        194,
+        78,
+        245,
+        26,
+        127,
+        129
+      ],
+      "accounts": [
+        {
+          "name": "borrower",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mint",
+          "writable": true
+        },
+        {
+          "name": "bonding_curve",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  110,
+                  100,
+                  105,
+                  110,
+                  103,
+                  95,
+                  99,
+                  117,
+                  114,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury_sol_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "position_token_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "position"
+              },
+              {
+                "kind": "account",
+                "path": "token_2022_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "long_sol_vault",
+          "docs": [
+            "split into treasury (debt) + borrower (surplus)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  111,
+                  110,
+                  103,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "borrower"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              },
+              {
+                "kind": "arg",
+                "path": "args.position_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "deep_pool_program",
+          "address": "CcwF61GW14AcxCS4E2zedHXdFXy8x8GQPvfxZrs2x2eT"
+        },
+        {
+          "name": "deep_pool",
+          "writable": true
+        },
+        {
+          "name": "deep_pool_token_vault",
+          "writable": true
+        },
+        {
+          "name": "deep_pool_event_authority",
+          "address": "PzAe6xFEGCfQzf55tb4izdvu37wxYq6XE3Tahoc9Uy8"
+        },
+        {
+          "name": "token_2022_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  95,
+                  95,
+                  101,
+                  118,
+                  101,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ClosePositionArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "close_long_via_vault",
+      "discriminator": [
+        217,
+        163,
+        18,
+        104,
+        108,
+        73,
+        58,
+        91
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "torch_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  114,
+                  99,
+                  104,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault.creator",
+                "account": "TorchVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_sol",
+          "docs": [
+            "Surplus P&L returns here (seed-signed by the position vault)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  114,
+                  99,
+                  104,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116,
+                  95,
+                  115,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault.creator",
+                "account": "TorchVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_wallet_link",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116,
+                  95,
+                  119,
+                  97,
+                  108,
+                  108,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "signer"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "writable": true
+        },
+        {
+          "name": "bonding_curve",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  110,
+                  100,
+                  105,
+                  110,
+                  103,
+                  95,
+                  99,
+                  117,
+                  114,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury_sol_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "position_token_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "position"
+              },
+              {
+                "kind": "account",
+                "path": "token_2022_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "long_sol_vault",
+          "docs": [
+            "split into treasury (debt) + vault_sol (surplus)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  111,
+                  110,
+                  103,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              },
+              {
+                "kind": "arg",
+                "path": "args.position_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "deep_pool_program",
+          "address": "CcwF61GW14AcxCS4E2zedHXdFXy8x8GQPvfxZrs2x2eT"
+        },
+        {
+          "name": "deep_pool",
+          "writable": true
+        },
+        {
+          "name": "deep_pool_token_vault",
+          "writable": true
+        },
+        {
+          "name": "deep_pool_event_authority",
+          "address": "PzAe6xFEGCfQzf55tb4izdvu37wxYq6XE3Tahoc9Uy8"
+        },
+        {
+          "name": "token_2022_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  95,
+                  95,
+                  101,
+                  118,
+                  101,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ClosePositionArgs"
+            }
+          }
+        }
+      ]
     },
     {
       "name": "close_short",
@@ -1840,6 +2096,7 @@
         },
         {
           "name": "treasury_lock",
+          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -1878,7 +2135,7 @@
               },
               {
                 "kind": "account",
-                "path": "token_program"
+                "path": "token_2022_program"
               },
               {
                 "kind": "account",
@@ -1925,7 +2182,14 @@
           }
         },
         {
-          "name": "short_config",
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "position_sol_vault",
+          "docs": [
+            "holds the leftover surplus returned to the user."
+          ],
           "writable": true,
           "pda": {
             "seeds": [
@@ -1938,106 +2202,46 @@
                   114,
                   116,
                   95,
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "short_position",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  104,
-                  111,
-                  114,
+                  118,
+                  97,
+                  117,
+                  108,
                   116
                 ]
               },
               {
                 "kind": "account",
-                "path": "mint"
+                "path": "shorter"
               },
               {
                 "kind": "account",
-                "path": "shorter"
+                "path": "mint"
+              },
+              {
+                "kind": "arg",
+                "path": "args.position_index"
               }
             ]
           }
         },
         {
-          "name": "shorter_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "shorter"
-              },
-              {
-                "kind": "account",
-                "path": "token_program"
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
+          "name": "deep_pool_program",
+          "address": "CcwF61GW14AcxCS4E2zedHXdFXy8x8GQPvfxZrs2x2eT"
         },
         {
-          "name": "token_program"
+          "name": "deep_pool",
+          "writable": true
+        },
+        {
+          "name": "deep_pool_token_vault",
+          "writable": true
+        },
+        {
+          "name": "deep_pool_event_authority",
+          "address": "PzAe6xFEGCfQzf55tb4izdvu37wxYq6XE3Tahoc9Uy8"
+        },
+        {
+          "name": "token_2022_program"
         },
         {
           "name": "system_program",
@@ -2078,8 +2282,12 @@
       ],
       "args": [
         {
-          "name": "token_amount",
-          "type": "u64"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ClosePositionArgs"
+            }
+          }
         }
       ]
     },
@@ -2097,9 +2305,99 @@
       ],
       "accounts": [
         {
-          "name": "shorter",
+          "name": "signer",
           "writable": true,
           "signer": true
+        },
+        {
+          "name": "torch_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  114,
+                  99,
+                  104,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault.creator",
+                "account": "TorchVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_sol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  114,
+                  99,
+                  104,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116,
+                  95,
+                  115,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault.creator",
+                "account": "TorchVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_wallet_link",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116,
+                  95,
+                  119,
+                  97,
+                  108,
+                  108,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "signer"
+              }
+            ]
+          }
         },
         {
           "name": "mint"
@@ -2160,6 +2458,7 @@
         },
         {
           "name": "treasury_lock",
+          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -2198,7 +2497,7 @@
               },
               {
                 "kind": "account",
-                "path": "token_program"
+                "path": "token_2022_program"
               },
               {
                 "kind": "account",
@@ -2245,7 +2544,14 @@
           }
         },
         {
-          "name": "short_config",
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "position_sol_vault",
+          "docs": [
+            "the leftover surplus, which returns to the vault on full close."
+          ],
           "writable": true,
           "pda": {
             "seeds": [
@@ -2258,61 +2564,6 @@
                   114,
                   116,
                   95,
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "short_position",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  104,
-                  111,
-                  114,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              },
-              {
-                "kind": "account",
-                "path": "shorter"
-              }
-            ]
-          }
-        },
-        {
-          "name": "torch_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  116,
-                  111,
-                  114,
-                  99,
-                  104,
-                  95,
                   118,
                   97,
                   117,
@@ -2320,101 +2571,39 @@
                   116
                 ]
               },
-              {
-                "kind": "account",
-                "path": "torch_vault.creator",
-                "account": "TorchVault"
-              }
-            ]
-          }
-        },
-        {
-          "name": "vault_wallet_link",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  118,
-                  97,
-                  117,
-                  108,
-                  116,
-                  95,
-                  119,
-                  97,
-                  108,
-                  108,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "shorter"
-              }
-            ]
-          }
-        },
-        {
-          "name": "vault_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
               {
                 "kind": "account",
                 "path": "torch_vault"
               },
               {
                 "kind": "account",
-                "path": "token_program"
+                "path": "mint"
               },
               {
-                "kind": "account",
-                "path": "mint"
+                "kind": "arg",
+                "path": "args.position_index"
               }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
+            ]
           }
         },
         {
-          "name": "token_program"
+          "name": "deep_pool_program",
+          "address": "CcwF61GW14AcxCS4E2zedHXdFXy8x8GQPvfxZrs2x2eT"
+        },
+        {
+          "name": "deep_pool",
+          "writable": true
+        },
+        {
+          "name": "deep_pool_token_vault",
+          "writable": true
+        },
+        {
+          "name": "deep_pool_event_authority",
+          "address": "PzAe6xFEGCfQzf55tb4izdvu37wxYq6XE3Tahoc9Uy8"
+        },
+        {
+          "name": "token_2022_program"
         },
         {
           "name": "system_program",
@@ -2455,8 +2644,12 @@
       ],
       "args": [
         {
-          "name": "token_amount",
-          "type": "u64"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ClosePositionArgs"
+            }
+          }
         }
       ]
     },
@@ -2502,6 +2695,40 @@
                   114,
                   118,
                   101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "bonding_curve_sol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  110,
+                  100,
+                  105,
+                  110,
+                  103,
+                  95,
+                  99,
+                  117,
+                  114,
+                  118,
+                  101,
+                  95,
+                  115,
+                  111,
+                  108
                 ]
               },
               {
@@ -2663,6 +2890,41 @@
           }
         },
         {
+          "name": "treasury_sol_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
           "name": "treasury_token_account",
           "writable": true
         },
@@ -2806,6 +3068,41 @@
           }
         },
         {
+          "name": "vault_sol",
+          "docs": [
+            "materialized (rent-funded) in the handler. All vault SOL lives here."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  114,
+                  99,
+                  104,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116,
+                  95,
+                  115,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "creator"
+              }
+            ]
+          }
+        },
+        {
           "name": "wallet_link",
           "writable": true,
           "pda": {
@@ -2889,6 +3186,39 @@
           }
         },
         {
+          "name": "vault_sol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  114,
+                  99,
+                  104,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116,
+                  95,
+                  115,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault.creator",
+                "account": "TorchVault"
+              }
+            ]
+          }
+        },
+        {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
         }
@@ -2899,60 +3229,6 @@
           "type": "u64"
         }
       ]
-    },
-    {
-      "name": "fund_migration_sol",
-      "discriminator": [
-        173,
-        179,
-        142,
-        58,
-        105,
-        37,
-        185,
-        50
-      ],
-      "accounts": [
-        {
-          "name": "payer",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "mint"
-        },
-        {
-          "name": "bonding_curve",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  99,
-                  117,
-                  114,
-                  118,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        }
-      ],
-      "args": []
     },
     {
       "name": "harvest_fees",
@@ -3331,16 +3607,16 @@
       "args": []
     },
     {
-      "name": "liquidate",
+      "name": "liquidate_long",
       "discriminator": [
-        223,
-        179,
-        226,
-        125,
-        48,
-        46,
-        39,
-        74
+        132,
+        118,
+        230,
+        137,
+        241,
+        193,
+        136,
+        93
       ],
       "accounts": [
         {
@@ -3353,7 +3629,8 @@
           "writable": true
         },
         {
-          "name": "mint"
+          "name": "mint",
+          "writable": true
         },
         {
           "name": "bonding_curve",
@@ -3410,22 +3687,24 @@
           }
         },
         {
-          "name": "collateral_vault",
+          "name": "treasury_sol_vault",
           "writable": true,
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  99,
-                  111,
-                  108,
-                  108,
-                  97,
                   116,
-                  101,
                   114,
+                  101,
                   97,
+                  115,
+                  117,
+                  114,
+                  121,
+                  95,
+                  115,
+                  111,
                   108,
                   95,
                   118,
@@ -3443,17 +3722,21 @@
           }
         },
         {
-          "name": "liquidator_token_account",
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "position_token_vault",
           "writable": true,
           "pda": {
             "seeds": [
               {
                 "kind": "account",
-                "path": "liquidator"
+                "path": "position"
               },
               {
                 "kind": "account",
-                "path": "token_program"
+                "path": "token_2022_program"
               },
               {
                 "kind": "account",
@@ -3500,28 +3783,117 @@
           }
         },
         {
-          "name": "loan_position",
+          "name": "borrower_token_account",
           "writable": true,
           "pda": {
             "seeds": [
               {
-                "kind": "const",
-                "value": [
-                  108,
-                  111,
-                  97,
-                  110
-                ]
+                "kind": "account",
+                "path": "borrower"
+              },
+              {
+                "kind": "account",
+                "path": "token_2022_program"
               },
               {
                 "kind": "account",
                 "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "liquidator_token_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "liquidator"
               },
               {
                 "kind": "account",
-                "path": "borrower"
+                "path": "token_2022_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
               }
-            ]
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
           }
         },
         {
@@ -3531,7 +3903,7 @@
           "name": "deep_pool_token_vault"
         },
         {
-          "name": "token_program"
+          "name": "token_2022_program"
         },
         {
           "name": "associated_token_program",
@@ -3574,7 +3946,428 @@
           "name": "program"
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "LiquidatePositionArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "liquidate_long_via_vault",
+      "discriminator": [
+        138,
+        82,
+        226,
+        176,
+        82,
+        49,
+        215,
+        9
+      ],
+      "accounts": [
+        {
+          "name": "liquidator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "torch_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  114,
+                  99,
+                  104,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault.creator",
+                "account": "TorchVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_sol",
+          "docs": [
+            "Receives the position + token-vault rent on full liquidation."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  114,
+                  99,
+                  104,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116,
+                  95,
+                  115,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault.creator",
+                "account": "TorchVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint",
+          "writable": true
+        },
+        {
+          "name": "bonding_curve",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  110,
+                  100,
+                  105,
+                  110,
+                  103,
+                  95,
+                  99,
+                  117,
+                  114,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury_sol_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "position_token_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "position"
+              },
+              {
+                "kind": "account",
+                "path": "token_2022_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "vault_token_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "torch_vault"
+              },
+              {
+                "kind": "account",
+                "path": "token_2022_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "liquidator_token_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "liquidator"
+              },
+              {
+                "kind": "account",
+                "path": "token_2022_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "deep_pool"
+        },
+        {
+          "name": "deep_pool_token_vault"
+        },
+        {
+          "name": "token_2022_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  95,
+                  95,
+                  101,
+                  118,
+                  101,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "LiquidatePositionArgs"
+            }
+          }
+        }
+      ]
     },
     {
       "name": "liquidate_short",
@@ -3695,7 +4488,7 @@
               },
               {
                 "kind": "account",
-                "path": "token_program"
+                "path": "token_2022_program"
               },
               {
                 "kind": "account",
@@ -3742,7 +4535,11 @@
           }
         },
         {
-          "name": "short_config",
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "position_sol_vault",
           "writable": true,
           "pda": {
             "seeds": [
@@ -3755,43 +4552,24 @@
                   114,
                   116,
                   95,
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "short_position",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  104,
-                  111,
-                  114,
+                  118,
+                  97,
+                  117,
+                  108,
                   116
                 ]
               },
               {
                 "kind": "account",
-                "path": "mint"
+                "path": "borrower"
               },
               {
                 "kind": "account",
-                "path": "borrower"
+                "path": "mint"
+              },
+              {
+                "kind": "arg",
+                "path": "args.position_index"
               }
             ]
           }
@@ -3807,7 +4585,7 @@
               },
               {
                 "kind": "account",
-                "path": "token_program"
+                "path": "token_2022_program"
               },
               {
                 "kind": "account",
@@ -3860,7 +4638,7 @@
           "name": "deep_pool_token_vault"
         },
         {
-          "name": "token_program"
+          "name": "token_2022_program"
         },
         {
           "name": "system_program",
@@ -3899,7 +4677,16 @@
           "name": "program"
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "LiquidatePositionArgs"
+            }
+          }
+        }
+      ]
     },
     {
       "name": "liquidate_short_via_vault",
@@ -3920,8 +4707,70 @@
           "signer": true
         },
         {
-          "name": "borrower",
-          "writable": true
+          "name": "torch_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  114,
+                  99,
+                  104,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault.creator",
+                "account": "TorchVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_sol",
+          "docs": [
+            "Receives residual SOL + position rent on full liquidation (seed-signed",
+            "for the residual transfer; direct close-account credit for the rent)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  114,
+                  99,
+                  104,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116,
+                  95,
+                  115,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault.creator",
+                "account": "TorchVault"
+              }
+            ]
+          }
         },
         {
           "name": "mint"
@@ -4020,7 +4869,7 @@
               },
               {
                 "kind": "account",
-                "path": "token_program"
+                "path": "token_2022_program"
               },
               {
                 "kind": "account",
@@ -4067,434 +4916,60 @@
           }
         },
         {
-          "name": "short_config",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  104,
-                  111,
-                  114,
-                  116,
-                  95,
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "short_position",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  104,
-                  111,
-                  114,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              },
-              {
-                "kind": "account",
-                "path": "borrower"
-              }
-            ]
-          }
-        },
-        {
-          "name": "deep_pool"
-        },
-        {
-          "name": "deep_pool_token_vault"
-        },
-        {
-          "name": "torch_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  116,
-                  111,
-                  114,
-                  99,
-                  104,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "torch_vault.creator",
-                "account": "TorchVault"
-              }
-            ]
-          }
-        },
-        {
-          "name": "vault_wallet_link",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  118,
-                  97,
-                  117,
-                  108,
-                  116,
-                  95,
-                  119,
-                  97,
-                  108,
-                  108,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "liquidator"
-              }
-            ]
-          }
-        },
-        {
-          "name": "vault_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "torch_vault"
-              },
-              {
-                "kind": "account",
-                "path": "token_program"
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
-        },
-        {
-          "name": "token_program"
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        },
-        {
-          "name": "event_authority",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  95,
-                  95,
-                  101,
-                  118,
-                  101,
-                  110,
-                  116,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "program"
-        }
-      ],
-      "args": []
-    },
-    {
-      "name": "liquidate_via_vault",
-      "discriminator": [
-        91,
-        117,
-        161,
-        215,
-        201,
-        231,
-        115,
-        37
-      ],
-      "accounts": [
-        {
-          "name": "liquidator",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "borrower",
+          "name": "position",
           "writable": true
         },
         {
-          "name": "mint"
-        },
-        {
-          "name": "bonding_curve",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  99,
-                  117,
-                  114,
-                  118,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "treasury",
+          "name": "position_sol_vault",
+          "docs": [
+            "residual flows to vault_sol."
+          ],
           "writable": true,
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  116,
-                  114,
-                  101,
-                  97,
                   115,
-                  117,
-                  114,
-                  121
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "collateral_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  108,
-                  108,
-                  97,
-                  116,
-                  101,
-                  114,
-                  97,
-                  108,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "loan_position",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  108,
-                  111,
-                  97,
-                  110
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              },
-              {
-                "kind": "account",
-                "path": "borrower"
-              }
-            ]
-          }
-        },
-        {
-          "name": "deep_pool"
-        },
-        {
-          "name": "deep_pool_token_vault"
-        },
-        {
-          "name": "torch_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  116,
-                  111,
-                  114,
-                  99,
                   104,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "torch_vault.creator",
-                "account": "TorchVault"
-              }
-            ]
-          }
-        },
-        {
-          "name": "vault_wallet_link",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  118,
-                  97,
-                  117,
-                  108,
+                  111,
+                  114,
                   116,
                   95,
-                  119,
+                  118,
                   97,
+                  117,
                   108,
-                  108,
-                  101,
                   116
                 ]
               },
-              {
-                "kind": "account",
-                "path": "liquidator"
-              }
-            ]
-          }
-        },
-        {
-          "name": "vault_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
               {
                 "kind": "account",
                 "path": "torch_vault"
               },
               {
                 "kind": "account",
-                "path": "token_program"
+                "path": "mint"
+              },
+              {
+                "kind": "arg",
+                "path": "args.position_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "liquidator_token_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "liquidator"
+              },
+              {
+                "kind": "account",
+                "path": "token_2022_program"
               },
               {
                 "kind": "account",
@@ -4541,11 +5016,13 @@
           }
         },
         {
-          "name": "token_program"
+          "name": "deep_pool"
         },
         {
-          "name": "associated_token_program",
-          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+          "name": "deep_pool_token_vault"
+        },
+        {
+          "name": "token_2022_program"
         },
         {
           "name": "system_program",
@@ -4584,7 +5061,16 @@
           "name": "program"
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "LiquidatePositionArgs"
+            }
+          }
+        }
+      ]
     },
     {
       "name": "migrate_to_dex",
@@ -4603,31 +5089,6 @@
           "name": "payer",
           "writable": true,
           "signer": true
-        },
-        {
-          "name": "global_config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  103,
-                  108,
-                  111,
-                  98,
-                  97,
-                  108,
-                  95,
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
         },
         {
           "name": "mint",
@@ -4689,6 +5150,51 @@
           }
         },
         {
+          "name": "treasury_sol_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "bonding_curve_sol",
+          "docs": [
+            "bump validated manually in the handler to reduce try_accounts stack pressure",
+            "(this context is near the 4KB SBF frame limit). Seed-signed in the handler as",
+            "deep_pool create_pool's sol_source, so the raise flows curve → pool without",
+            "ever touching a user wallet."
+          ],
+          "writable": true
+        },
+        {
           "name": "token_vault",
           "writable": true,
           "pda": {
@@ -4746,13 +5252,212 @@
           }
         },
         {
-          "name": "treasury_token_account",
+          "name": "payer_token",
+          "writable": true
+        },
+        {
+          "name": "deep_pool_program",
+          "address": "CcwF61GW14AcxCS4E2zedHXdFXy8x8GQPvfxZrs2x2eT"
+        },
+        {
+          "name": "torch_config",
+          "address": "8w8XD2e3My2R86wE7WEkSypaMwjrAHuDh9SApfC4drvX"
+        },
+        {
+          "name": "deep_pool",
+          "writable": true
+        },
+        {
+          "name": "deep_pool_token_vault",
+          "writable": true
+        },
+        {
+          "name": "deep_pool_lp_mint",
+          "writable": true
+        },
+        {
+          "name": "payer_lp_account",
+          "docs": [
+            "Address-constrained to the canonical Token-2022 ATA(payer, deep_pool_lp_mint)",
+            "so a malformed account fails at constraint time instead of inside the CPI."
+          ],
+          "writable": true
+        },
+        {
+          "name": "deep_pool_lp_account",
+          "docs": [
+            "Address-constrained to the canonical Token-2022 ATA(deep_pool, deep_pool_lp_mint)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "deep_pool_event_authority",
+          "address": "PzAe6xFEGCfQzf55tb4izdvu37wxYq6XE3Tahoc9Uy8"
+        },
+        {
+          "name": "token_2022_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  95,
+                  95,
+                  101,
+                  118,
+                  101,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "open_long",
+      "discriminator": [
+        52,
+        195,
+        179,
+        15,
+        7,
+        19,
+        21,
+        55
+      ],
+      "accounts": [
+        {
+          "name": "borrower",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "bonding_curve",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  110,
+                  100,
+                  105,
+                  110,
+                  103,
+                  95,
+                  99,
+                  117,
+                  114,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury_sol_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "borrower_token_account",
           "writable": true,
           "pda": {
             "seeds": [
               {
                 "kind": "account",
-                "path": "treasury"
+                "path": "borrower"
               },
               {
                 "kind": "account",
@@ -4803,49 +5508,111 @@
           }
         },
         {
-          "name": "treasury_lock_token_account",
+          "name": "position",
           "writable": true
         },
         {
-          "name": "treasury_lock",
+          "name": "position_token_vault",
+          "writable": true,
           "pda": {
             "seeds": [
               {
-                "kind": "const",
-                "value": [
-                  116,
-                  114,
-                  101,
-                  97,
-                  115,
-                  117,
-                  114,
-                  121,
-                  95,
-                  108,
-                  111,
-                  99,
-                  107
-                ]
+                "kind": "account",
+                "path": "position"
+              },
+              {
+                "kind": "account",
+                "path": "token_2022_program"
               },
               {
                 "kind": "account",
                 "path": "mint"
               }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "long_sol_vault",
+          "docs": [
+            "then funds the atomic buy as deep_pool's sol_source. ~0 after the swap."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  111,
+                  110,
+                  103,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "borrower"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              },
+              {
+                "kind": "arg",
+                "path": "args.position_index"
+              }
             ]
           }
         },
         {
-          "name": "payer_token",
-          "writable": true
-        },
-        {
           "name": "deep_pool_program",
           "address": "CcwF61GW14AcxCS4E2zedHXdFXy8x8GQPvfxZrs2x2eT"
-        },
-        {
-          "name": "torch_config",
-          "address": "HUnCBnwNRVRVCG98bc3DeC1S4VH3gsL1E9FGmMt6ccdb"
         },
         {
           "name": "deep_pool",
@@ -4856,30 +5623,8 @@
           "writable": true
         },
         {
-          "name": "deep_pool_lp_mint",
-          "writable": true
-        },
-        {
-          "name": "payer_lp_account",
-          "docs": [
-            "Address-constrained to the canonical Token-2022 ATA(payer, deep_pool_lp_mint)",
-            "so a malformed account fails at constraint time instead of inside the CPI."
-          ],
-          "writable": true
-        },
-        {
-          "name": "deep_pool_lp_account",
-          "docs": [
-            "Address-constrained to the canonical Token-2022 ATA(deep_pool, deep_pool_lp_mint)."
-          ],
-          "writable": true
-        },
-        {
           "name": "deep_pool_event_authority",
           "address": "PzAe6xFEGCfQzf55tb4izdvu37wxYq6XE3Tahoc9Uy8"
-        },
-        {
-          "name": "token_program"
         },
         {
           "name": "token_2022_program"
@@ -4925,7 +5670,414 @@
           "name": "program"
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "OpenPositionArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "open_long_via_vault",
+      "discriminator": [
+        141,
+        4,
+        134,
+        133,
+        41,
+        223,
+        39,
+        242
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "torch_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  114,
+                  99,
+                  104,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault.creator",
+                "account": "TorchVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_wallet_link",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116,
+                  95,
+                  119,
+                  97,
+                  108,
+                  108,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "signer"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "bonding_curve",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  110,
+                  100,
+                  105,
+                  110,
+                  103,
+                  95,
+                  99,
+                  117,
+                  114,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury_sol_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_token_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "torch_vault"
+              },
+              {
+                "kind": "account",
+                "path": "token_2022_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "position_token_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "position"
+              },
+              {
+                "kind": "account",
+                "path": "token_2022_program"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "long_sol_vault",
+          "docs": [
+            "then funds the atomic buy as deep_pool's sol_source. ~0 after the swap."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  108,
+                  111,
+                  110,
+                  103,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              },
+              {
+                "kind": "arg",
+                "path": "args.position_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "deep_pool_program",
+          "address": "CcwF61GW14AcxCS4E2zedHXdFXy8x8GQPvfxZrs2x2eT"
+        },
+        {
+          "name": "deep_pool",
+          "writable": true
+        },
+        {
+          "name": "deep_pool_token_vault",
+          "writable": true
+        },
+        {
+          "name": "deep_pool_event_authority",
+          "address": "PzAe6xFEGCfQzf55tb4izdvu37wxYq6XE3Tahoc9Uy8"
+        },
+        {
+          "name": "token_2022_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  95,
+                  95,
+                  101,
+                  118,
+                  101,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "OpenPositionArgs"
+            }
+          }
+        }
+      ]
     },
     {
       "name": "open_short",
@@ -5003,7 +6155,43 @@
           }
         },
         {
+          "name": "treasury_sol_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
           "name": "treasury_lock",
+          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -5042,7 +6230,7 @@
               },
               {
                 "kind": "account",
-                "path": "token_program"
+                "path": "token_2022_program"
               },
               {
                 "kind": "account",
@@ -5089,7 +6277,14 @@
           }
         },
         {
-          "name": "short_config",
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "position_sol_vault",
+          "docs": [
+            "Receives net collateral + atomic-sale proceeds; sol_source of the sell."
+          ],
           "writable": true,
           "pda": {
             "seeds": [
@@ -5102,112 +6297,46 @@
                   114,
                   116,
                   95,
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "short_position",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  104,
-                  111,
-                  114,
+                  118,
+                  97,
+                  117,
+                  108,
                   116
                 ]
               },
               {
                 "kind": "account",
-                "path": "mint"
+                "path": "shorter"
               },
               {
                 "kind": "account",
-                "path": "shorter"
+                "path": "mint"
+              },
+              {
+                "kind": "arg",
+                "path": "args.position_index"
               }
             ]
           }
         },
         {
-          "name": "shorter_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "shorter"
-              },
-              {
-                "kind": "account",
-                "path": "token_program"
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
+          "name": "deep_pool_program",
+          "address": "CcwF61GW14AcxCS4E2zedHXdFXy8x8GQPvfxZrs2x2eT"
         },
         {
-          "name": "deep_pool"
+          "name": "deep_pool",
+          "writable": true
         },
         {
-          "name": "deep_pool_token_vault"
+          "name": "deep_pool_token_vault",
+          "writable": true
         },
         {
-          "name": "token_program"
+          "name": "deep_pool_event_authority",
+          "address": "PzAe6xFEGCfQzf55tb4izdvu37wxYq6XE3Tahoc9Uy8"
+        },
+        {
+          "name": "token_2022_program"
         },
         {
           "name": "system_program",
@@ -5251,7 +6380,7 @@
           "name": "args",
           "type": {
             "defined": {
-              "name": "OpenShortArgs"
+              "name": "OpenPositionArgs"
             }
           }
         }
@@ -5271,9 +6400,102 @@
       ],
       "accounts": [
         {
-          "name": "shorter",
+          "name": "signer",
           "writable": true,
           "signer": true
+        },
+        {
+          "name": "torch_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  114,
+                  99,
+                  104,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault.creator",
+                "account": "TorchVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_sol",
+          "docs": [
+            "the collateral source (seed-signed). All vault SOL lives here."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  114,
+                  99,
+                  104,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116,
+                  95,
+                  115,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault.creator",
+                "account": "TorchVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_wallet_link",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116,
+                  95,
+                  119,
+                  97,
+                  108,
+                  108,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "signer"
+              }
+            ]
+          }
         },
         {
           "name": "mint"
@@ -5333,7 +6555,43 @@
           }
         },
         {
+          "name": "treasury_sol_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
           "name": "treasury_lock",
+          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -5372,7 +6630,7 @@
               },
               {
                 "kind": "account",
-                "path": "token_program"
+                "path": "token_2022_program"
               },
               {
                 "kind": "account",
@@ -5419,7 +6677,14 @@
           }
         },
         {
-          "name": "short_config",
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "position_sol_vault",
+          "docs": [
+            "+ atomic-sale proceeds; sol_source of the sell."
+          ],
           "writable": true,
           "pda": {
             "seeds": [
@@ -5432,67 +6697,6 @@
                   114,
                   116,
                   95,
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "short_position",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  104,
-                  111,
-                  114,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              },
-              {
-                "kind": "account",
-                "path": "shorter"
-              }
-            ]
-          }
-        },
-        {
-          "name": "deep_pool"
-        },
-        {
-          "name": "deep_pool_token_vault"
-        },
-        {
-          "name": "torch_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  116,
-                  111,
-                  114,
-                  99,
-                  104,
-                  95,
                   118,
                   97,
                   117,
@@ -5500,101 +6704,39 @@
                   116
                 ]
               },
-              {
-                "kind": "account",
-                "path": "torch_vault.creator",
-                "account": "TorchVault"
-              }
-            ]
-          }
-        },
-        {
-          "name": "vault_wallet_link",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  118,
-                  97,
-                  117,
-                  108,
-                  116,
-                  95,
-                  119,
-                  97,
-                  108,
-                  108,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "shorter"
-              }
-            ]
-          }
-        },
-        {
-          "name": "vault_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
               {
                 "kind": "account",
                 "path": "torch_vault"
               },
               {
                 "kind": "account",
-                "path": "token_program"
+                "path": "mint"
               },
               {
-                "kind": "account",
-                "path": "mint"
+                "kind": "arg",
+                "path": "args.position_index"
               }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
+            ]
           }
         },
         {
-          "name": "token_program"
+          "name": "deep_pool_program",
+          "address": "CcwF61GW14AcxCS4E2zedHXdFXy8x8GQPvfxZrs2x2eT"
+        },
+        {
+          "name": "deep_pool",
+          "writable": true
+        },
+        {
+          "name": "deep_pool_token_vault",
+          "writable": true
+        },
+        {
+          "name": "deep_pool_event_authority",
+          "address": "PzAe6xFEGCfQzf55tb4izdvu37wxYq6XE3Tahoc9Uy8"
+        },
+        {
+          "name": "token_2022_program"
         },
         {
           "name": "system_program",
@@ -5638,7 +6780,7 @@
           "name": "args",
           "type": {
             "defined": {
-              "name": "OpenShortArgs"
+              "name": "OpenPositionArgs"
             }
           }
         }
@@ -5696,6 +6838,40 @@
           }
         },
         {
+          "name": "bonding_curve_sol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  110,
+                  100,
+                  105,
+                  110,
+                  103,
+                  95,
+                  99,
+                  117,
+                  114,
+                  118,
+                  101,
+                  95,
+                  115,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
           "name": "token_treasury",
           "writable": true,
           "pda": {
@@ -5711,6 +6887,41 @@
                   117,
                   114,
                   121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury_sol_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
                 ]
               },
               {
@@ -5762,479 +6973,6 @@
       "args": []
     },
     {
-      "name": "repay",
-      "discriminator": [
-        234,
-        103,
-        67,
-        82,
-        208,
-        234,
-        219,
-        166
-      ],
-      "accounts": [
-        {
-          "name": "borrower",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "mint"
-        },
-        {
-          "name": "treasury",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  116,
-                  114,
-                  101,
-                  97,
-                  115,
-                  117,
-                  114,
-                  121
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "collateral_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  108,
-                  108,
-                  97,
-                  116,
-                  101,
-                  114,
-                  97,
-                  108,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "borrower_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "borrower"
-              },
-              {
-                "kind": "account",
-                "path": "token_program"
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
-        },
-        {
-          "name": "loan_position",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  108,
-                  111,
-                  97,
-                  110
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              },
-              {
-                "kind": "account",
-                "path": "borrower"
-              }
-            ]
-          }
-        },
-        {
-          "name": "token_program"
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        },
-        {
-          "name": "event_authority",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  95,
-                  95,
-                  101,
-                  118,
-                  101,
-                  110,
-                  116,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "program"
-        }
-      ],
-      "args": [
-        {
-          "name": "sol_amount",
-          "type": "u64"
-        }
-      ]
-    },
-    {
-      "name": "repay_via_vault",
-      "discriminator": [
-        22,
-        107,
-        58,
-        49,
-        59,
-        189,
-        56,
-        199
-      ],
-      "accounts": [
-        {
-          "name": "borrower",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "mint"
-        },
-        {
-          "name": "treasury",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  116,
-                  114,
-                  101,
-                  97,
-                  115,
-                  117,
-                  114,
-                  121
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "collateral_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  108,
-                  108,
-                  97,
-                  116,
-                  101,
-                  114,
-                  97,
-                  108,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "loan_position",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  108,
-                  111,
-                  97,
-                  110
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              },
-              {
-                "kind": "account",
-                "path": "borrower"
-              }
-            ]
-          }
-        },
-        {
-          "name": "torch_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  116,
-                  111,
-                  114,
-                  99,
-                  104,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "torch_vault.creator",
-                "account": "TorchVault"
-              }
-            ]
-          }
-        },
-        {
-          "name": "vault_wallet_link",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  118,
-                  97,
-                  117,
-                  108,
-                  116,
-                  95,
-                  119,
-                  97,
-                  108,
-                  108,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "borrower"
-              }
-            ]
-          }
-        },
-        {
-          "name": "vault_token_account",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "account",
-                "path": "torch_vault"
-              },
-              {
-                "kind": "account",
-                "path": "token_program"
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ],
-            "program": {
-              "kind": "const",
-              "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
-              ]
-            }
-          }
-        },
-        {
-          "name": "token_program"
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        },
-        {
-          "name": "event_authority",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  95,
-                  95,
-                  101,
-                  118,
-                  101,
-                  110,
-                  116,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "program"
-        }
-      ],
-      "args": [
-        {
-          "name": "sol_amount",
-          "type": "u64"
-        }
-      ]
-    },
-    {
       "name": "sell",
       "discriminator": [
         51,
@@ -6284,6 +7022,14 @@
               }
             ]
           }
+        },
+        {
+          "name": "bonding_curve_sol",
+          "docs": [
+            "Address validated in the handler — bare AccountInfo to spare try_accounts",
+            "stack on this heavy event_cpi context."
+          ],
+          "writable": true
         },
         {
           "name": "token_vault",
@@ -6459,6 +7205,41 @@
           }
         },
         {
+          "name": "treasury_sol_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
           "name": "user_stats",
           "writable": true,
           "optional": true,
@@ -6624,6 +7405,14 @@
           }
         },
         {
+          "name": "bonding_curve_sol",
+          "docs": [
+            "Address validated in the handler — bare AccountInfo to spare try_accounts",
+            "stack on this heavy event_cpi context."
+          ],
+          "writable": true
+        },
+        {
           "name": "token_vault",
           "writable": true,
           "pda": {
@@ -6740,6 +7529,41 @@
           }
         },
         {
+          "name": "treasury_sol_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
           "name": "user_stats",
           "writable": true,
           "optional": true,
@@ -6821,6 +7645,39 @@
                   117,
                   108,
                   116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault.creator",
+                "account": "TorchVault"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault_sol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  114,
+                  99,
+                  104,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116,
+                  95,
+                  115,
+                  111,
+                  108
                 ]
               },
               {
@@ -6968,299 +7825,6 @@
       ]
     },
     {
-      "name": "star_token",
-      "discriminator": [
-        206,
-        110,
-        187,
-        117,
-        14,
-        104,
-        152,
-        233
-      ],
-      "accounts": [
-        {
-          "name": "user",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "mint"
-        },
-        {
-          "name": "bonding_curve",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  99,
-                  117,
-                  114,
-                  118,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "token_treasury",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  116,
-                  114,
-                  101,
-                  97,
-                  115,
-                  117,
-                  114,
-                  121
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "creator",
-          "writable": true
-        },
-        {
-          "name": "star_record",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  116,
-                  97,
-                  114,
-                  95,
-                  114,
-                  101,
-                  99,
-                  111,
-                  114,
-                  100
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "user"
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": []
-    },
-    {
-      "name": "star_token_via_vault",
-      "discriminator": [
-        248,
-        218,
-        227,
-        34,
-        21,
-        3,
-        250,
-        85
-      ],
-      "accounts": [
-        {
-          "name": "user",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "mint"
-        },
-        {
-          "name": "bonding_curve",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  99,
-                  117,
-                  114,
-                  118,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "token_treasury",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  116,
-                  114,
-                  101,
-                  97,
-                  115,
-                  117,
-                  114,
-                  121
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "creator",
-          "writable": true
-        },
-        {
-          "name": "star_record",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  116,
-                  97,
-                  114,
-                  95,
-                  114,
-                  101,
-                  99,
-                  111,
-                  114,
-                  100
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "user"
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
-          "name": "torch_vault",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  116,
-                  111,
-                  114,
-                  99,
-                  104,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "torch_vault.creator",
-                "account": "TorchVault"
-              }
-            ]
-          }
-        },
-        {
-          "name": "vault_wallet_link",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  118,
-                  97,
-                  117,
-                  108,
-                  116,
-                  95,
-                  119,
-                  97,
-                  108,
-                  108,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "user"
-              }
-            ]
-          }
-        },
-        {
-          "name": "system_program",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": []
-    },
-    {
       "name": "swap_fees_to_sol",
       "discriminator": [
         138,
@@ -7331,6 +7895,41 @@
                   117,
                   114,
                   121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury_sol_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121,
+                  95,
+                  115,
+                  111,
+                  108,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
                 ]
               },
               {
@@ -8072,6 +8671,39 @@
           }
         },
         {
+          "name": "vault_sol",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  111,
+                  114,
+                  99,
+                  104,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116,
+                  95,
+                  115,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault.creator",
+                "account": "TorchVault"
+              }
+            ]
+          }
+        },
+        {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
         }
@@ -8112,16 +8744,16 @@
       ]
     },
     {
-      "name": "LoanPosition",
+      "name": "Position",
       "discriminator": [
-        45,
-        172,
-        28,
-        194,
-        82,
-        206,
-        243,
-        190
+        170,
+        188,
+        143,
+        228,
+        122,
+        64,
+        247,
+        208
       ]
     },
     {
@@ -8135,45 +8767,6 @@
         146,
         47,
         73
-      ]
-    },
-    {
-      "name": "ShortConfig",
-      "discriminator": [
-        222,
-        62,
-        202,
-        64,
-        31,
-        63,
-        147,
-        139
-      ]
-    },
-    {
-      "name": "ShortPosition",
-      "discriminator": [
-        110,
-        216,
-        100,
-        57,
-        75,
-        53,
-        168,
-        59
-      ]
-    },
-    {
-      "name": "StarRecord",
-      "discriminator": [
-        187,
-        154,
-        15,
-        146,
-        146,
-        78,
-        20,
-        77
       ]
     },
     {
@@ -8270,42 +8863,55 @@
       ]
     },
     {
-      "name": "LoanCreated",
+      "name": "CloseLongEvent",
       "discriminator": [
-        142,
-        148,
-        28,
-        215,
+        224,
+        55,
+        208,
+        43,
         65,
-        185,
-        246,
-        200
+        236,
+        33,
+        223
       ]
     },
     {
-      "name": "LoanLiquidated",
+      "name": "CloseShortEvent",
       "discriminator": [
-        1,
-        29,
-        28,
-        96,
-        66,
+        4,
         95,
-        8,
-        204
+        204,
+        215,
+        144,
+        199,
+        108,
+        80
       ]
     },
     {
-      "name": "LoanRepaid",
+      "name": "LiquidateLongEvent",
       "discriminator": [
-        202,
-        183,
-        88,
+        40,
+        86,
+        57,
+        217,
+        219,
+        39,
         60,
-        211,
-        54,
-        142,
-        243
+        70
+      ]
+    },
+    {
+      "name": "LiquidateShortEvent",
+      "discriminator": [
+        32,
+        251,
+        34,
+        251,
+        215,
+        149,
+        155,
+        81
       ]
     },
     {
@@ -8335,6 +8941,32 @@
       ]
     },
     {
+      "name": "OpenLongEvent",
+      "discriminator": [
+        14,
+        227,
+        13,
+        36,
+        33,
+        192,
+        152,
+        14
+      ]
+    },
+    {
+      "name": "OpenShortEvent",
+      "discriminator": [
+        51,
+        207,
+        85,
+        81,
+        187,
+        207,
+        142,
+        195
+      ]
+    },
+    {
       "name": "RevivalContribution",
       "discriminator": [
         222,
@@ -8345,45 +8977,6 @@
         122,
         80,
         240
-      ]
-    },
-    {
-      "name": "ShortClosed",
-      "discriminator": [
-        132,
-        24,
-        181,
-        149,
-        231,
-        50,
-        138,
-        206
-      ]
-    },
-    {
-      "name": "ShortLiquidated",
-      "discriminator": [
-        51,
-        255,
-        184,
-        119,
-        40,
-        135,
-        9,
-        32
-      ]
-    },
-    {
-      "name": "ShortOpened",
-      "discriminator": [
-        222,
-        5,
-        144,
-        66,
-        19,
-        226,
-        99,
-        233
       ]
     },
     {
@@ -8536,156 +9129,131 @@
     },
     {
       "code": 6024,
-      "name": "CannotStarSelf",
-      "msg": "Cannot star yourself"
-    },
-    {
-      "code": 6025,
       "name": "InvalidDevWallet",
       "msg": "Invalid dev wallet address"
     },
     {
-      "code": 6026,
+      "code": 6025,
       "name": "Unauthorized",
       "msg": "Unauthorized - only authority can perform this action"
     },
     {
-      "code": 6027,
+      "code": 6026,
       "name": "BaselineNotInitialized",
       "msg": "Baseline must be initialized before auto buyback"
     },
     {
-      "code": 6028,
+      "code": 6027,
       "name": "ZeroPoolReserves",
       "msg": "Pool reserves cannot be zero"
     },
     {
-      "code": 6029,
+      "code": 6028,
       "name": "InsufficientVolumeForRewards",
       "msg": "Insufficient volume for protocol rewards (need >= 2 SOL/epoch)"
     },
     {
-      "code": 6030,
+      "code": 6029,
       "name": "TokenNotReclaimed",
       "msg": "Token has not been reclaimed - cannot contribute to revival"
     },
     {
-      "code": 6031,
+      "code": 6030,
       "name": "LendingNotEnabled",
       "msg": "Lending is not enabled for this token"
     },
     {
-      "code": 6032,
+      "code": 6031,
       "name": "LendingRequiresMigration",
       "msg": "Token must be migrated to DEX before lending"
     },
     {
-      "code": 6033,
-      "name": "LtvExceeded",
-      "msg": "Loan-to-value ratio exceeds maximum"
-    },
-    {
-      "code": 6034,
+      "code": 6032,
       "name": "LendingCapExceeded",
       "msg": "Treasury lending capacity exhausted (utilization cap reached)"
     },
     {
-      "code": 6035,
-      "name": "UserBorrowCapExceeded",
-      "msg": "Per-user borrow cap exceeded (max 5x collateral share of supply)"
-    },
-    {
-      "code": 6036,
+      "code": 6033,
       "name": "BorrowTooSmall",
       "msg": "Borrow amount below minimum (0.1 SOL)"
     },
     {
-      "code": 6037,
+      "code": 6034,
       "name": "NoActiveLoan",
       "msg": "No active loan position"
     },
     {
-      "code": 6038,
+      "code": 6035,
       "name": "NotLiquidatable",
       "msg": "Position is not liquidatable (LTV below threshold)"
     },
     {
-      "code": 6039,
+      "code": 6036,
       "name": "EmptyBorrowRequest",
       "msg": "Must provide collateral or borrow amount"
     },
     {
-      "code": 6040,
+      "code": 6037,
       "name": "InvalidPoolAccount",
       "msg": "Invalid pool account"
     },
     {
-      "code": 6041,
+      "code": 6038,
       "name": "InsufficientVaultBalance",
       "msg": "Insufficient vault balance"
     },
     {
-      "code": 6042,
+      "code": 6039,
       "name": "VaultUnauthorized",
       "msg": "Unauthorized - only vault authority can perform this action"
     },
     {
-      "code": 6043,
+      "code": 6040,
       "name": "VaultWalletLinkMismatch",
       "msg": "Wallet link does not point to the provided vault"
     },
     {
-      "code": 6044,
+      "code": 6041,
       "name": "InvalidPoolVault",
       "msg": "Invalid pool vault account"
     },
     {
-      "code": 6045,
+      "code": 6042,
       "name": "InvalidBondingTarget",
       "msg": "Invalid bonding target: must be 50, 100, or 200 SOL"
     },
     {
-      "code": 6046,
+      "code": 6043,
       "name": "ClaimBelowMinimum",
       "msg": "Claim amount below minimum (0.1 SOL)"
     },
     {
-      "code": 6047,
+      "code": 6044,
       "name": "ShortNotEnabled",
       "msg": "Short selling is not enabled for this token"
     },
     {
-      "code": 6048,
+      "code": 6045,
       "name": "ShortTooSmall",
       "msg": "Short position size below minimum (1,000 tokens)"
     },
     {
-      "code": 6049,
-      "name": "ShortCapExceeded",
-      "msg": "Token lending capacity exhausted (short utilization cap reached)"
-    },
-    {
-      "code": 6050,
-      "name": "UserShortCapExceeded",
-      "msg": "Per-user short cap exceeded"
-    },
-    {
-      "code": 6051,
+      "code": 6046,
       "name": "ShortNotLiquidatable",
       "msg": "Short position is not liquidatable (LTV below threshold)"
     },
     {
-      "code": 6052,
+      "code": 6047,
       "name": "NoActiveShort",
       "msg": "No active short position"
     },
     {
-      "code": 6053,
+      "code": 6048,
       "name": "PoolTooThin",
       "msg": "Pool depth below minimum for margin operations"
     },
     {
-      "code": 6054,
+      "code": 6049,
       "name": "LendingNotYetUnlocked",
       "msg": "Lending unlocks once treasury reaches the activity threshold (see docs/lending-unlock.md)"
     }
@@ -8824,22 +9392,6 @@
       }
     },
     {
-      "name": "BorrowArgs",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "collateral_amount",
-            "type": "u64"
-          },
-          {
-            "name": "sol_to_borrow",
-            "type": "u64"
-          }
-        ]
-      }
-    },
-    {
       "name": "BuyArgs",
       "type": {
         "kind": "struct",
@@ -8851,6 +9403,124 @@
           {
             "name": "min_tokens_out",
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CloseLongEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "user",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "position_index",
+            "type": "u32"
+          },
+          {
+            "name": "tokens_sold",
+            "type": "u64"
+          },
+          {
+            "name": "sol_out",
+            "type": "u64"
+          },
+          {
+            "name": "debt_repaid",
+            "type": "u64"
+          },
+          {
+            "name": "interest_paid",
+            "type": "u64"
+          },
+          {
+            "name": "principal_paid",
+            "type": "u64"
+          },
+          {
+            "name": "surplus_sol_to_user",
+            "type": "u64"
+          },
+          {
+            "name": "fully_closed",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ClosePositionArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "position_index",
+            "type": "u32"
+          },
+          {
+            "name": "repay_fraction_bps",
+            "docs": [
+              "10000 = full close; smaller = partial (scales the swap + debt repaid)."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "min_surplus_sol_out",
+            "docs": [
+              "Slippage guard: minimum surplus SOL returned to the user."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CloseShortEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "user",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "position_index",
+            "type": "u32"
+          },
+          {
+            "name": "debt_repaid",
+            "type": "u64"
+          },
+          {
+            "name": "sol_spent_on_buyback",
+            "type": "u64"
+          },
+          {
+            "name": "interest_paid",
+            "type": "u64"
+          },
+          {
+            "name": "principal_paid",
+            "type": "u64"
+          },
+          {
+            "name": "surplus_sol_to_user",
+            "type": "u64"
+          },
+          {
+            "name": "fully_closed",
+            "type": "bool"
           }
         ]
       }
@@ -8920,40 +9590,12 @@
       }
     },
     {
-      "name": "LoanCreated",
+      "name": "LiquidateLongEvent",
       "type": {
         "kind": "struct",
         "fields": [
           {
-            "name": "mint",
-            "type": "pubkey"
-          },
-          {
-            "name": "user",
-            "type": "pubkey"
-          },
-          {
-            "name": "collateral_amount",
-            "type": "u64"
-          },
-          {
-            "name": "borrowed_amount",
-            "type": "u64"
-          },
-          {
-            "name": "ltv_bps",
-            "type": "u16"
-          }
-        ]
-      }
-    },
-    {
-      "name": "LoanLiquidated",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "mint",
+            "name": "liquidator",
             "type": "pubkey"
           },
           {
@@ -8961,31 +9603,63 @@
             "type": "pubkey"
           },
           {
-            "name": "liquidator",
+            "name": "mint",
             "type": "pubkey"
+          },
+          {
+            "name": "position_index",
+            "type": "u32"
           },
           {
             "name": "debt_covered",
             "type": "u64"
           },
           {
-            "name": "collateral_seized",
+            "name": "tokens_seized",
             "type": "u64"
           },
           {
             "name": "bad_debt",
             "type": "u64"
+          },
+          {
+            "name": "bonus_bps",
+            "type": "u16"
+          },
+          {
+            "name": "twap_ltv",
+            "type": "u64"
+          },
+          {
+            "name": "fully_liquidated",
+            "type": "bool"
           }
         ]
       }
     },
     {
-      "name": "LoanPosition",
+      "name": "LiquidatePositionArgs",
       "type": {
         "kind": "struct",
         "fields": [
           {
-            "name": "user",
+            "name": "position_index",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "LiquidateShortEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "liquidator",
+            "type": "pubkey"
+          },
+          {
+            "name": "borrower",
             "type": "pubkey"
           },
           {
@@ -8993,55 +9667,35 @@
             "type": "pubkey"
           },
           {
-            "name": "collateral_amount",
+            "name": "position_index",
+            "type": "u32"
+          },
+          {
+            "name": "tokens_covered",
             "type": "u64"
           },
           {
-            "name": "borrowed_amount",
+            "name": "sol_seized",
             "type": "u64"
           },
           {
-            "name": "accrued_interest",
+            "name": "bad_debt",
             "type": "u64"
           },
           {
-            "name": "last_update_slot",
+            "name": "bonus_bps",
+            "type": "u16"
+          },
+          {
+            "name": "twap_ltv",
             "type": "u64"
           },
           {
-            "name": "bump",
-            "type": "u8"
-          }
-        ]
-      }
-    },
-    {
-      "name": "LoanRepaid",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "mint",
-            "type": "pubkey"
-          },
-          {
-            "name": "user",
-            "type": "pubkey"
-          },
-          {
-            "name": "sol_repaid",
+            "name": "residual_sol_to_borrower",
             "type": "u64"
           },
           {
-            "name": "interest_paid",
-            "type": "u64"
-          },
-          {
-            "name": "collateral_returned",
-            "type": "u64"
-          },
-          {
-            "name": "fully_repaid",
+            "name": "fully_liquidated",
             "type": "bool"
           }
         ]
@@ -9120,17 +9774,193 @@
       }
     },
     {
-      "name": "OpenShortArgs",
+      "name": "OpenLongEvent",
       "type": {
         "kind": "struct",
         "fields": [
           {
-            "name": "sol_collateral",
+            "name": "user",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "position_index",
+            "type": "u32"
+          },
+          {
+            "name": "collateral_tokens",
             "type": "u64"
           },
           {
-            "name": "tokens_to_borrow",
+            "name": "borrowed_sol_gross",
             "type": "u64"
+          },
+          {
+            "name": "open_fee_sol",
+            "type": "u64"
+          },
+          {
+            "name": "atomic_buy_sol",
+            "type": "u64"
+          },
+          {
+            "name": "vault_tokens",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OpenPositionArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "position_index",
+            "type": "u32"
+          },
+          {
+            "name": "collateral",
+            "docs": [
+              "Collateral deposited: SOL lamports (short) or tokens (long)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "min_out",
+            "docs": [
+              "Slippage guard on the atomic open swap: min SOL out from the sale",
+              "(short) or min tokens out from the buy (long)."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OpenShortEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "user",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "position_index",
+            "type": "u32"
+          },
+          {
+            "name": "collateral_sol_gross",
+            "type": "u64"
+          },
+          {
+            "name": "open_fee_sol",
+            "type": "u64"
+          },
+          {
+            "name": "net_collateral_sol",
+            "type": "u64"
+          },
+          {
+            "name": "tokens_borrowed",
+            "type": "u64"
+          },
+          {
+            "name": "vault_sol",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Position",
+      "docs": [
+        "Unified leveraged position (D-3). Single shape, `side` discriminant. Both",
+        "sides share lifecycle, account layout, and math; only the held/borrowed",
+        "asset types mirror.",
+        "",
+        "`held_amount` is intentionally NOT a field — the held asset IS the position",
+        "vault balance (`position_sol_vault.lamports()` for shorts,",
+        "`position_token_vault.amount` for longs). Read from the vault, not from",
+        "tracked state — derived state over tracked state makes the math unfalsifiable."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "user",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "side",
+            "type": {
+              "defined": {
+                "name": "PositionSide"
+              }
+            }
+          },
+          {
+            "name": "position_index",
+            "type": "u32"
+          },
+          {
+            "name": "collateral_amount",
+            "type": "u64"
+          },
+          {
+            "name": "debt_amount",
+            "type": "u64"
+          },
+          {
+            "name": "accrued_interest",
+            "type": "u64"
+          },
+          {
+            "name": "last_slot",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "vault_bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PositionSide",
+      "docs": [
+        "Side discriminant for a `Position`. `#[repr(u8)]` with explicit values so",
+        "the byte used in the Position PDA seed (constants::POSITION_SIDE_*) is",
+        "guaranteed to match the Borsh discriminant — a long and a short at the same",
+        "(user, mint, position_index) resolve to distinct PDAs via this byte."
+      ],
+      "repr": {
+        "kind": "rust"
+      },
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Long"
+          },
+          {
+            "name": "Short"
           }
         ]
       }
@@ -9236,186 +10066,6 @@
       }
     },
     {
-      "name": "ShortClosed",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "mint",
-            "type": "pubkey"
-          },
-          {
-            "name": "user",
-            "type": "pubkey"
-          },
-          {
-            "name": "tokens_returned",
-            "type": "u64"
-          },
-          {
-            "name": "interest_paid_tokens",
-            "type": "u64"
-          },
-          {
-            "name": "sol_returned",
-            "type": "u64"
-          },
-          {
-            "name": "fully_closed",
-            "type": "bool"
-          }
-        ]
-      }
-    },
-    {
-      "name": "ShortConfig",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "mint",
-            "type": "pubkey"
-          },
-          {
-            "name": "total_tokens_lent",
-            "type": "u64"
-          },
-          {
-            "name": "active_positions",
-            "type": "u64"
-          },
-          {
-            "name": "total_interest_collected",
-            "type": "u64"
-          },
-          {
-            "name": "bump",
-            "type": "u8"
-          }
-        ]
-      }
-    },
-    {
-      "name": "ShortLiquidated",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "mint",
-            "type": "pubkey"
-          },
-          {
-            "name": "borrower",
-            "type": "pubkey"
-          },
-          {
-            "name": "liquidator",
-            "type": "pubkey"
-          },
-          {
-            "name": "tokens_covered",
-            "type": "u64"
-          },
-          {
-            "name": "sol_seized",
-            "type": "u64"
-          },
-          {
-            "name": "bad_debt_tokens",
-            "type": "u64"
-          }
-        ]
-      }
-    },
-    {
-      "name": "ShortOpened",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "mint",
-            "type": "pubkey"
-          },
-          {
-            "name": "user",
-            "type": "pubkey"
-          },
-          {
-            "name": "sol_collateral",
-            "type": "u64"
-          },
-          {
-            "name": "tokens_borrowed",
-            "type": "u64"
-          },
-          {
-            "name": "ltv_bps",
-            "type": "u16"
-          }
-        ]
-      }
-    },
-    {
-      "name": "ShortPosition",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "user",
-            "type": "pubkey"
-          },
-          {
-            "name": "mint",
-            "type": "pubkey"
-          },
-          {
-            "name": "sol_collateral",
-            "type": "u64"
-          },
-          {
-            "name": "tokens_borrowed",
-            "type": "u64"
-          },
-          {
-            "name": "accrued_interest",
-            "type": "u64"
-          },
-          {
-            "name": "last_update_slot",
-            "type": "u64"
-          },
-          {
-            "name": "bump",
-            "type": "u8"
-          }
-        ]
-      }
-    },
-    {
-      "name": "StarRecord",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "user",
-            "type": "pubkey"
-          },
-          {
-            "name": "mint",
-            "type": "pubkey"
-          },
-          {
-            "name": "starred_at_slot",
-            "type": "u64"
-          },
-          {
-            "name": "bump",
-            "type": "u8"
-          }
-        ]
-      }
-    },
-    {
       "name": "TokenRevived",
       "type": {
         "kind": "struct",
@@ -9447,10 +10097,6 @@
           {
             "name": "authority",
             "type": "pubkey"
-          },
-          {
-            "name": "sol_balance",
-            "type": "u64"
           },
           {
             "name": "total_deposited",
@@ -9497,16 +10143,8 @@
             "type": "pubkey"
           },
           {
-            "name": "sol_balance",
-            "type": "u64"
-          },
-          {
             "name": "is_community_token",
             "type": "bool"
-          },
-          {
-            "name": "short_collateral_reserved",
-            "type": "u64"
           },
           {
             "name": "last_buyback_slot",
@@ -9541,31 +10179,31 @@
             "type": "bool"
           },
           {
-            "name": "total_stars",
+            "name": "total_tokens_lent",
             "type": "u64"
           },
           {
-            "name": "star_sol_balance",
+            "name": "active_shorts",
             "type": "u64"
           },
           {
-            "name": "creator_paid_out",
-            "type": "bool"
-          },
-          {
-            "name": "total_sol_lent",
+            "name": "short_interest_collected",
             "type": "u64"
           },
           {
-            "name": "total_collateral_locked",
+            "name": "total_sol_lent_to_longs",
             "type": "u64"
           },
           {
-            "name": "active_loans",
+            "name": "active_longs",
             "type": "u64"
           },
           {
-            "name": "total_interest_collected",
+            "name": "long_interest_collected",
+            "type": "u64"
+          },
+          {
+            "name": "total_token_collateral_locked",
             "type": "u64"
           },
           {
@@ -9634,10 +10272,6 @@
           },
           {
             "name": "tokens_received",
-            "type": "u64"
-          },
-          {
-            "name": "tokens_burned",
             "type": "u64"
           },
           {

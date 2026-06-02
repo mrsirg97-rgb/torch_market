@@ -114,6 +114,95 @@ metadata_fetch_log
   Used to avoid re-fetching dead arweave URIs every restart.
 ```
 
+## V21 Leverage Migration
+
+**Status:** design (this section); implementation pending. **Supersedes** the V20 `loans`/`shorts` tables and the `Loan*`/`Short*` decoders in the Schema section above — those are stale and will be replaced.
+
+### Why
+
+V21's closed-loop-leverage rework renamed **and** restructured all six leverage events:
+
+| V20 event (current decoder) | V21 event (program emits) |
+|---|---|
+| `LoanCreated` / `LoanRepaid` / `LoanLiquidated` | `OpenLongEvent` / `CloseLongEvent` / `LiquidateLongEvent` |
+| `ShortOpened` / `ShortClosed` / `ShortLiquidated` | `OpenShortEvent` / `CloseShortEvent` / `LiquidateShortEvent` |
+
+Anchor discriminator = `sha256("event:<Name>")[..8]`, so the rename alone makes every leverage discriminator miss — **leverage is currently unindexed** (shorts/longs/liquidations are invisible). Three structural changes drive the schema:
+
+1. **Unified `Position`.** On-chain, longs and shorts are one `Position` struct with `side: Long|Short`. Long = token collateral / SOL debt; short = SOL collateral / token debt.
+2. **`position_index` (`u32`).** A user can hold MANY positions per `(user, mint)`. The V20 PKs `(mint, borrower)` / `(mint, shorter)` collide → the index must be in the key.
+3. **via_vault ownership.** The 6 `*_via_vault` handlers emit the SAME events, but `user`/`borrower` is a `torch_vault` PDA, not a wallet — same shape, vault owner.
+
+### Decision: one `positions` table (mirror on-chain), not separate `loans`/`shorts`
+
+V21 unified the on-chain model under `Position`; the indexer mirrors it. A single table makes "all positions for a user" one query (vs a UNION), keeps the schema aligned with the program's own generic `collateral_amount`/`debt_amount` fields (units interpreted by `side`, exactly as on-chain), and folds via_vault in transparently. Cost: `collateral_amount`/`debt_amount` are unit-ambiguous (tokens vs lamports by side) — a documentation matter, and the API can expose typed views. *(Alternative considered: keep separate, typed `loans`/`shorts` tables — clearer columns but duplicates structure and diverges from the unified on-chain model. Rejected for the mirror.)*
+
+### Schema
+
+```
+CREATE TYPE position_side AS ENUM ('long','short');
+CREATE TYPE position_event_kind AS ENUM ('open','close','liquidate');
+
+-- current-state, UPSERTed per event (the audit row; never deleted)
+positions
+  mint              TEXT NOT NULL REFERENCES markets(mint),
+  owner             TEXT NOT NULL,          -- wallet OR torch_vault PDA
+  side              position_side NOT NULL,
+  position_index    INT  NOT NULL,
+  collateral_amount BIGINT NOT NULL,        -- long: tokens   | short: lamports
+  debt_amount       BIGINT NOT NULL,        -- long: lamports | short: tokens
+  open_fee_sol      BIGINT NOT NULL,
+  vault_balance     BIGINT NOT NULL,        -- per-position vault: long=tokens, short=lamports
+  accrued_interest_stored BIGINT NOT NULL,
+  last_update_slot  BIGINT NOT NULL,
+  health            position_health NOT NULL,   -- snapshot; API recomputes off the TWAP mark
+  is_active         BOOLEAN NOT NULL,
+  owner_is_vault    BOOLEAN NOT NULL,           -- set from the emitting ix variant (via_vault?)
+  created_at, updated_at,
+  PRIMARY KEY (mint, owner, side, position_index)
+  indexes: (mint, side, is_active, health, updated_at DESC), (owner, is_active)
+
+-- append-only event log (the leverage analog of `trades`)
+position_events
+  mint, owner, side, position_index,
+  kind            position_event_kind,
+  liquidator      TEXT NULL,                 -- liquidate only
+  interest_paid, principal_paid, surplus_sol,    -- close
+  sol_in, sol_out, tokens_in, tokens_out,        -- open/close legs
+  bad_debt, twap_ltv, bonus_bps, seized, residual, fully_resolved,  -- liquidate (NULL otherwise)
+  slot, signature, inner_ix_idx, created_at
+  UNIQUE (signature, inner_ix_idx)
+  indexes: (mint, slot DESC), (owner, slot DESC), (kind, slot DESC)
+```
+
+**Why the event log:** liquidation events expose `bad_debt`, `twap_ltv`, `bonus_bps`, `sol_seized`/`tokens_seized` — data that exists ONLY at event time and is lost under current-state-only. It's the liquidation feed + per-position P&L history (V20 indexed no leverage event log). `positions` answers "what's open now"; `position_events` answers "what happened."
+
+### Field mapping (V21 event → rows)
+
+| Event | `positions` upsert | `position_events` insert |
+|---|---|---|
+| `OpenShortEvent` {user,mint,index,collateral_sol_gross,open_fee_sol,net_collateral_sol,tokens_borrowed,vault_sol} | side=short, collateral=net_collateral_sol, debt=tokens_borrowed, open_fee_sol, vault_balance=vault_sol, is_active=true | kind=open, sol_in=collateral_sol_gross, tokens_out=tokens_borrowed |
+| `OpenLongEvent` {user,mint,index,collateral_tokens,borrowed_sol_gross,open_fee_sol,atomic_buy_sol,vault_tokens} | side=long, collateral=collateral_tokens, debt=borrowed_sol_gross, open_fee_sol, vault_balance=vault_tokens | kind=open, tokens_in=collateral_tokens, sol_out=atomic_buy_sol |
+| `CloseShortEvent` / `CloseLongEvent` {…,debt_repaid/…,interest_paid,principal_paid,surplus_sol_to_user,fully_closed} | debt/collateral decremented; is_active=!fully_closed | kind=close, interest_paid, principal_paid, surplus_sol, fully_resolved=fully_closed |
+| `LiquidateShortEvent` / `LiquidateLongEvent` {liquidator,borrower,…,bad_debt,bonus_bps,twap_ltv,seized,residual,fully_liquidated} | debt decremented; is_active=!fully_liquidated | kind=liquidate, liquidator, bad_debt, twap_ltv, bonus_bps, seized, residual, fully_resolved=fully_liquidated |
+
+`owner_is_vault` is set by the **emitting instruction variant** — the per-tx walk already inspects the torch ix (message-gating does this); a `*_via_vault` ix ⇒ `owner_is_vault = true`. (The event payload alone can't tell; the ix can.)
+
+### Health: coarse snapshot now, TWAP recompute is a follow-up
+
+V21's liquidation trigger is `twap_ltv` off the deep_pool TWAP mark. The on-chain program owns that trigger; the indexer is observability. **Implemented today:** the writer stores a coarse `health` snapshot (`open`/`close` → `healthy`, `liquidate` → `liquidatable`), and every liquidation's exact `twap_ltv` is preserved in `position_events`. **Follow-up:** a live API recompute that joins the active position to its `markets.deep_pool_pubkey` pool, reads the latest TWAP from the `reserves` snapshot, and applies V21 `calc_ltv_bps` to classify healthy / at_risk / liquidatable. Until then the `?health=` filter sorts on the stored snapshot, not a live mark.
+
+### Code surface
+
+- `contracts.rs`: drop the 6 `Loan*`/`Short*` structs + `LoanRow`/`ShortRow`/`New*Row`; add the 6 V21 event structs + `PositionRow`/`PositionEventRow`.
+- `decoder.rs`: replace the 6 V20 discriminators/match arms with the V21 names.
+- `translate.rs`/`writer.rs`/`domain`: upsert `positions` (key incl. `side` + `position_index`) + insert `position_events`; resolve `owner_is_vault` from the ix.
+- `api.rs`: **retire** `/api/loans` + `/api/shorts`. `GET /api/positions ?mint&side&owner&health&is_active` replaces both; new `GET /api/liquidations` over `position_events WHERE kind='liquidate'`. SDK `getAllLoanPositions`/`getAllShortPositions` → `getPositions ?side`.
+
+### Migration
+
+Devnet / pre-mainnet ⇒ **clean replace**: drop `loans`/`shorts`, create `positions` + `position_events` + the two enums, re-backfill from genesis (or `START_SLOT`). No data migration needed.
+
 ## Ingest behavior
 
 ### Backfill
@@ -132,7 +221,7 @@ Implementation: in `stream/decoder.rs`, the per-tx walk inspects all instruction
 
 ### Position snapshots
 
-`loans` and `shorts` are *current snapshots*, not event logs. Every `open_short`, `borrow`, `repay`, `close_short`, `liquidate`, etc. UPSERTs the position row. When a position fully closes, `is_active = false` (we don't delete — the row is the audit trail). The `accrued_interest_stored` field plus `last_update_slot` lets the API recompute current interest at request time using the existing `apply_*_interest_accrual` math (no separate "live interest" indexer pass needed).
+`positions` is a *current snapshot*, not an event log. Every `open_*`, `close_*`, `liquidate_*` (and their `_via_vault` variants) UPSERTs the position row keyed by `(mint, owner, side, position_index)`; open events carry absolute amounts, close/liquidate carry deltas the writer reconciles against the prior row. When a position fully resolves, `is_active = false` (we don't delete — the row is the audit trail). The append-only `position_events` log preserves the per-event analytics (`bad_debt`, `twap_ltv`, `bonus_bps`, `seized`, `residual`) that the current-state row can't retain. The `accrued_interest_stored` + `last_update_slot` fields let the API recompute current interest at request time.
 
 ### Token-2022 fee semantics
 
@@ -146,8 +235,8 @@ GET  /api/markets             ?status&creator&tier&since&limit
 GET  /api/markets/:mint       detail incl. enrichment + current reserves
 GET  /api/trades              ?mint&trader&since&before&limit
 GET  /api/messages            ?mint&sender&since&before&limit
-GET  /api/loans               ?mint&health&is_active
-GET  /api/shorts              ?mint&health&is_active
+GET  /api/positions           ?mint&owner&side&health&is_active   [V21] long+short unified (side=long|short)
+GET  /api/liquidations        ?mint&owner&side&kind                [V21] position_events log (defaults kind=liquidate)
 GET  /api/holders/:mint       count + top-N (joins markets to ATAs)
 GET  /api/candles             ?mint&interval&since&before
                               interval ∈ {1m, 5m, 1h}
@@ -217,6 +306,8 @@ The `indexer` URL threads through `NetworkContext` so the frontend passes it onc
 | 7 | Token-2022 net semantics: indexer records NET amounts everywhere | Consistent with the on-chain `tokens_borrowed = net` fix. Gross doesn't reflect anyone's holdings. |
 | 8 | Single `indexer_state.last_processed_slot` cursor | Yellowstone is slot-ordered globally across subscribed programs. |
 | 9 | Indexer is acceleration only; every SDK read except `getTrades`/`getCandles` has an RPC fallback | Keeps torchsdk usable for AI agents, CLIs, third-party integrations without infrastructure. |
+| 10 | **[V21]** Consolidate `loans`+`shorts` into one `positions` table (`side` enum, `position_index` in PK) + an append-only `position_events` log | Mirrors V21's unified on-chain `Position`; "all positions for a user" is one query; `position_events` preserves liquidation analytics (`bad_debt`/`twap_ltv`) that current-state-only would lose. See "V21 Leverage Migration". |
+| 11 | **[V21]** Position health classified off the deep_pool TWAP mark, not the reserve ratio. **Today:** writer stores a coarse snapshot + every liquidation's exact `twap_ltv` lands in `position_events`. **Follow-up:** live API recompute via `calc_ltv_bps` against the latest TWAP. | V21's liquidation trigger is `twap_ltv`; classify against the same mark the program liquidates on. The program owns the actual trigger — the indexer is observability, so a coarse snapshot + preserved per-liquidation `twap_ltv` is sufficient until the live recompute lands. |
 
 ## Out of scope (v1)
 

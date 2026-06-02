@@ -34,8 +34,8 @@ import {
   buildBuyTransaction,
   buildSellTransaction,
   buildMigrateTransaction,
-  buildBorrowTransaction,
-  buildRepayTransaction,
+  buildOpenLongTransaction,
+  buildCloseLongTransaction,
   buildOpenShortTransaction,
   buildCloseShortTransaction,
   buildCreateVaultTransaction,
@@ -48,7 +48,7 @@ import {
   getBorrowQuote,
 } from '../src/index'
 import { fetchTokenRaw } from '../src/tokens'
-import { getTorchVaultPda, getDeepPoolAccounts } from '../src/program'
+import { getTorchVaultPda, getDeepPoolAccounts, getTreasurySolVaultPda } from '../src/program'
 import { POOL_ACCOUNT_SIZE } from 'deeppoolsdk'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -487,7 +487,11 @@ const main = async () => {
       // V20: vote vault removed (always 0), zero-burn migration (no excess tokens burned).
       // tokensSold reduces to CURVE_SUPPLY - poolTokens.
       const tokensSold = CURVE_SUPPLY - poolTokens
-      const treasurySol = Number(tr.sol_balance.toString()) / LAMPORTS_PER_SOL
+      // [V21] Treasury SOL lives in the System-owned treasury_sol_vault PDA.
+      const treasurySolVaultInfo = await connection.getAccountInfo(
+        getTreasurySolVaultPda(new PublicKey(mint))[0],
+      )
+      const treasurySol = (treasurySolVaultInfo?.lamports ?? 0) / LAMPORTS_PER_SOL
 
       // Flame tier: IVS = 37.5 SOL, IVT = 756.25M
       const ivs = 37.5
@@ -721,9 +725,10 @@ const main = async () => {
     log('\n[10] Harvest Transfer Fees')
     try {
       // The 100 post-migration buys + sells generated transfer fees
-      const preHarvestData = await fetchTokenRaw(connection, new PublicKey(mint))
+      // [V21] Treasury SOL lives in the System-owned treasury_sol_vault PDA.
+      const treasurySolVaultPdaH = getTreasurySolVaultPda(new PublicKey(mint))[0]
       const preSolBalance =
-        Number(preHarvestData?.treasury?.sol_balance?.toString() || '0') / LAMPORTS_PER_SOL
+        ((await connection.getAccountInfo(treasurySolVaultPdaH))?.lamports ?? 0) / LAMPORTS_PER_SOL
 
       // Read treasury token account balance (where harvested tokens actually go)
       const { getTokenTreasuryPda, getTreasuryTokenAccount } = require('../src/program')
@@ -748,9 +753,8 @@ const main = async () => {
       const harvestSig = await signAndSend(connection, wallet, harvestResult.transaction)
 
       // Snapshot after harvest
-      const postHarvestData = await fetchTokenRaw(connection, new PublicKey(mint))
       const postSolBalance =
-        Number(postHarvestData?.treasury?.sol_balance?.toString() || '0') / LAMPORTS_PER_SOL
+        ((await connection.getAccountInfo(treasurySolVaultPdaH))?.lamports ?? 0) / LAMPORTS_PER_SOL
       let postTokenBal = 0
       try {
         const bal = await connection.getTokenAccountBalance(treasuryAtaH)
@@ -802,95 +806,92 @@ const main = async () => {
 
       const collateralAmount = Math.floor(totalTokens * 0.9)
       const quote = await getBorrowQuote(connection, mint, collateralAmount)
-      const borrowAmount = Math.min(1 * LAMPORTS_PER_SOL, quote.max_borrow_sol) // up to 1 SOL, within quote cap
       log(
-        `  pool_available: ${(quote.pool_available_sol / LAMPORTS_PER_SOL).toFixed(4)}, per-user cap: ${(quote.per_user_cap_sol / LAMPORTS_PER_SOL).toFixed(4)}, borrowing: ${(borrowAmount / LAMPORTS_PER_SOL).toFixed(4)}`,
+        `  pool_available: ${(quote.pool_available_sol / LAMPORTS_PER_SOL).toFixed(4)}, ltv_max: ${(quote.ltv_max_sol / LAMPORTS_PER_SOL).toFixed(4)}, est borrow: ${(quote.max_borrow_sol / LAMPORTS_PER_SOL).toFixed(4)}`,
       )
 
-      if (borrowAmount < 100_000_000) {
+      if (quote.max_borrow_sol < 100_000_000) {
         ok(
-          'Vault borrow',
-          'skipped — treasury or per-user cap too small for minimum borrow (0.1 SOL)',
+          'Vault open long',
+          'skipped — treasury lending capacity too low for min borrow (0.1 SOL)',
         )
       } else {
         const vaultBefore = await getVault(connection, walletAddr)
-        const borrowResult = await buildBorrowTransaction(connection, {
+        // [V21] open_long: post token collateral; borrow auto-clamped to LTV.
+        const openResult = await buildOpenLongTransaction(connection, {
           mint,
           borrower: walletAddr,
-          collateral_amount: collateralAmount,
-          sol_to_borrow: borrowAmount,
+          collateral: collateralAmount,
           vault: walletAddr,
         })
-        const borrowSig = await signAndSend(connection, wallet, borrowResult.transaction)
+        const borrowSig = await signAndSend(connection, wallet, openResult.transaction)
         const vaultAfter = await getVault(connection, walletAddr)
         const solReceived = (vaultAfter?.sol_balance || 0) - (vaultBefore?.sol_balance || 0)
         ok(
-          'Vault borrow',
-          `${borrowResult.message} vault_received=${solReceived.toFixed(4)} SOL sig=${borrowSig.slice(0, 8)}...`,
+          'Vault open long',
+          `${openResult.message} vault_received=${solReceived.toFixed(4)} SOL sig=${borrowSig.slice(0, 8)}...`,
         )
 
         await sleep(500)
 
         // ==============================================================
-        // 13. Repay via vault
+        // 13. Close long via vault
         // ==============================================================
-        log('\n[12] Repay via vault')
+        log('\n[12] Close long via vault')
         try {
-          const repayResult = await buildRepayTransaction(connection, {
+          const closeResult = await buildCloseLongTransaction(connection, {
             mint,
             borrower: walletAddr,
-            sol_amount: borrowAmount + 100_000_000, // overpay to fully close
+            repay_fraction_bps: 10000, // full close
             vault: walletAddr,
           })
-          const repaySig = await signAndSend(connection, wallet, repayResult.transaction)
-          ok('Vault repay', `${repayResult.message} sig=${repaySig.slice(0, 8)}...`)
+          const repaySig = await signAndSend(connection, wallet, closeResult.transaction)
+          ok('Vault close long', `${closeResult.message} sig=${repaySig.slice(0, 8)}...`)
         } catch (e: any) {
-          fail('Vault repay', e)
+          fail('Vault close long', e)
         }
 
         await sleep(500)
 
         // ==============================================================
-        // 14. Second borrow+repay cycle (extended lending)
+        // 14. Second open+close long cycle (extended lending)
         // ==============================================================
-        log('\n[13] Second borrow+repay cycle')
+        log('\n[13] Second open+close long cycle')
         try {
           const tokenBal2 = await connection.getTokenAccountBalance(vaultAta)
           const tokens2 = Number(tokenBal2.value.amount)
           const collateral2 = Math.floor(tokens2 * 0.4)
           const quote2 = await getBorrowQuote(connection, mint, collateral2)
-          const borrowAmount2 = Math.min(500_000_000, quote2.max_borrow_sol) // up to 0.5 SOL, within quote cap
 
-          if (borrowAmount2 < 100_000_000 || tokens2 < 10_000_000) {
-            ok('Second borrow', 'skipped — insufficient treasury, collateral, or per-user cap')
+          if (quote2.max_borrow_sol < 100_000_000 || tokens2 < 10_000_000) {
+            ok('Second open long', 'skipped — insufficient treasury capacity or collateral')
           } else {
-            const borrowResult2 = await buildBorrowTransaction(connection, {
+            const openResult2 = await buildOpenLongTransaction(connection, {
               mint,
               borrower: walletAddr,
-              collateral_amount: collateral2,
-              sol_to_borrow: borrowAmount2,
+              collateral: collateral2,
               vault: walletAddr,
             })
-            const bSig2 = await signAndSend(connection, wallet, borrowResult2.transaction)
-            ok('Second borrow', `${borrowResult2.message} sig=${bSig2.slice(0, 8)}...`)
+            const bSig2 = await signAndSend(connection, wallet, openResult2.transaction)
+            ok('Second open long', `${openResult2.message} sig=${bSig2.slice(0, 8)}...`)
 
             await sleep(500)
 
-            const repayResult2 = await buildRepayTransaction(connection, {
+            const closeResult2 = await buildCloseLongTransaction(connection, {
               mint,
               borrower: walletAddr,
-              sol_amount: borrowAmount2 + 100_000_000,
+              repay_fraction_bps: 10000,
               vault: walletAddr,
             })
-            const rSig2 = await signAndSend(connection, wallet, repayResult2.transaction)
-            ok('Second repay', `${repayResult2.message} sig=${rSig2.slice(0, 8)}...`)
+            const rSig2 = await signAndSend(connection, wallet, closeResult2.transaction)
+            ok('Second close long', `${closeResult2.message} sig=${rSig2.slice(0, 8)}...`)
           }
         } catch (e: any) {
-          fail('Second borrow+repay', e)
+          fail('Second open+close long', e)
         }
       }
     } catch (e: any) {
-      fail('Vault borrow', e)
+      fail('Vault open long', e)
       if (e.logs) console.error('  Logs:', e.logs.slice(-5).join('\n        '))
     }
 
@@ -913,16 +914,15 @@ const main = async () => {
       log(`  Vault SOL: ${vaultSolInSol.toFixed(4)} SOL`)
 
       const shortCollateral = Math.floor(0.5 * LAMPORTS_PER_SOL) // 0.5 SOL
-      const tokensToBorrow = 1_000_000_000 // 1,000 tokens (MIN_SHORT_TOKENS)
 
       if (vaultSolInSol < 0.5) {
         ok('Open short', 'skipped — vault SOL too low for 0.5 SOL collateral')
       } else {
+        // [V21] open_short: post SOL collateral; borrowed tokens auto-clamped.
         const openResult = await buildOpenShortTransaction(connection, {
           mint,
           shorter: walletAddr,
-          sol_collateral: shortCollateral,
-          tokens_to_borrow: tokensToBorrow,
+          collateral: shortCollateral,
           vault: walletAddr,
         })
         const openSig = await signAndSend(connection, wallet, openResult.transaction)
@@ -934,13 +934,13 @@ const main = async () => {
           `${openResult.message} vault_spent=${(solSpentShort / LAMPORTS_PER_SOL).toFixed(4)} SOL sig=${openSig.slice(0, 8)}...`,
         )
 
-        // Close short — overpay to fully close
+        // Close short — full close
         log('  Closing short...')
         try {
           const closeResult = await buildCloseShortTransaction(connection, {
             mint,
             shorter: walletAddr,
-            token_amount: tokensToBorrow * 2,
+            repay_fraction_bps: 10000,
             vault: walletAddr,
           })
           const closeSig = await signAndSend(connection, wallet, closeResult.transaction)

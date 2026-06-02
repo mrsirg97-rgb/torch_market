@@ -6,7 +6,7 @@
 
 ## Abstract
 
-We present a lending model for constant-product AMM pools where the maximum permissible loan-to-value ratio is a pure function of pool liquidity depth. Combined with per-user borrow caps ($\mu = 23$) proportional to total token supply, an absolute 20%-of-lendable per-user ceiling, a global utilization ceiling, and a treasury-activity unlock gate keyed on the protocol's earned SOL, the system creates a graduated risk regime: fresh tokens are structurally protected (3% effective LTV, 95% drop to liquidate), while mature tokens with deep treasuries graduate into functional margin markets (20-45% LTV, 31-69% drop to liquidate). This graduation is emergent from the interaction of independent caps, not from any single mechanism. Short positions do not share this protective property due to the asymmetric nature of upward price movement, and remain liquidatable by design. The 300M token short pool is preserved across cycles by Token-2022 gross-up accounting on every close. No oracles, no keepers, and no stored baseline are required. The pool itself is the sole source of truth. Economic simulation confirms the model under adversarial conditions including cascade liquidations.
+We present a lending model for constant-product AMM pools built on three depth-scaled rails, each a pure function of pool liquidity depth evaluated once at position open. **Rail 1** sets the maximum loan-to-value ratio on a continuous, concave curve — 30% at the 100-SOL floor (the smallest pool we lever) rising toward a 60% asymptote. **Rail 2** caps a single position's debt value at 25% of pool depth, which makes the worst-case liquidation-unwind slippage *depth-invariant*. **Rail 3** derives a single flat liquidation bonus (32.5%) from that cap, so every position — on every pool — unwinds within one bonus, with no depth-varying schedule to defend. Combined with per-user borrow caps ($\mu = 23$) proportional to total token supply, an absolute 20%-of-lendable per-user ceiling, a global utilization ceiling, and a treasury-activity unlock gate keyed on the protocol's earned SOL, the system creates a graduated risk regime: pools below the floor get no leverage, thin pools lever conservatively, and deep pools graduate into functional margin markets — while the per-user cap can impose a stricter effective LTV still on a small treasury. Short positions do not share the longs' structural protection due to the asymmetric nature of upward price movement, and remain liquidatable by design. The 300M token short pool is preserved across cycles by Token-2022 gross-up accounting on every close. The liquidation mark is a keeperless TWAP computed from the pool's own swap-driven price cumulative — no external oracle, no keeper, no stored baseline. The pool itself is the sole source of truth. Economic simulation confirms the model under adversarial conditions including cascade liquidations.
 
 ---
 
@@ -50,52 +50,75 @@ This cost scales linearly with pool depth, making deeper pools proportionally mo
 
 ---
 
-## 2. Depth-Based Risk Bands
+## 2. Depth-Scaled Risk Rails
 
-### 2.1 Definition
+> **[V21]** The original four-step LTV *ladder* is replaced by a continuous,
+> concave **curve** (Rail 1), paired with a **size cap** (Rail 2) and a **derived
+> liquidation bonus** (Rail 3). Depth is priced **once at open** by three pure
+> functions; the liquidation logic itself is unchanged. Full derivation:
+> [`depth-scaled-risk-rails.md`](depth-scaled-risk-rails.md).
 
-We define a step function $L: \mathbb{R}_{\geq 0} \to \{0, L_0, L_1, L_2, L_3\}$ that maps pool SOL reserves to a maximum LTV:
+### 2.1 Rail 1 — Continuous Max-LTV Curve
+
+We map pool SOL reserves $x$ to a maximum LTV with a concave curve anchored at the
+smallest pool we lever, $S_{\text{floor}}$:
 
 $$L(x) = \begin{cases}
-0 & \text{if } x < \tau_0 \\
-L_0 & \text{if } \tau_0 \leq x < \tau_1 \\
-L_1 & \text{if } \tau_1 \leq x < \tau_2 \\
-L_2 & \text{if } \tau_2 \leq x < \tau_3 \\
-L_3 & \text{if } x \geq \tau_3
+0 & \text{if } x < S_{\text{floor}} \\[4pt]
+\operatorname{clamp}\!\left(L_{\max} - (L_{\max} - L_{\min})\cdot\dfrac{S_{\text{floor}}}{x},\; L_{\min},\; L_{\max}\right) & \text{if } x \geq S_{\text{floor}}
 \end{cases}$$
 
-With parameters (in lamports and basis points):
+With parameters (lamports and basis points):
 
 | Symbol | Value | Description |
 |--------|-------|-------------|
-| $\tau_0$ | 5 SOL | Minimum pool depth |
-| $\tau_1$ | 50 SOL | Tier 1 threshold |
-| $\tau_2$ | 200 SOL | Tier 2 threshold |
-| $\tau_3$ | 500 SOL | Tier 3 threshold |
-| $L_0$ | 2500 bps (25%) | Max LTV below 50 SOL |
-| $L_1$ | 3500 bps (35%) | Max LTV 50-200 SOL |
-| $L_2$ | 4500 bps (45%) | Max LTV 200-500 SOL |
-| $L_3$ | 5000 bps (50%) | Max LTV above 500 SOL |
+| $S_{\text{floor}}$ | 100 SOL | Smallest pool we lever; below it, no leverage |
+| $L_{\min}$ | 3000 bps (30%) | Max LTV **at** the floor |
+| $L_{\max}$ | 6000 bps (60%) | Asymptote as $x \to \infty$ |
+
+The form is exact-at-the-anchor: at $x = S_{\text{floor}}$, $L = L_{\max} - (L_{\max}-L_{\min}) = L_{\min}$; as $x \to \infty$, $L \to L_{\max}$. The exponent is fixed at $\alpha = 1$, so the curve is **division-only** (no `pow`, Kani-friendly). Sampled:
+
+| Pool SOL | 100 | 200 | 500 | 1000 | 5000 | $\infty$ |
+|----------|-----|-----|-----|------|------|----------|
+| Max LTV | 30% | 45% | 54% | 57% | 59.4% | 60% |
 
 ### 2.2 Properties
 
-**Monotonicity.** $L$ is non-decreasing: $x_1 \leq x_2 \implies L(x_1) \leq L(x_2)$.
+**Monotonicity.** $L$ is non-decreasing in $x$: deeper pools permit (weakly) more leverage.
 
-**Self-defense.** To move from tier $i$ to tier $i+1$, an attacker must increase pool SOL from $\tau_i$ to $\tau_{i+1}$ by buying tokens. This requires depositing real SOL, which:
-1. Deepens the pool (increasing manipulation cost)
-2. Moves tokens to the attacker (who needs them as collateral to borrow)
+**Concavity.** $\partial L/\partial x = (L_{\max}-L_{\min})\,S_{\text{floor}}/x^2 > 0$ and decreasing — the marginal LTV bought by each additional SOL of depth diminishes. Manipulation resistance is bought cheaply at first and asymptotes, matching the $\sqrt{\alpha}$ manipulation-cost curve of §1.1.
 
-The attacker cannot inflate the tier without increasing their own cost of attack.
+**Self-defense.** To lift the curve, an attacker must increase pool SOL by buying tokens. This (a) deepens the pool, raising manipulation cost, and (b) moves the tokens to the attacker, who needs them as collateral. The attacker cannot inflate $L$ without increasing their own cost of attack. Unlike the old ladder, there are no tier *cliffs* to straddle — the response is smooth at every depth.
 
-**Graceful degradation.** If pool SOL decreases (due to selling), $L$ decreases, tightening the LTV cap for new positions. Existing positions are unaffected (their LTV was valid at creation) but become more likely to be liquidated if their collateral value drops proportionally.
+**Graceful degradation.** If pool SOL falls, $L$ falls continuously, tightening the cap on *new* positions. Existing positions are unaffected (their LTV was valid at creation) but grow more liquidatable if their backing drops.
 
 ### 2.3 Effective LTV
 
-The protocol also stores a per-token treasury parameter $L_T$ (`treasury.max_ltv_bps`), set at token creation. The effective maximum LTV is:
+The protocol stores a per-token ceiling $L_T$ (`treasury.max_ltv_bps`), seeded at creation to $L_{\max} = 6000$. The effective cap is:
 
 $$L_{\text{eff}}(x) = \min(L(x), L_T)$$
 
-This allows individual tokens to have stricter limits than the depth band permits.
+Because $L_T$ is seeded to the curve's asymptote, it never binds below the curve in the default configuration — it exists as a hard governance override should a token need a stricter ceiling than depth alone implies.
+
+### 2.4 Rail 2 — Size Cap
+
+Independently of the LTV curve, a single position's SOL-denominated debt value is capped at a fixed fraction of pool depth:
+
+$$D_{\max}(x) = \rho_{\max} \cdot x, \qquad \rho_{\max} = 2500 \text{ bps } (25\%)$$
+
+This is the load-bearing rail for liquidation economics. The worst-case slippage to unwind a position is $\approx D/x$ (the debt as a fraction of pool depth); clamping $D \leq \rho_{\max} x$ makes that slippage **depth-invariant** — at most $\rho_{\max}$ on *every* pool, large or small. A single flat liquidation bonus can therefore clear the unwind everywhere, with no depth-varying bonus schedule to defend. The cap is applied as a **clamp** at open (the position simply opens at the capped size, shown in the UI), mirroring the per-user and lock caps of §3.
+
+### 2.5 Rail 3 — Derived Liquidation Bonus
+
+The liquidation bonus is a flat **ceiling** $b$, derived from $\rho_{\max}$ with a safety margin $\sigma = 1.3$:
+
+$$b = \sigma \cdot \rho_{\max} = 1.3 \times 2500 = 3250 \text{ bps } (32.5\%)$$
+
+Because Rail 2 caps unwind slippage at $\rho_{\max}$, a bonus of $1.3\rho_{\max}$ leaves the liquidator whole with a 30% margin. The realized bonus ramps from $0$ (at the liquidation threshold) to $b$ at the **full-bonus LTV**, derived so the liquidator is exactly whole at the point insolvency would begin:
+
+$$L_{\text{full}} = \frac{10^4}{1 + b/10^4} = \frac{10^8}{10^4 + 3250} = 7547 \text{ bps } (75.5\%)$$
+
+The ramp is measured on the **hardened TWAP LTV**, so a manufactured barely-over-threshold liquidation earns $\approx 0$ — there is no prize for manipulation. (TWAP mark, seize clamp, and spot veto are detailed in [`v21-closed-loop-leverage.md`](v21-closed-loop-leverage.md) §D-10.)
 
 ---
 
@@ -132,7 +155,7 @@ A user holding 1% of total supply ($c/S = 0.01$) can borrow at most $0.01 \times
 
 ### 3.3 Implied LTV Ceiling
 
-The per-user cap creates an implied LTV that may be stricter than the depth band. The user's collateral value in SOL is:
+The per-user cap creates an implied LTV that may be stricter than the depth curve. The user's collateral value in SOL is:
 
 $$V(c) = c \cdot P = c \cdot \frac{x}{y}$$
 
@@ -162,7 +185,7 @@ At 20% effective LTV, a **69% price drop** triggers liquidation. Rare but real �
 
 $$\text{LTV}_{\text{cap}} = \frac{400 \times 23 \times 145 \times 10^{12}}{10^{15} \times 200} = 0.67$$
 
-Per-user cap exceeds the depth band (45% for 200 SOL pool). Depth band becomes the binding constraint at 45% LTV — a **31% price drop** triggers liquidation.
+Per-user cap exceeds the depth curve (45% for 200 SOL pool). The depth curve becomes the binding constraint at 45% LTV — a **31% price drop** triggers liquidation.
 
 ### 3.5 Treasury Graduation
 
@@ -173,7 +196,7 @@ The protocol naturally graduates from "near-impossible to liquidate" to "real ma
 | 22 SOL | 17.6 SOL | 3% | 95% | Protected — fresh token |
 | 150 SOL | 120 SOL | 20% | 69% | Active — real margin |
 | 300 SOL | 240 SOL | 41% | 37% | Mature — liquidation likely in crashes |
-| 500+ SOL | 400+ SOL | 45% (depth capped) | 31% | Deep — depth band is the ceiling |
+| 500+ SOL | 400+ SOL | 45% (depth capped) | 31% | Deep — depth curve is the ceiling |
 
 This graduation is emergent, not designed. It arises from the interaction of three independent caps, each with a different scaling relationship to treasury size.
 
@@ -241,49 +264,49 @@ Or equivalently, price must drop by a factor:
 
 $$\delta > 1 - \frac{\text{LTV}_0}{\theta}$$
 
-### 5.2 Depth Band Alone
+### 5.2 Depth Curve Alone
 
-At maximum depth-band LTV ($L_3 = 50\%$):
+As the curve approaches its asymptote ($L_{\max} = 60\%$, very deep pool):
 
-$$\delta > 1 - \frac{0.50}{0.65} = 1 - 0.769 = 0.231$$
+$$\delta > 1 - \frac{0.60}{0.65} = 1 - 0.923 = 0.077$$
 
-A **23.1% price drop** triggers liquidation. This is the least conservative case (500+ SOL pool, maximum LTV used).
+A **7.7% price drop** triggers liquidation. This is the least conservative case (deep pool, maximum LTV used) — the price for the leverage a deep, hard-to-manipulate pool can safely support.
 
-At minimum depth-band LTV ($L_0 = 25\%$):
+At the floor ($L_{\min} = 30\%$, 100 SOL pool):
 
-$$\delta > 1 - \frac{0.25}{0.65} = 1 - 0.385 = 0.615$$
+$$\delta > 1 - \frac{0.30}{0.65} = 1 - 0.462 = 0.538$$
 
-A **61.5% price drop** is required. Fresh pools are significantly safer.
+A **53.8% price drop** is required. Thin pools lever conservatively by construction. (At intermediate depth, e.g. 200 SOL → 45% LTV → **30.8% drop**; 500 SOL → 54% → **16.9% drop**.)
 
 ### 5.3 Per-User Cap Interaction
 
-With $\mu = 23$, the per-user cap produces a graduated LTV curve that transitions from protective (fresh tokens) to functional (mature tokens). From Section 3.5:
+With $\mu = 23$, the per-user cap can impose a **stricter** effective LTV than the depth curve whenever a borrower's collateral is small relative to lendable SOL — graduating from protective (fresh tokens) to functional (mature tokens). The per-user mechanism is unchanged from V20; only the depth ceiling it competes with moved. From Section 3.5:
 
-- Fresh treasury (22 SOL): 3% LTV → **95% drop** to liquidate
-- Moderate treasury (150 SOL): 20% LTV → **69% drop** to liquidate
-- Deep treasury (500+ SOL): depth-band capped at 45% → **31% drop** to liquidate
+- Fresh treasury (22 SOL): per-user cap → 3% LTV → **95% drop** to liquidate
+- Moderate treasury (150 SOL): per-user cap → 20% LTV → **69% drop** to liquidate
+- Deep treasury (500 SOL pool): depth curve binds at 54% → **16.9% drop** to liquidate
 
 ### 5.4 Regime Map
 
 | Regime | Binding Constraint | Typical LTV | Price Drop for Liquidation |
 |--------|-------------------|-------------|---------------------------|
+| Below floor (< 100 SOL pool) | Depth curve | 0% (no leverage) | — |
 | Fresh treasury (< 50 SOL) | Per-user cap | 3% | 95% |
 | Growing treasury (50-150 SOL) | Per-user cap | 7-20% | 69-89% |
-| Mature treasury (150-500 SOL) | Per-user cap → depth band | 20-45% | 31-69% |
-| Deep treasury (500+ SOL) | Depth band | 45-50% | 23-31% |
+| Mature treasury (150-500 SOL) | Per-user cap → depth curve | 20-54% | 17-69% |
+| Deep treasury (500+ SOL pool) | Depth curve | 54-60% | 7.7-17% |
 
-The per-user cap dominates whenever $M \cdot \mu \cdot y / (S \cdot x) < L(x) / 10000$. With $\mu = 23$, this transition occurs around 400-500 SOL treasury for a 200 SOL pool — the point where the token has proven itself through sustained volume and the depth band takes over as the safety ceiling.
+The per-user cap dominates whenever $M \cdot \mu \cdot y / (S \cdot x) < L(x) / 10000$. With $\mu = 23$, this transition occurs once the treasury is large relative to the pool — the point where the token has proven itself through sustained volume and the depth **curve** takes over as the safety ceiling. Orthogonally, **Rail 2** caps any single position's debt value at $\rho_{\max} = 25\%$ of pool SOL: on a thin pool a whale's borrow is clamped well below the LTV ceiling, holding the liquidation-unwind slippage to $\rho_{\max}$ regardless of which regime the position sits in.
 
 ### 5.5 Simulation Validation
 
-Economic simulation confirms the regime map. In a cascade stress test with 150 SOL treasury and 422 SOL pool:
-- Two positions opened at 42.5-42.8% LTV (per-user cap near depth band ceiling)
-- 55% price crash triggered both liquidations
-- Liquidator dumped seized collateral, pushing price to 59.7% total decline
-- Bad debt absorbed by treasury (137 SOL remaining from 150)
-- System remained solvent with zero contagion to other positions
+The economic simulator ([`sim/torch_sim.py`](../sim/torch_sim.py)) is the executable spec for these rails, and the on-chain math is a faithful port of it. Key validations:
 
-The liquidation engine is not decorative — it functions exactly as designed when treasury depth makes leverage real.
+- **Rails scenario (`scenario_depth_rails`).** On pools from the 100-SOL floor up, a whale's leverage is clamped by both the LTV curve and the size cap; the realized debt-to-pool ratio pins to $\rho_{\max} = 25\%$ at *every* depth — confirming unwind slippage is depth-invariant. A capped position driven into genuine TWAP distress then liquidates with the flat bonus covering the unwind ($\rho \leq \rho_{\max} \leq$ bonus) → **zero protocol bad debt**.
+- **Conservation fuzzers.** Two 1500-action random-walk scenarios (mixed open/close/liquidate across many users) hold SOL and token conservation at *every* step — bad debt is only ever redistribution, never invented or destroyed value.
+- **Gap-crash stress.** When a price gap *outruns* liquidation (e.g. a one-block 75% crash), residual bad debt appears but is bounded by the single position's custody (the size cap + per-position vault), and conservation still holds. The rails bound unwind slippage; they cannot bound a price that teleports past the threshold faster than any liquidator can act — that tail is capped by custody, not eliminated.
+
+The liquidation engine is not decorative — it functions exactly as designed when depth makes leverage real, and the rails ensure that what it cannot prevent, it bounds.
 
 ---
 
@@ -333,7 +356,7 @@ At $\ell_0 = 0.0029$ (per-user cap dominated):
 
 This asymmetry is correct and intentional. Borrowing SOL against tokens you hold (long) is a bet that the token retains some value — a conservative position. Shorting is a bet that the token will decline — an inherently riskier directional trade.
 
-The protocol reflects this: long positions are structurally protected by the cap interaction. Short positions are protected by the depth band and per-user caps, but remain liquidatable under adverse price movement. The liquidation mechanism exists primarily to service short positions.
+The protocol reflects this: long positions are structurally protected by the cap interaction. Short positions are protected by the depth curve and per-user caps, but remain liquidatable under adverse price movement. The liquidation mechanism exists primarily to service short positions.
 
 ---
 
@@ -483,7 +506,7 @@ The following properties hold at all times:
 
 **Defense:** The attacker must spend $\Delta x = x(\sqrt{\alpha} - 1)$ SOL to pump price by $\alpha$. At a 200 SOL pool, a 20% pump costs ~19 SOL. The attacker receives tokens worth $\Delta x$ SOL at the inflated price.
 
-Even at maximum depth-band LTV (50%), the attacker can borrow at most $0.5 \cdot \Delta x = 9.5$ SOL against those tokens. Their net cost is $\Delta x - 0.5 \cdot \Delta x = 0.5 \cdot \Delta x$. They lose money.
+Even at the 200-SOL pool's max-curve LTV (45%), the attacker can borrow at most $0.45 \cdot \Delta x \approx 8.6$ SOL against those tokens. Their net cost is $\Delta x - 0.45 \cdot \Delta x = 0.55 \cdot \Delta x$. They lose money. (Rail 2 caps the borrow further still — at most $\rho_{\max} = 25\%$ of pool SOL — if the pumped collateral is large relative to depth.)
 
 **With per-user cap:** The attacker's maximum borrow is further limited to $B_{\max}(c) \ll 0.5 \cdot V(c)$, making the attack strictly unprofitable.
 
@@ -503,15 +526,15 @@ Even at maximum depth-band LTV (50%), the attacker can borrow at most $0.5 \cdot
 
 **Attack:** Open position, wait for interest to push LTV past liquidation threshold.
 
-**Analysis:** Interest accrues at $r = 200$ bps per epoch (~7 days). Starting at 0.29% LTV:
+**Analysis:** Interest accrues at $r = 150$ bps per epoch (~7 days; [V21] lowered from 200). Starting at 0.29% LTV:
 
-$$\text{Epochs to liquidation} = \frac{(\theta - \text{LTV}_0) \cdot 10000}{r} = \frac{(6500 - 29)}{200} = 32.4 \text{ epochs} \approx 227 \text{ days}$$
+$$\text{Epochs to liquidation} = \frac{(\theta - \text{LTV}_0)}{r} = \frac{(6500 - 29)}{150} = 43.1 \text{ epochs} \approx 302 \text{ days}$$
 
-The borrower has over 7 months to repay before interest alone triggers liquidation. At depth-band maximum (50% LTV):
+The borrower has roughly 10 months to repay before interest alone triggers liquidation. At the depth curve's asymptote (60% LTV, deep pool — the most aggressive case):
 
-$$\text{Epochs} = \frac{(6500 - 5000)}{200} = 7.5 \text{ epochs} \approx 52 \text{ days}$$
+$$\text{Epochs} = \frac{(6500 - 6000)}{150} = 3.3 \text{ epochs} \approx 23 \text{ days}$$
 
-Still nearly 2 months, and this assumes zero price movement.
+At the 100-SOL floor (30% LTV) it is $(6500 - 3000)/150 = 23.3$ epochs $\approx 163$ days. Interest-only liquidation is therefore a fast clock *only* for a borrower who deliberately maxes leverage on a deep pool, and assumes zero favorable price movement.
 
 ### 10.5 Gate Bypass via Short Collateral
 
@@ -526,7 +549,7 @@ Still nearly 2 months, and this assumes zero price movement.
 | Property | Torch Market | Aave/Compound |
 |----------|-------------|---------------|
 | Price oracle | Pool reserves (on-chain) | Chainlink (off-chain) |
-| Maximum LTV | 0.29-50% (regime dependent) | 75-85% |
+| Maximum LTV | 0.29-60% (regime dependent) | 75-85% |
 | Liquidation frequency | Near-zero (structural) | Regular (by design) |
 | Liquidator dependency | Minimal | Critical |
 | Capital efficiency | Low (safety-first) | High (leverage-first) |
@@ -542,16 +565,18 @@ The fundamental difference: traditional DeFi lending maximizes capital efficienc
 
 The depth-anchored risk model creates a lending system where:
 
-1. Maximum LTV adapts to pool manipulation resistance (no stored state)
-2. Per-user caps ($\mu = 23$) create graduated leverage — 3% at fresh treasury, scaling to 45% at depth band ceiling
-3. An absolute 20%-of-lendable per-user clamp ($\beta = 2000$ bps) ensures no single whale can monopolize lending
-4. The activity unlock gate ($T_{\text{avail}} \geq 100$ SOL on mainnet) keys on protocol-earned float, not gross balance — short collateral cannot cosmetically unlock the gate
-5. Fresh tokens are structurally protected; mature tokens graduate into functional margin markets
-6. Treasury grows perpetually from transfer fees (PVP bonding multiplier + price-correlated harvesting) without protocol extraction
-7. The 300M short pool is preserved (and grows) across cycles via Token-2022 gross-up accounting
-8. No oracles, keepers, or governance are required
-9. The liquidation engine is functional and validated — not decorative
+1. **Rail 1** — Maximum LTV adapts to pool manipulation resistance on a continuous, concave curve (30% at the 100-SOL floor → 60% asymptote, no stored state)
+2. **Rail 2** — A per-position size cap ($\rho_{\max} = 25\%$ of pool SOL) makes liquidation-unwind slippage depth-invariant
+3. **Rail 3** — A single flat liquidation bonus (32.5%), derived from the size cap, clears the unwind on every pool with no depth-varying schedule
+4. Per-user caps ($\mu = 23$) create graduated leverage — 3% at fresh treasury, scaling toward the 60% depth-curve asymptote — and can bind stricter than the curve on a small treasury
+5. An absolute 20%-of-lendable per-user clamp ($\beta = 2000$ bps) ensures no single whale can monopolize lending
+6. The activity unlock gate ($T_{\text{avail}} \geq 100$ SOL on mainnet) keys on protocol-earned float, not gross balance — short collateral cannot cosmetically unlock the gate
+7. Fresh tokens are structurally protected; mature tokens graduate into functional margin markets
+8. Treasury grows perpetually from transfer fees (PVP bonding multiplier + price-correlated harvesting) without protocol extraction
+9. The 300M short pool is preserved (and grows) across cycles via Token-2022 gross-up accounting
+10. The liquidation mark is a keeperless TWAP from the pool's own price cumulative — no external oracle, keeper, or governance required
+11. The liquidation engine is functional and validated — not decorative
 
-The result is a permissionless, self-sustaining lending protocol with a natural lifecycle: tokens begin with near-zero liquidation risk (per-user cap dominance) and graduate into real margin markets as treasury depth proves sustained demand. Short positions remain liquidatable at any stage due to the asymmetric nature of upward price risk.
+The result is a permissionless, self-sustaining lending protocol with a natural lifecycle: tokens begin with near-zero liquidation risk (per-user cap dominance) and graduate into real margin markets as depth proves sustained demand. Short positions remain liquidatable at any stage due to the asymmetric nature of upward price risk.
 
-The safety of the system is not a parameter choice — it is a mathematical consequence of the supply split ($y/S \approx 0.15$), the constant-product invariant, the depth-based LTV ceiling, and the cap interactions. These properties are immutable post-deployment and hold for all valid inputs, as verified by 84 Kani proof harnesses and economic simulation under adversarial conditions.
+The safety of the system is not a parameter choice — it is a mathematical consequence of the supply split ($y/S \approx 0.15$), the constant-product invariant, the depth-scaled rails, and the cap interactions. These properties are immutable post-deployment and hold for all valid inputs, as verified by Kani proof harnesses (including the depth-curve, size-cap, and bonus-ramp proofs) and economic simulation under adversarial conditions.

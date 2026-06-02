@@ -24,11 +24,11 @@ use tracing::{error, info, warn};
 
 use crate::contracts::{
     AnyEvent, BlockBatch, BroadcastFrame, Broadcaster, DecodedEvent, DeepPoolEvent, LiquidityRow,
-    LoanRow, MarketRow, MarketStatus, MessageRow, MigrationRow, NewLoanRow, NewMarketRow,
-    NewMessageRow, NewShortRow, PoolRow, PositionHealth, ReservesRow, ShortRow, SwapRow, TorchEvent,
-    TradeRow,
+    MarketRow, MarketStatus, MessageRow, MigrationRow, NewMarketRow, NewMessageRow, NewPositionRow,
+    PoolRow, PositionEventRow, PositionHealth, PositionRow, PositionSide, ReservesRow, SwapRow,
+    TorchEvent, TradeRow,
 };
-use crate::domain::{liquidity, loan, market, message, migration, pool, reserves, short, swap};
+use crate::domain::{liquidity, market, message, migration, pool, position, reserves, swap};
 use crate::stream::translate;
 
 pub async fn run_writer(
@@ -86,8 +86,8 @@ struct WrittenBlock {
     markets: Vec<MarketRow>,
     trades: Vec<TradeRow>,
     messages: Vec<MessageRow>,
-    loans: Vec<LoanRow>,
-    shorts: Vec<ShortRow>,
+    positions: Vec<PositionRow>,
+    position_events: Vec<PositionEventRow>,
     migrations: Vec<MigrationRow>,
 }
 
@@ -100,8 +100,8 @@ impl WrittenBlock {
             + self.markets.len()
             + self.trades.len()
             + self.messages.len()
-            + self.loans.len()
-            + self.shorts.len()
+            + self.positions.len()
+            + self.position_events.len()
             + self.migrations.len()
     }
 
@@ -127,11 +127,11 @@ impl WrittenBlock {
         for r in self.messages {
             bc.publish(BroadcastFrame::Message(Arc::new(r)));
         }
-        for r in self.loans {
-            bc.publish(BroadcastFrame::Loan(Arc::new(r)));
+        for r in self.positions {
+            bc.publish(BroadcastFrame::Position(Arc::new(r)));
         }
-        for r in self.shorts {
-            bc.publish(BroadcastFrame::Short(Arc::new(r)));
+        for r in self.position_events {
+            bc.publish(BroadcastFrame::PositionEvent(Arc::new(r)));
         }
         for r in self.migrations {
             bc.publish(BroadcastFrame::Migration(Arc::new(r)));
@@ -483,28 +483,34 @@ async fn write_torch_event(
             // or a deep_pool SwapExecuted (post-mig). No table mutation.
         }
 
-        TorchEvent::LoanCreated(e) => {
-            let row = translate::new_loan_from_created(e, de);
-            let inserted = loan::upsert(tx, &row).await?;
-            out.loans.push(inserted);
+        // [V21] Leverage — open events upsert a fresh position; close/liquidate
+        // reconcile the prior row by delta. Every event also appends to the
+        // `position_events` log (idempotent on signature+inner_ix_idx).
+        TorchEvent::OpenShort(e) => {
+            let row = translate::new_position_open_short(e, de);
+            out.positions.push(position::upsert(tx, &row).await?);
+            push_position_event(tx, &translate::pos_event_open_short(e, de), out).await?;
         }
-        TorchEvent::LoanRepaid(e) => {
-            apply_loan_repaid(tx, e, de, &mut out.loans).await?;
+        TorchEvent::OpenLong(e) => {
+            let row = translate::new_position_open_long(e, de);
+            out.positions.push(position::upsert(tx, &row).await?);
+            push_position_event(tx, &translate::pos_event_open_long(e, de), out).await?;
         }
-        TorchEvent::LoanLiquidated(e) => {
-            apply_loan_liquidated(tx, e, de, &mut out.loans).await?;
+        TorchEvent::CloseShort(e) => {
+            apply_close_short(tx, e, de, out).await?;
+            push_position_event(tx, &translate::pos_event_close_short(e, de), out).await?;
         }
-
-        TorchEvent::ShortOpened(e) => {
-            let row = translate::new_short_from_opened(e, de);
-            let inserted = short::upsert(tx, &row).await?;
-            out.shorts.push(inserted);
+        TorchEvent::CloseLong(e) => {
+            apply_close_long(tx, e, de, out).await?;
+            push_position_event(tx, &translate::pos_event_close_long(e, de), out).await?;
         }
-        TorchEvent::ShortClosed(e) => {
-            apply_short_closed(tx, e, de, &mut out.shorts).await?;
+        TorchEvent::LiquidateShort(e) => {
+            apply_liquidate_short(tx, e, de, out).await?;
+            push_position_event(tx, &translate::pos_event_liquidate_short(e, de), out).await?;
         }
-        TorchEvent::ShortLiquidated(e) => {
-            apply_short_liquidated(tx, e, de, &mut out.shorts).await?;
+        TorchEvent::LiquidateLong(e) => {
+            apply_liquidate_long(tx, e, de, out).await?;
+            push_position_event(tx, &translate::pos_event_liquidate_long(e, de), out).await?;
         }
 
         TorchEvent::RevivalContribution(_) | TorchEvent::TokenRevived(_) => {
@@ -528,132 +534,172 @@ async fn swap_trade(
     Ok(trade::set(tx, &[row]).await?)
 }
 
-// ───────────── Loan / Short delta application ───────────────────────────
+// ───────────── Position (V21) reconcile + event log ─────────────────────
 //
-// LoanRepaid / LoanLiquidated / ShortClosed / ShortLiquidated carry deltas,
-// not absolute amounts. Read the prior row, apply the diff, upsert. If the
-// prior row is missing (event arrived before its OPEN — backfill ordering
-// edge case), log a warning and skip.
+// Close*/Liquidate* events carry DELTAS (debt_repaid, tokens_covered, …), not
+// absolute amounts. Read the prior `positions` row, apply the diff, upsert. If
+// the prior row is missing (event arrived before its OPEN — a backfill-ordering
+// edge case), log a warning and skip the current-state reconcile (the
+// append-only `position_events` row is still recorded by the caller).
+//
+// Unit-by-side (mirrors the on-chain generic Position fields):
+//   short → collateral = SOL,    debt = tokens
+//   long  → collateral = tokens,  debt = SOL
 
-async fn apply_loan_repaid(
+// Append a position_events log row (idempotent on signature+inner_ix_idx).
+async fn push_position_event(
     tx: &mut Transaction<'_, Postgres>,
-    e: &crate::contracts::LoanRepaid,
-    de: &DecodedEvent,
-    out: &mut Vec<LoanRow>,
+    row: &crate::contracts::NewPositionEventRow,
+    out: &mut WrittenBlock,
 ) -> anyhow::Result<()> {
-    let mint = translate::b58(&e.mint);
-    let borrower = translate::b58(&e.user);
-    let Some(prior) = loan::get(tx, &mint, &borrower).await? else {
-        warn!(slot = de.slot, sig = %de.signature, %mint, %borrower, "LoanRepaid for unknown loan; skipping");
-        return Ok(());
-    };
-    let new_borrowed = (prior.borrowed_amount - e.sol_repaid as i64).max(0);
-    let new_collateral = (prior.collateral_amount - e.collateral_returned as i64).max(0);
-    let now = translate::ts(de);
-    let row = NewLoanRow {
-        mint,
-        borrower,
-        collateral_amount: new_collateral,
-        borrowed_amount: new_borrowed,
-        accrued_interest_stored: 0, // reset on every repay (interest was paid)
-        last_update_slot: de.slot,
-        health: PositionHealth::Healthy,
-        is_active: !e.fully_repaid,
-        created_at: prior.created_at,
-        updated_at: now,
-    };
-    out.push(loan::upsert(tx, &row).await?);
+    if let Some(inserted) = position::event::insert(tx, row).await? {
+        out.position_events.push(inserted);
+    }
     Ok(())
 }
 
-async fn apply_loan_liquidated(
-    tx: &mut Transaction<'_, Postgres>,
-    e: &crate::contracts::LoanLiquidated,
+// Build a reconciled `positions` upsert from the prior row, decrementing
+// collateral/debt by the event's deltas (clamped at 0). On full resolution the
+// position drains to zero and flips inactive. PK fields, open_fee_sol, and
+// owner_is_vault are preserved from the prior row.
+fn reconcile_position(
+    prior: &PositionRow,
+    collateral_delta: i64,
+    debt_delta: i64,
+    fully_resolved: bool,
+    health: PositionHealth,
     de: &DecodedEvent,
-    out: &mut Vec<LoanRow>,
+) -> NewPositionRow {
+    let (collateral_amount, debt_amount, vault_balance, is_active) = if fully_resolved {
+        (0, 0, 0, false)
+    } else {
+        (
+            (prior.collateral_amount - collateral_delta).max(0),
+            (prior.debt_amount - debt_delta).max(0),
+            prior.vault_balance,
+            true,
+        )
+    };
+    NewPositionRow {
+        mint: prior.mint.clone(),
+        owner: prior.owner.clone(),
+        side: prior.side,
+        position_index: prior.position_index,
+        collateral_amount,
+        debt_amount,
+        open_fee_sol: prior.open_fee_sol,
+        vault_balance,
+        accrued_interest_stored: 0, // interest settled on every close/liquidate
+        last_update_slot: de.slot,
+        health,
+        is_active,
+        owner_is_vault: prior.owner_is_vault,
+        created_at: prior.created_at,
+        updated_at: translate::ts(de),
+    }
+}
+
+async fn apply_close_short(
+    tx: &mut Transaction<'_, Postgres>,
+    e: &crate::contracts::CloseShortEvent,
+    de: &DecodedEvent,
+    out: &mut WrittenBlock,
 ) -> anyhow::Result<()> {
     let mint = translate::b58(&e.mint);
-    let borrower = translate::b58(&e.borrower);
-    let Some(prior) = loan::get(tx, &mint, &borrower).await? else {
-        warn!(slot = de.slot, sig = %de.signature, %mint, %borrower, "LoanLiquidated for unknown loan; skipping");
+    let owner = translate::b58(&e.user);
+    let idx = e.position_index as i32;
+    let Some(prior) = position::get(tx, &mint, &owner, PositionSide::Short, idx).await? else {
+        warn!(slot = de.slot, sig = %de.signature, %mint, %owner, idx, "CloseShort for unknown position; skipping reconcile");
         return Ok(());
     };
-    let now = translate::ts(de);
-    let row = NewLoanRow {
-        mint,
-        borrower,
-        collateral_amount: (prior.collateral_amount - e.collateral_seized as i64).max(0),
-        borrowed_amount: (prior.borrowed_amount - e.debt_covered as i64).max(0),
-        accrued_interest_stored: 0,
-        last_update_slot: de.slot,
-        // Position fully liquidated when debt fully covered and no bad debt
-        // remains, OR when borrowed_amount reaches 0. Mark inactive then.
-        health: PositionHealth::Liquidatable,
-        is_active: prior.borrowed_amount > e.debt_covered as i64,
-        created_at: prior.created_at,
-        updated_at: now,
-    };
-    out.push(loan::upsert(tx, &row).await?);
+    // SOL collateral leaving the position = buyback spend + surplus returned.
+    let collateral_delta = (e.sol_spent_on_buyback as i64) + (e.surplus_sol_to_user as i64);
+    let row = reconcile_position(
+        &prior,
+        collateral_delta,
+        e.debt_repaid as i64,
+        e.fully_closed,
+        PositionHealth::Healthy,
+        de,
+    );
+    out.positions.push(position::upsert(tx, &row).await?);
     Ok(())
 }
 
-async fn apply_short_closed(
+async fn apply_close_long(
     tx: &mut Transaction<'_, Postgres>,
-    e: &crate::contracts::ShortClosed,
+    e: &crate::contracts::CloseLongEvent,
     de: &DecodedEvent,
-    out: &mut Vec<ShortRow>,
+    out: &mut WrittenBlock,
 ) -> anyhow::Result<()> {
     let mint = translate::b58(&e.mint);
-    let shorter = translate::b58(&e.user);
-    let Some(prior) = short::get(tx, &mint, &shorter).await? else {
-        warn!(slot = de.slot, sig = %de.signature, %mint, %shorter, "ShortClosed for unknown short; skipping");
+    let owner = translate::b58(&e.user);
+    let idx = e.position_index as i32;
+    let Some(prior) = position::get(tx, &mint, &owner, PositionSide::Long, idx).await? else {
+        warn!(slot = de.slot, sig = %de.signature, %mint, %owner, idx, "CloseLong for unknown position; skipping reconcile");
         return Ok(());
     };
-    let now = translate::ts(de);
-    // tokens_returned reduces tokens_borrowed (which is net). sol_returned
-    // reduces sol_collateral.
-    let row = NewShortRow {
-        mint,
-        shorter,
-        sol_collateral: (prior.sol_collateral - e.sol_returned as i64).max(0),
-        tokens_borrowed: (prior.tokens_borrowed - e.tokens_returned as i64).max(0),
-        accrued_interest_stored: 0,
-        last_update_slot: de.slot,
-        health: PositionHealth::Healthy,
-        is_active: !e.fully_closed,
-        created_at: prior.created_at,
-        updated_at: now,
-    };
-    out.push(short::upsert(tx, &row).await?);
+    let row = reconcile_position(
+        &prior,
+        e.tokens_sold as i64,  // collateral = tokens
+        e.debt_repaid as i64,  // debt = SOL
+        e.fully_closed,
+        PositionHealth::Healthy,
+        de,
+    );
+    out.positions.push(position::upsert(tx, &row).await?);
     Ok(())
 }
 
-async fn apply_short_liquidated(
+async fn apply_liquidate_short(
     tx: &mut Transaction<'_, Postgres>,
-    e: &crate::contracts::ShortLiquidated,
+    e: &crate::contracts::LiquidateShortEvent,
     de: &DecodedEvent,
-    out: &mut Vec<ShortRow>,
+    out: &mut WrittenBlock,
 ) -> anyhow::Result<()> {
     let mint = translate::b58(&e.mint);
-    let shorter = translate::b58(&e.borrower);
-    let Some(prior) = short::get(tx, &mint, &shorter).await? else {
-        warn!(slot = de.slot, sig = %de.signature, %mint, %shorter, "ShortLiquidated for unknown short; skipping");
+    let owner = translate::b58(&e.borrower);
+    let idx = e.position_index as i32;
+    let Some(prior) = position::get(tx, &mint, &owner, PositionSide::Short, idx).await? else {
+        warn!(slot = de.slot, sig = %de.signature, %mint, %owner, idx, "LiquidateShort for unknown position; skipping reconcile");
         return Ok(());
     };
-    let now = translate::ts(de);
-    let row = NewShortRow {
-        mint,
-        shorter,
-        sol_collateral: (prior.sol_collateral - e.sol_seized as i64).max(0),
-        tokens_borrowed: (prior.tokens_borrowed - e.tokens_covered as i64).max(0),
-        accrued_interest_stored: 0,
-        last_update_slot: de.slot,
-        health: PositionHealth::Liquidatable,
-        is_active: prior.tokens_borrowed > e.tokens_covered as i64,
-        created_at: prior.created_at,
-        updated_at: now,
+    // SOL leaving = seized by liquidator + residual returned to borrower.
+    let collateral_delta = (e.sol_seized as i64) + (e.residual_sol_to_borrower as i64);
+    let row = reconcile_position(
+        &prior,
+        collateral_delta,
+        e.tokens_covered as i64,
+        e.fully_liquidated,
+        PositionHealth::Liquidatable,
+        de,
+    );
+    out.positions.push(position::upsert(tx, &row).await?);
+    Ok(())
+}
+
+async fn apply_liquidate_long(
+    tx: &mut Transaction<'_, Postgres>,
+    e: &crate::contracts::LiquidateLongEvent,
+    de: &DecodedEvent,
+    out: &mut WrittenBlock,
+) -> anyhow::Result<()> {
+    let mint = translate::b58(&e.mint);
+    let owner = translate::b58(&e.borrower);
+    let idx = e.position_index as i32;
+    let Some(prior) = position::get(tx, &mint, &owner, PositionSide::Long, idx).await? else {
+        warn!(slot = de.slot, sig = %de.signature, %mint, %owner, idx, "LiquidateLong for unknown position; skipping reconcile");
+        return Ok(());
     };
-    out.push(short::upsert(tx, &row).await?);
+    let row = reconcile_position(
+        &prior,
+        e.tokens_seized as i64, // collateral = tokens
+        e.debt_covered as i64,  // debt = SOL
+        e.fully_liquidated,
+        PositionHealth::Liquidatable,
+        de,
+    );
+    out.positions.push(position::upsert(tx, &row).await?);
     Ok(())
 }
 

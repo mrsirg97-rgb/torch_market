@@ -1,7 +1,7 @@
 import { PublicKey } from '@solana/web3.js'
 
 // program ID - Mainnet/Devnet (deployed program)
-export const PROGRAM_ID = new PublicKey('4nwTCWyR6vapTQRkV39f32xJ3uQztdjBqfhubnR6wQQC')
+export const PROGRAM_ID = new PublicKey('E5b4rBqtS5jRvjHcYZ3ZSNo2sdSPJtauQKkEacKmmjqG')
 // DeepPool Program ID (same on all networks) — replaces Raydium as the post-migration DEX
 export const DEEP_POOL_PROGRAM_ID = new PublicKey('CcwF61GW14AcxCS4E2zedHXdFXy8x8GQPvfxZrs2x2eT')
 export const DEEP_POOL_POOL_SEED = 'deep_pool'
@@ -14,21 +14,31 @@ export const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC
 // PDA seeds (must match the Rust program)
 export const GLOBAL_CONFIG_SEED = 'global_config'
 export const BONDING_CURVE_SEED = 'bonding_curve'
+// [V21] System-owned companion PDA holding the bonding curve's real SOL reserves
+// (split out of the program-owned data account so curve SOL is System-custodied).
+export const BONDING_CURVE_SOL_SEED = 'bonding_curve_sol'
 export const TREASURY_SEED = 'treasury'
+// [V21] System-owned per-mint vault custodying lendable SOL (funds long opens,
+// receives short/long repayments). The Treasury data account is accounting-only.
+export const TREASURY_SOL_VAULT_SEED = 'treasury_sol_vault'
 export const USER_POSITION_SEED = 'user_position'
 export const PROTOCOL_TREASURY_SEED = 'protocol_treasury_v11'
 export const USER_STATS_SEED = 'user_stats'
-export const STAR_RECORD_SEED = 'star_record'
-export const LOAN_SEED = 'loan'
-export const COLLATERAL_VAULT_SEED = 'collateral_vault'
 export const TORCH_VAULT_SEED = 'torch_vault'
 // System-owned companion PDA holding SOL for the duration of a deep_pool swap
 // CPI. Only used in vault_swap; sits at 0 lamports between swaps.
 export const TORCH_VAULT_SOL_SEED = 'torch_vault_sol'
 export const VAULT_WALLET_LINK_SEED = 'vault_wallet'
 export const TREASURY_LOCK_SEED = 'treasury_lock'
-export const SHORT_SEED = 'short'
-export const SHORT_CONFIG_SEED = 'short_config'
+// [V21] Unified leverage position (side = long | short; multi-position via index).
+export const POSITION_SEED = 'position'
+// [V21] System-owned per-position SOL vault for shorts (collateral custody).
+export const SHORT_VAULT_SEED = 'short_vault'
+// [V21] System-owned per-position SOL vault for longs (borrowed SOL custody).
+export const LONG_SOL_VAULT_SEED = 'long_sol_vault'
+// [V21] Position side discriminator bytes (must match the Rust program).
+export const POSITION_SIDE_LONG = 0
+export const POSITION_SIDE_SHORT = 1
 // token constants (must match the Rust program)
 export const TOTAL_SUPPLY = BigInt('1000000000000000') // 1B with 6 decimals
 export const TOKEN_DECIMALS = 6

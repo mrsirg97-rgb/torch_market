@@ -6,10 +6,11 @@
 // silently on any failure.
 //
 // Two categories of methods here:
-//   1. Internal helpers (`fetchLoansFromIndexer`, `fetchShortsFromIndexer`,
+//   1. Internal helpers (`fetchPositionsFromIndexer`,
 //      `fetchMessagesFromIndexer`) consumed by tokens.ts to populate the
 //      indexer-first path with RPC fallback.
-//   2. Public indexer-only methods (`getTrades`, `getCandles`) that have no
+//   2. Public indexer-only methods (`getTrades`, `getCandles`,
+//      `getLiquidations`) that have no
 //      RPC equivalent — chains can't aggregate historical events in any
 //      reasonable time. These throw if the indexer is unreachable.
 //
@@ -85,30 +86,55 @@ export interface IndexerMessageRow {
   created_at: string
 }
 
-export interface IndexerLoanRow {
+export type IndexerPositionSide = 'long' | 'short'
+export type IndexerPositionEventKind = 'open' | 'close' | 'liquidate'
+
+// [V21] Unified leverage position (replaces IndexerLoanRow + IndexerShortRow).
+// Unit-by-side: short → collateral=SOL/debt=tokens; long → collateral=tokens/debt=SOL.
+export interface IndexerPositionRow {
   mint: string
-  borrower: string
+  owner: string
+  side: IndexerPositionSide
+  position_index: number
   collateral_amount: number
-  borrowed_amount: number
+  debt_amount: number
+  open_fee_sol: number
+  vault_balance: number
   accrued_interest_stored: number
   last_update_slot: number
   health: IndexerPositionHealth
   is_active: boolean
+  owner_is_vault: boolean
   created_at: string
   updated_at: string
 }
 
-export interface IndexerShortRow {
+// [V21] Append-only leverage event log row. Kind-specific columns are null for
+// non-applicable kinds (e.g. liquidation analytics are null on open/close).
+export interface IndexerPositionEventRow {
   mint: string
-  shorter: string
-  sol_collateral: number
-  tokens_borrowed: number
-  accrued_interest_stored: number
-  last_update_slot: number
-  health: IndexerPositionHealth
-  is_active: boolean
+  owner: string
+  side: IndexerPositionSide
+  position_index: number
+  kind: IndexerPositionEventKind
+  liquidator: string | null
+  sol_in: number | null
+  sol_out: number | null
+  tokens_in: number | null
+  tokens_out: number | null
+  interest_paid: number | null
+  principal_paid: number | null
+  surplus_sol: number | null
+  bad_debt: number | null
+  twap_ltv: number | null
+  bonus_bps: number | null
+  seized: number | null
+  residual: number | null
+  fully_resolved: boolean | null
+  slot: number
+  signature: string
+  inner_ix_idx: number
   created_at: string
-  updated_at: string
 }
 
 /** Post-migration DEX swap row (deep_pool `swaps` table). One row per
@@ -193,6 +219,17 @@ export interface SwapsQuery {
   limit?: number
 }
 
+// [V21] Query for the append-only leverage event log (/api/liquidations). Pass
+// `kind` to widen beyond liquidations (the endpoint defaults to `liquidate`).
+export interface LiquidationsQuery {
+  indexer: string
+  mint?: string
+  owner?: string
+  side?: IndexerPositionSide
+  kind?: IndexerPositionEventKind
+  limit?: number
+}
+
 // ============================================================================
 // Internal: HTTP + fallback plumbing
 // ============================================================================
@@ -225,30 +262,22 @@ export async function withFallback<T>(
 // Internal helpers — indexer-first paths called from tokens.ts
 // ============================================================================
 
-export async function fetchLoansFromIndexer(
+// [V21] Unified position fetch (replaces fetchLoansFromIndexer +
+// fetchShortsFromIndexer). Pass `side` to scope to long or short; omit for both.
+export async function fetchPositionsFromIndexer(
   indexer: string,
   mint: string,
+  side: IndexerPositionSide | null = null,
   isActive: boolean | null = true,
-): Promise<IndexerLoanRow[]> {
+): Promise<IndexerPositionRow[]> {
   const params = new URLSearchParams()
   params.set('mint', mint)
+  if (side !== null) params.set('side', side)
   if (isActive !== null) params.set('is_active', String(isActive))
-  // The active-loans UI rarely needs more than a few hundred rows; cap to
+  // The active-positions UI rarely needs more than a few hundred rows; cap to
   // the indexer's own clamp (500) so we don't fetch a giant payload.
   params.set('limit', '500')
-  return indexerFetch<IndexerLoanRow[]>(indexer, `/api/loans?${params.toString()}`)
-}
-
-export async function fetchShortsFromIndexer(
-  indexer: string,
-  mint: string,
-  isActive: boolean | null = true,
-): Promise<IndexerShortRow[]> {
-  const params = new URLSearchParams()
-  params.set('mint', mint)
-  if (isActive !== null) params.set('is_active', String(isActive))
-  params.set('limit', '500')
-  return indexerFetch<IndexerShortRow[]>(indexer, `/api/shorts?${params.toString()}`)
+  return indexerFetch<IndexerPositionRow[]>(indexer, `/api/positions?${params.toString()}`)
 }
 
 export async function fetchMessagesFromIndexer(
@@ -324,9 +353,25 @@ export async function getTrades(query: TradeHistoryQuery): Promise<IndexerTradeR
   if (query.before) params.set('before', query.before.toISOString())
   if (query.limit != null) params.set('limit', String(query.limit))
   const qs = params.toString()
-  return indexerFetch<IndexerTradeRow[]>(
+  return indexerFetch<IndexerTradeRow[]>(query.indexer, qs ? `/api/trades?${qs}` : '/api/trades')
+}
+
+// [V21] Indexer-only: the leverage event log. Defaults to liquidations (the
+// `bad_debt`/`twap_ltv`/`bonus_bps`/`seized` analytics surface); pass `kind` to
+// widen. No RPC equivalent — chains can't aggregate the historical event log.
+export async function getLiquidations(
+  query: LiquidationsQuery,
+): Promise<IndexerPositionEventRow[]> {
+  const params = new URLSearchParams()
+  if (query.mint) params.set('mint', query.mint)
+  if (query.owner) params.set('owner', query.owner)
+  if (query.side) params.set('side', query.side)
+  if (query.kind) params.set('kind', query.kind)
+  if (query.limit != null) params.set('limit', String(query.limit))
+  const qs = params.toString()
+  return indexerFetch<IndexerPositionEventRow[]>(
     query.indexer,
-    qs ? `/api/trades?${qs}` : '/api/trades',
+    qs ? `/api/liquidations?${qs}` : '/api/liquidations',
   )
 }
 
@@ -345,10 +390,7 @@ export async function getCandles(query: CandlesQuery): Promise<IndexerCandle[]> 
   params.set('interval', query.interval)
   if (query.since) params.set('since', query.since.toISOString())
   if (query.before) params.set('before', query.before.toISOString())
-  return indexerFetch<IndexerCandle[]>(
-    query.indexer,
-    `/api/candles?${params.toString()}`,
-  )
+  return indexerFetch<IndexerCandle[]>(query.indexer, `/api/candles?${params.toString()}`)
 }
 
 /**
@@ -367,10 +409,7 @@ export async function getSwaps(query: SwapsQuery): Promise<IndexerSwapRow[]> {
   if (query.before) params.set('before', query.before.toISOString())
   if (query.limit != null) params.set('limit', String(query.limit))
   const qs = params.toString()
-  return indexerFetch<IndexerSwapRow[]>(
-    query.indexer,
-    qs ? `/api/swaps?${qs}` : '/api/swaps',
-  )
+  return indexerFetch<IndexerSwapRow[]>(query.indexer, qs ? `/api/swaps?${qs}` : '/api/swaps')
 }
 
 /**
@@ -384,9 +423,6 @@ export async function getSwaps(query: SwapsQuery): Promise<IndexerSwapRow[]> {
  *
  * Indexer-only — no RPC equivalent.
  */
-export async function getUserPnl(
-  indexer: string,
-  wallet: string,
-): Promise<UserPnlSummary> {
+export async function getUserPnl(indexer: string, wallet: string): Promise<UserPnlSummary> {
   return indexerFetch<UserPnlSummary>(indexer, `/api/user-pnl/${wallet}`)
 }

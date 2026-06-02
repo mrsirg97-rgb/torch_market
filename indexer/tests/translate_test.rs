@@ -7,10 +7,10 @@ use chrono::{DateTime, Utc};
 
 use torch_indexer::contracts::{
     AnyEvent, BondingCurveTrade, DecodedEvent, DeepPoolEvent, MarketCreated, MarketStatus,
-    MarketTier, MigratedToDex, PoolCreated, ShortOpened, TorchEvent,
+    MarketTier, MigratedToDex, OpenShortEvent, PoolCreated, PositionSide, TorchEvent,
 };
 use torch_indexer::stream::translate::{
-    b58, new_market, new_migration, new_pool, new_short_from_opened, new_trade, pool_pubkey,
+    b58, new_market, new_migration, new_pool, new_position_open_short, new_trade, pool_pubkey,
     tier_from_target, torch_event_mint, ts, PUBKEY_DEFAULT,
 };
 
@@ -38,6 +38,7 @@ fn de_for(event: AnyEvent, slot: i64, inner: i32) -> DecodedEvent {
         block_time: Some(fixed_ts()),
         event,
         memo: None,
+        via_vault: false,
     }
 }
 
@@ -71,6 +72,7 @@ fn ts_falls_back_to_now_when_block_time_missing() {
             },
         )),
         memo: None,
+        via_vault: false,
     };
     let before = Utc::now();
     let got = ts(&de);
@@ -323,14 +325,17 @@ fn new_pool_records_net_amounts() {
 #[test]
 fn torch_event_mint_returns_correct_mint_per_variant() {
     let m = pk(77);
-    let s = ShortOpened {
-        mint: m,
+    let s = OpenShortEvent {
         user: pk(0),
-        sol_collateral: 0,
+        mint: m,
+        position_index: 0,
+        collateral_sol_gross: 0,
+        open_fee_sol: 0,
+        net_collateral_sol: 0,
         tokens_borrowed: 0,
-        ltv_bps: 0,
+        vault_sol: 0,
     };
-    assert_eq!(torch_event_mint(&TorchEvent::ShortOpened(s)), b58(&m));
+    assert_eq!(torch_event_mint(&TorchEvent::OpenShort(s)), b58(&m));
 
     let mc = MarketCreated {
         mint: m,
@@ -346,28 +351,34 @@ fn torch_event_mint_returns_correct_mint_per_variant() {
     assert_eq!(torch_event_mint(&TorchEvent::MarketCreated(mc)), b58(&m));
 }
 
-// ─── new_short_from_opened net-recording semantics ──────────────────────
+// ─── new_position_open_short net-recording semantics ────────────────────
 
 #[test]
-fn new_short_records_net_tokens_borrowed_unchanged() {
+fn new_position_records_net_tokens_borrowed_unchanged() {
     // Event payload already carries the NET value (the program records net
-    // post-fix). Translator must pass it through as-is — no further
-    // adjustment.
+    // post-fix). Translator must pass `tokens_borrowed` through as the position
+    // `debt_amount` as-is — no further adjustment.
     let net_tokens = 999_300_000;
-    let event = ShortOpened {
-        mint: pk(1),
+    let event = OpenShortEvent {
         user: pk(2),
-        sol_collateral: 2_000_000_000,
+        mint: pk(1),
+        position_index: 0,
+        collateral_sol_gross: 2_010_000_000,
+        open_fee_sol: 10_000_000,
+        net_collateral_sol: 2_000_000_000,
         tokens_borrowed: net_tokens,
-        ltv_bps: 4500,
+        vault_sol: 2_000_000_000,
     };
     let de = de_for(
-        AnyEvent::Torch(TorchEvent::ShortOpened(event.clone())),
+        AnyEvent::Torch(TorchEvent::OpenShort(event.clone())),
         100,
         0,
     );
-    let row = new_short_from_opened(&event, &de);
-    assert_eq!(row.tokens_borrowed, net_tokens as i64);
-    assert_eq!(row.sol_collateral, 2_000_000_000);
+    let row = new_position_open_short(&event, &de);
+    assert_eq!(row.side, PositionSide::Short);
+    assert_eq!(row.debt_amount, net_tokens as i64); // short debt = tokens
+    assert_eq!(row.collateral_amount, 2_000_000_000); // short collateral = net SOL
+    assert_eq!(row.open_fee_sol, 10_000_000);
     assert!(row.is_active);
+    assert!(!row.owner_is_vault);
 }

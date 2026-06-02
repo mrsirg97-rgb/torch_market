@@ -43,8 +43,6 @@ mod treasury;
 #[path = "litesvm/protocol_treasury.rs"]
 mod protocol_treasury;
 
-#[path = "litesvm/rewards.rs"]
-mod rewards;
 
 #[path = "litesvm/coverage.rs"]
 mod coverage;

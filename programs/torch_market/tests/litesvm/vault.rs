@@ -16,19 +16,16 @@ fn create_deposit_withdraw_lifecycle() {
     let v = env.get_torch_vault(&vault.vault);
     assert_eq!(v.creator, creator.pubkey());
     assert_eq!(v.authority, creator.pubkey());
-    assert_eq!(v.sol_balance, 0);
+    assert_eq!(env.vault_sol(&vault), 0); // derived from vault_sol, no field
     assert_eq!(v.linked_wallets, 1);
 
     env.deposit_vault(&creator, &vault, LAMPORTS_PER_SOL)
         .expect("deposit");
-    assert_eq!(
-        env.get_torch_vault(&vault.vault).sol_balance,
-        LAMPORTS_PER_SOL
-    );
+    assert_eq!(env.vault_sol(&vault), LAMPORTS_PER_SOL);
 
     env.withdraw_vault(&creator, &vault, 500_000_000)
         .expect("withdraw");
-    assert_eq!(env.get_torch_vault(&vault.vault).sol_balance, 500_000_000);
+    assert_eq!(env.vault_sol(&vault), 500_000_000);
 }
 
 #[test]

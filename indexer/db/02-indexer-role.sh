@@ -33,8 +33,8 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     GRANT SELECT, INSERT, UPDATE ON markets    TO torch_indexer;
     GRANT SELECT, INSERT, UPDATE ON trades     TO torch_indexer;
     GRANT SELECT, INSERT, UPDATE ON messages   TO torch_indexer;
-    GRANT SELECT, INSERT, UPDATE ON loans      TO torch_indexer;
-    GRANT SELECT, INSERT, UPDATE ON shorts     TO torch_indexer;
+    GRANT SELECT, INSERT, UPDATE ON positions      TO torch_indexer;
+    GRANT SELECT, INSERT, UPDATE ON position_events     TO torch_indexer;
     GRANT SELECT, INSERT, UPDATE ON migrations TO torch_indexer;
 
     -- Cross-cutting tables.

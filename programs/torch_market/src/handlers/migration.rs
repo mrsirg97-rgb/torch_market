@@ -1,18 +1,12 @@
 use anchor_lang::prelude::*;
 
 use crate::contexts::*;
-use crate::migration::{fund_migration_sol_handler, migrate_to_dex_handler};
-
-// Fund payer with bonding curve SOL for DeepPool pool creation.
-// Must be called BEFORE migrate_to_dex in the same transaction.
-// Isolates direct lamport manipulation from CPIs.
-pub fn fund_migration_sol(ctx: Context<FundMigrationSol>) -> Result<()> {
-    fund_migration_sol_handler(ctx)
-}
+use crate::migration::migrate_to_dex_handler;
 
 // Migrate bonded token to DeepPool.
-// Permissionless — anyone can call once bonding completes.
-// Payer must be pre-funded via fund_migration_sol, then:
+// Permissionless — anyone can call once bonding completes. The bonded SOL is
+// sourced directly from the System-owned bonding_curve_sol PDA (seed-signed), so
+// there is no separate fund step and the raise never transits a user wallet.
 // 1. Handles vote vault (burn or return tokens based on community vote)
 // 2. Creates DeepPool with tokens + native SOL
 // 3. Burns LP tokens to lock liquidity forever

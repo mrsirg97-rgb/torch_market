@@ -27,12 +27,14 @@ pub fn contribute_revival(ctx: Context<ContributeRevival>, sol_amount: u64) -> R
     let mint_key = ctx.accounts.bonding_curve.mint;
     let contributor_key = ctx.accounts.contributor.key();
 
+    // Contribution lands in the curve's System-owned SOL vault (custody), while the
+    // projected real_sol_reserves below is the donation-immune revival gate.
     system_program::transfer(
         CpiContext::new(
             ctx.accounts.system_program.to_account_info(),
             system_program::Transfer {
                 from: ctx.accounts.contributor.to_account_info(),
-                to: ctx.accounts.bonding_curve.to_account_info(),
+                to: ctx.accounts.bonding_curve_sol.to_account_info(),
             },
         ),
         sol_amount,

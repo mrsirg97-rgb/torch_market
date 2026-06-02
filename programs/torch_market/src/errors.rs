@@ -50,8 +50,6 @@ pub enum TorchMarketError {
     NotMigrated,
     #[msg("Insufficient treasury balance for migration fee")]
     InsufficientMigrationFee,
-    #[msg("Cannot star yourself")]
-    CannotStarSelf,
     #[msg("Invalid dev wallet address")]
     InvalidDevWallet,
     #[msg("Unauthorized - only authority can perform this action")]
@@ -68,12 +66,8 @@ pub enum TorchMarketError {
     LendingNotEnabled,
     #[msg("Token must be migrated to DEX before lending")]
     LendingRequiresMigration,
-    #[msg("Loan-to-value ratio exceeds maximum")]
-    LtvExceeded,
     #[msg("Treasury lending capacity exhausted (utilization cap reached)")]
     LendingCapExceeded,
-    #[msg("Per-user borrow cap exceeded (max 5x collateral share of supply)")]
-    UserBorrowCapExceeded,
     #[msg("Borrow amount below minimum (0.1 SOL)")]
     BorrowTooSmall,
     #[msg("No active loan position")]
@@ -100,10 +94,6 @@ pub enum TorchMarketError {
     ShortNotEnabled,
     #[msg("Short position size below minimum (1,000 tokens)")]
     ShortTooSmall,
-    #[msg("Token lending capacity exhausted (short utilization cap reached)")]
-    ShortCapExceeded,
-    #[msg("Per-user short cap exceeded")]
-    UserShortCapExceeded,
     #[msg("Short position is not liquidatable (LTV below threshold)")]
     ShortNotLiquidatable,
     #[msg("No active short position")]

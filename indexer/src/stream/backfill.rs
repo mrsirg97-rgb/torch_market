@@ -420,9 +420,37 @@ async fn decode_tx(
         .cloned()
         .unwrap_or_default();
 
+    // Outer (top-level) instructions, used to resolve the emitting ix for
+    // leverage events (`*_via_vault` ⇒ owner_is_vault).
+    let outer_ixs = message
+        .get("instructions")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
     let mut events = Vec::new();
     let mut flat_idx: i32 = 0;
     for group in &inner_groups {
+        // The parent outer instruction for this inner group.
+        let via_vault = matches!(kind, ProgramKind::Torch)
+            && group
+                .get("index")
+                .and_then(|v| v.as_u64())
+                .and_then(|gi| outer_ixs.get(gi as usize))
+                .map(|outer| {
+                    let outer_pid = outer
+                        .get("programIdIndex")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(u64::MAX) as usize;
+                    let is_torch = outer_pid == program_idx;
+                    let outer_data = outer
+                        .get("data")
+                        .and_then(|v| v.as_str())
+                        .and_then(|d| bs58::decode(d).into_vec().ok())
+                        .unwrap_or_default();
+                    is_torch && torch_discs.is_via_vault_ix(&outer_data)
+                })
+                .unwrap_or(false);
         let instructions = group
             .get("instructions")
             .and_then(|v| v.as_array())
@@ -458,6 +486,7 @@ async fn decode_tx(
                             // memos for migrated markets aren't critical to
                             // recover.
                             memo: None,
+                            via_vault,
                         });
                     }
                 }

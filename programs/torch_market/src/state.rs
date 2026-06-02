@@ -1,4 +1,10 @@
 use anchor_lang::prelude::*;
+// Disambiguate `borsh` for the standalone AnchorSerialize/AnchorDeserialize
+// derives (PositionSide, Observation). The litesvm dev-dependency pulls `borsh`
+// as a direct extern, which collides with the bare `borsh::` path Anchor's derive
+// macros emit when the lib is compiled in the test context. Pinning it to
+// Anchor's own re-export resolves the ambiguity in both build + test.
+use anchor_lang::prelude::borsh;
 
 #[account]
 pub struct GlobalConfig {
@@ -64,7 +70,6 @@ pub struct UserPosition {
     pub bonding_curve: Pubkey,
     pub total_purchased: u64,
     pub tokens_received: u64,
-    pub tokens_burned: u64,
     pub total_sol_spent: u64,
     pub bump: u8,
 }
@@ -75,24 +80,26 @@ impl UserPosition {
         + 32  // bonding_curve
         + 8   // total_purchased
         + 8   // tokens_received
-        + 8   // tokens_burned
         + 8   // total_sol_spent
         + 1; // bump
 }
+
+// [V21][D-10] The TWAP oracle was lifted out of torch into DeepPool (keeperless;
+// docs/twap-oracle.md). Torch no longer stores an observation ring — it reads a
+// Q64.64 mark from the `deep_pool::Pool` at liquidation time. The `Observation`
+// struct + Treasury ring that used to live here are gone.
 
 #[account]
 pub struct Treasury {
     pub bonding_curve: Pubkey,
     pub mint: Pubkey,
-    pub sol_balance: u64,
+    // [V21] No `sol_balance` field — treasury SOL is DERIVED from the System-owned
+    // treasury_sol_vault's lamports (single source of truth; can't drift). Tracked
+    // the one obligation against it lives below: total_sol_lent_to_longs.
     // Flag: this token was created as a community token (0% creator fees,
     // 100% of post-fee SOL to treasury). Replaces the `total_bought_back`
     // u64::MAX sentinel from pre-v20.
     pub is_community_token: bool,
-    // SOL reserved as collateral by active short positions. Subtracted from
-    // sol_balance when computing available-to-lend. Replaces the repurposed
-    // `total_burned_from_buyback` counter from pre-v20.
-    pub short_collateral_reserved: u64,
     pub last_buyback_slot: u64,
     pub harvested_fees: u64,
     pub bump: u8,
@@ -104,14 +111,20 @@ pub struct Treasury {
     pub short_selling_enabled: bool,
     pub min_buyback_interval_slots: u64,
     pub baseline_initialized: bool,
-    pub total_stars: u64,
-    pub star_sol_balance: u64,
-    pub creator_paid_out: bool,
-    // Treasury lending state.
-    pub total_sol_lent: u64,
-    pub total_collateral_locked: u64,
-    pub active_loans: u64,
-    pub total_interest_collected: u64,
+    // [V21] Treasury lending state (D-8). Collateral for both sides lives in
+    // per-position vaults, NOT in the treasury — so the treasury only tracks
+    // aggregate EXPOSURE (for the lending gate + utilization caps), never
+    // custodies open-position assets.
+    //
+    // Shorts (token debt against per-position SOL vaults):
+    pub total_tokens_lent: u64,        // aggregate gross token debt across open shorts
+    pub active_shorts: u64,
+    pub short_interest_collected: u64, // accrued short interest revenue (token-denom)
+    // Longs (SOL debt against per-position token vaults):
+    pub total_sol_lent_to_longs: u64,      // aggregate gross SOL debt across open longs
+    pub active_longs: u64,
+    pub long_interest_collected: u64,      // accrued long interest revenue (SOL-denom)
+    pub total_token_collateral_locked: u64, // aggregate token collateral across open longs
     pub lending_enabled: bool,
     pub interest_rate_bps: u16,
     pub max_ltv_bps: u16,
@@ -119,15 +132,15 @@ pub struct Treasury {
     pub liquidation_bonus_bps: u16,
     pub liquidation_close_bps: u16,
     pub lending_utilization_cap_bps: u16,
+    // [V21][D-10] The TWAP mark now lives in DeepPool (read at liquidation time);
+    // no observation ring is stored here. See docs/twap-oracle.md.
 }
 
 impl Treasury {
     pub const LEN: usize = 8   // discriminator
         + 32  // bonding_curve
         + 32  // mint
-        + 8   // sol_balance
         + 1   // is_community_token
-        + 8   // short_collateral_reserved
         + 8   // last_buyback_slot
         + 8   // harvested_fees
         + 1   // bump
@@ -136,13 +149,13 @@ impl Treasury {
         + 1   // short_selling_enabled
         + 8   // min_buyback_interval_slots
         + 1   // baseline_initialized
-        + 8   // total_stars
-        + 8   // star_sol_balance
-        + 1   // creator_paid_out
-        + 8   // total_sol_lent
-        + 8   // total_collateral_locked
-        + 8   // active_loans
-        + 8   // total_interest_collected
+        + 8   // total_tokens_lent
+        + 8   // active_shorts
+        + 8   // short_interest_collected
+        + 8   // total_sol_lent_to_longs
+        + 8   // active_longs
+        + 8   // long_interest_collected
+        + 8   // total_token_collateral_locked
         + 1   // lending_enabled
         + 2   // interest_rate_bps
         + 2   // max_ltv_bps
@@ -177,22 +190,6 @@ impl UserStats {
 }
 
 #[account]
-pub struct StarRecord {
-    pub user: Pubkey,
-    pub mint: Pubkey,
-    pub starred_at_slot: u64,
-    pub bump: u8,
-}
-
-impl StarRecord {
-    pub const LEN: usize = 8   // discriminator
-        + 32  // user
-        + 32  // mint
-        + 8   // starred_at_slot
-        + 1; // bump
-}
-
-#[account]
 pub struct ProtocolTreasury {
     pub authority: Pubkey,
     pub current_balance: u64,
@@ -223,32 +220,12 @@ impl ProtocolTreasury {
 }
 
 #[account]
-pub struct LoanPosition {
-    pub user: Pubkey,
-    pub mint: Pubkey,
-    pub collateral_amount: u64,
-    pub borrowed_amount: u64,
-    pub accrued_interest: u64,
-    pub last_update_slot: u64,
-    pub bump: u8,
-}
-
-impl LoanPosition {
-    pub const LEN: usize = 8   // discriminator
-        + 32  // user
-        + 32  // mint
-        + 8   // collateral_amount
-        + 8   // borrowed_amount
-        + 8   // accrued_interest
-        + 8   // last_update_slot
-        + 1; // bump
-}
-
-#[account]
 pub struct TorchVault {
     pub creator: Pubkey,
     pub authority: Pubkey,
-    pub sol_balance: u64,
+    // [V21] No `sol_balance` field — the vault's SOL is DERIVED from its
+    // System-owned `vault_sol` PDA (vault_physical_sol). The totals below are
+    // pure stats (deposit/spend history), never trusted for a balance.
     pub total_deposited: u64,
     pub total_withdrawn: u64,
     pub total_spent: u64,
@@ -262,7 +239,6 @@ impl TorchVault {
     pub const LEN: usize = 8   // discriminator
         + 32  // creator
         + 32  // authority
-        + 8   // sol_balance
         + 8   // total_deposited
         + 8   // total_withdrawn
         + 8   // total_spent
@@ -300,42 +276,53 @@ impl TreasuryLock {
         + 1; // bump
 }
 
-#[account]
-pub struct ShortPosition {
-    pub user: Pubkey,
-    pub mint: Pubkey,
-    pub sol_collateral: u64,
-    pub tokens_borrowed: u64,
-    pub accrued_interest: u64,
-    pub last_update_slot: u64,
-    pub bump: u8,
+// ============================================================================
+// [V21] Per-token closed leverage
+// ============================================================================
+
+/// Side discriminant for a `Position`. `#[repr(u8)]` with explicit values so
+/// the byte used in the Position PDA seed (constants::POSITION_SIDE_*) is
+/// guaranteed to match the Borsh discriminant — a long and a short at the same
+/// (user, mint, position_index) resolve to distinct PDAs via this byte.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum PositionSide {
+    Long = 0,
+    Short = 1,
 }
 
-impl ShortPosition {
+/// Unified leveraged position (D-3). Single shape, `side` discriminant. Both
+/// sides share lifecycle, account layout, and math; only the held/borrowed
+/// asset types mirror.
+///
+/// `held_amount` is intentionally NOT a field — the held asset IS the position
+/// vault balance (`position_sol_vault.lamports()` for shorts,
+/// `position_token_vault.amount` for longs). Read from the vault, not from
+/// tracked state — derived state over tracked state makes the math unfalsifiable.
+#[account]
+pub struct Position {
+    pub user: Pubkey,
+    pub mint: Pubkey,
+    pub side: PositionSide,
+    pub position_index: u32,
+    pub collateral_amount: u64, // initial deposit, record-keeping only
+    pub debt_amount: u64,       // owed asset: tokens for short, SOL (gross) for long
+    pub accrued_interest: u64,  // in debt-asset denom
+    pub last_slot: u64,
+    pub bump: u8,
+    pub vault_bump: u8, // bump of the position's SOL vault PDA
+}
+
+impl Position {
     pub const LEN: usize = 8   // discriminator
         + 32  // user
         + 32  // mint
-        + 8   // sol_collateral
-        + 8   // tokens_borrowed
+        + 1   // side
+        + 4   // position_index
+        + 8   // collateral_amount
+        + 8   // debt_amount
         + 8   // accrued_interest
-        + 8   // last_update_slot
-        + 1; // bump
-}
-
-#[account]
-pub struct ShortConfig {
-    pub mint: Pubkey,
-    pub total_tokens_lent: u64,
-    pub active_positions: u64,
-    pub total_interest_collected: u64,
-    pub bump: u8,
-}
-
-impl ShortConfig {
-    pub const LEN: usize = 8   // discriminator
-        + 32  // mint
-        + 8   // total_tokens_lent
-        + 8   // active_positions
-        + 8   // total_interest_collected
-        + 1; // bump
+        + 8   // last_slot
+        + 1   // bump
+        + 1; // vault_bump
 }

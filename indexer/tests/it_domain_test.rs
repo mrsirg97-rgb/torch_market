@@ -8,10 +8,10 @@ mod common;
 
 use common::{fixtures::*, TestDb};
 
-use torch_indexer::contracts::{MarketStatus, MarketTier};
+use torch_indexer::contracts::{MarketStatus, MarketTier, PositionEventKind, PositionSide};
 use torch_indexer::domain::{
-    loan, market, message, migration, pool, short, swap, trade, MarketFilter, PoolFilter,
-    ShortFilter, TradeFilter,
+    market, message, migration, pool, position, swap, trade, MarketFilter, PoolFilter,
+    PositionFilter, TradeFilter,
 };
 
 // ─── markets ─────────────────────────────────────────────────────────────
@@ -274,30 +274,30 @@ async fn trade_list_orders_newest_first() {
     tx.commit().await.unwrap();
 }
 
-// ─── loans (upsert / composite PK) ──────────────────────────────────────
+// ─── positions (upsert / composite PK incl. side + index) ───────────────
 
 #[tokio::test]
-async fn loan_upsert_overwrites_existing() {
+async fn position_upsert_overwrites_existing() {
     let db = TestDb::new().await;
     let mut tx = db.pool.begin().await.unwrap();
     let mint = pk58(1);
     market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
         .await
         .unwrap();
-    let borrower = pk58(3);
+    let owner = pk58(3);
 
-    let mut row = new_loan_row(&mint, &borrower, 100);
-    let first = loan::upsert(&mut tx, &row).await.unwrap();
-    assert_eq!(first.borrowed_amount, 2_000_000_000);
+    let mut row = new_position_row(&mint, &owner, PositionSide::Short, 0, 100);
+    let first = position::upsert(&mut tx, &row).await.unwrap();
+    assert_eq!(first.debt_amount, 999_300_000);
     assert!(first.is_active);
 
-    // Repaid in full → second upsert with smaller amount + is_active=false.
-    row.borrowed_amount = 0;
+    // Fully closed → second upsert drains amounts + is_active=false.
+    row.debt_amount = 0;
     row.collateral_amount = 0;
     row.is_active = false;
     row.last_update_slot = 200;
-    let second = loan::upsert(&mut tx, &row).await.unwrap();
-    assert_eq!(second.borrowed_amount, 0);
+    let second = position::upsert(&mut tx, &row).await.unwrap();
+    assert_eq!(second.debt_amount, 0);
     assert!(!second.is_active);
     assert_eq!(second.last_update_slot, 200);
     assert_eq!(second.created_at, first.created_at, "PK row, created_at preserved");
@@ -305,53 +305,38 @@ async fn loan_upsert_overwrites_existing() {
 }
 
 #[tokio::test]
-async fn loan_get_by_composite_pk() {
+async fn position_same_owner_different_side_and_index_coexist() {
     let db = TestDb::new().await;
     let mut tx = db.pool.begin().await.unwrap();
     let mint = pk58(1);
     market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
         .await
         .unwrap();
-    let borrower_a = pk58(3);
-    let borrower_b = pk58(4);
-    loan::upsert(&mut tx, &new_loan_row(&mint, &borrower_a, 100))
+    let owner = pk58(3);
+
+    // Same (mint, owner) but distinct (side, position_index) are separate rows.
+    position::upsert(&mut tx, &new_position_row(&mint, &owner, PositionSide::Short, 0, 100))
         .await
         .unwrap();
-    loan::upsert(&mut tx, &new_loan_row(&mint, &borrower_b, 100))
+    position::upsert(&mut tx, &new_position_row(&mint, &owner, PositionSide::Long, 0, 100))
+        .await
+        .unwrap();
+    position::upsert(&mut tx, &new_position_row(&mint, &owner, PositionSide::Short, 1, 100))
         .await
         .unwrap();
 
-    let a = loan::get(&mut tx, &mint, &borrower_a).await.unwrap();
-    let b = loan::get(&mut tx, &mint, &borrower_b).await.unwrap();
-    assert!(a.is_some() && b.is_some());
-    assert_ne!(a.unwrap().borrower, b.unwrap().borrower);
+    let s0 = position::get(&mut tx, &mint, &owner, PositionSide::Short, 0).await.unwrap();
+    let l0 = position::get(&mut tx, &mint, &owner, PositionSide::Long, 0).await.unwrap();
+    let s1 = position::get(&mut tx, &mint, &owner, PositionSide::Short, 1).await.unwrap();
+    assert!(s0.is_some() && l0.is_some() && s1.is_some());
 
-    let missing = loan::get(&mut tx, &mint, &pk58(99)).await.unwrap();
+    let missing = position::get(&mut tx, &mint, &owner, PositionSide::Long, 9).await.unwrap();
     assert!(missing.is_none());
     tx.commit().await.unwrap();
 }
 
-// ─── shorts ─────────────────────────────────────────────────────────────
-
 #[tokio::test]
-async fn short_upsert_records_net_tokens_borrowed() {
-    let db = TestDb::new().await;
-    let mut tx = db.pool.begin().await.unwrap();
-    let mint = pk58(1);
-    market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
-        .await
-        .unwrap();
-    let shorter = pk58(3);
-
-    let row = new_short_row(&mint, &shorter, 100);
-    let upserted = short::upsert(&mut tx, &row).await.unwrap();
-    // The fixture uses 999_300_000 (gross 1B - 7bps fee = net).
-    assert_eq!(upserted.tokens_borrowed, 999_300_000);
-    tx.commit().await.unwrap();
-}
-
-#[tokio::test]
-async fn short_list_active_only() {
+async fn position_list_filters_by_side_and_active() {
     let db = TestDb::new().await;
     let mut tx = db.pool.begin().await.unwrap();
     let mint = pk58(1);
@@ -359,39 +344,56 @@ async fn short_list_active_only() {
         .await
         .unwrap();
 
-    let mut active = new_short_row(&mint, &pk58(10), 100);
-    let mut closed = new_short_row(&mint, &pk58(11), 100);
+    let active = new_position_row(&mint, &pk58(10), PositionSide::Short, 0, 100);
+    let mut closed = new_position_row(&mint, &pk58(11), PositionSide::Short, 0, 100);
     closed.is_active = false;
-    short::upsert(&mut tx, &active).await.unwrap();
-    short::upsert(&mut tx, &closed).await.unwrap();
+    let long = new_position_row(&mint, &pk58(12), PositionSide::Long, 0, 100);
+    position::upsert(&mut tx, &active).await.unwrap();
+    position::upsert(&mut tx, &closed).await.unwrap();
+    position::upsert(&mut tx, &long).await.unwrap();
 
-    let only_active = short::list(
+    let active_shorts = position::list(
         &mut tx,
-        ShortFilter {
+        PositionFilter {
             mint: Some(mint.clone()),
+            side: Some(PositionSide::Short),
             is_active: Some(true),
             ..Default::default()
         },
     )
     .await
     .unwrap();
-    assert_eq!(only_active.len(), 1);
-    assert_eq!(only_active[0].shorter, pk58(10));
+    assert_eq!(active_shorts.len(), 1);
+    assert_eq!(active_shorts[0].owner, pk58(10));
 
-    let all = short::list(
+    let all = position::list(
         &mut tx,
-        ShortFilter {
+        PositionFilter {
             mint: Some(mint.clone()),
             ..Default::default()
         },
     )
     .await
     .unwrap();
-    assert_eq!(all.len(), 2);
+    assert_eq!(all.len(), 3);
+    tx.commit().await.unwrap();
+}
 
-    // Quiet compiler about unused mut.
-    active.is_active = true;
-    let _ = active;
+#[tokio::test]
+async fn position_event_log_insert_is_idempotent() {
+    let db = TestDb::new().await;
+    let mut tx = db.pool.begin().await.unwrap();
+    let mint = pk58(1);
+    market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
+        .await
+        .unwrap();
+
+    let row = new_position_event_row(&mint, &pk58(3), PositionSide::Short, PositionEventKind::Open, 100, 0);
+    let first = position::event::insert(&mut tx, &row).await.unwrap();
+    assert!(first.is_some());
+    // Same (signature, inner_ix_idx) → ON CONFLICT DO NOTHING → None.
+    let dup = position::event::insert(&mut tx, &row).await.unwrap();
+    assert!(dup.is_none(), "replay must not duplicate the event");
     tx.commit().await.unwrap();
 }
 

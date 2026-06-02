@@ -9,12 +9,11 @@
 pub mod context;
 
 // Torch domains
-pub mod loan;
 pub mod market;
 pub mod message;
 pub mod migration;
 pub mod pnl;
-pub mod short;
+pub mod position;
 pub mod trade;
 
 // deep_pool domains
@@ -24,12 +23,11 @@ pub mod reserves;
 pub mod swap;
 
 pub use context::{Cache, RequestCtx};
-pub use loan::LoanService;
 pub use market::MarketService;
 pub use message::MessageService;
 pub use migration::MigrationService;
 pub use pnl::PnlService;
-pub use short::ShortService;
+pub use position::PositionService;
 pub use trade::TradeService;
 
 pub use liquidity::LiquidityService;
@@ -48,11 +46,8 @@ impl RequestCtx {
     pub fn messages(&mut self) -> MessageService<'_> {
         MessageService::new(self)
     }
-    pub fn loans(&mut self) -> LoanService<'_> {
-        LoanService::new(self)
-    }
-    pub fn shorts(&mut self) -> ShortService<'_> {
-        ShortService::new(self)
+    pub fn positions(&mut self) -> PositionService<'_> {
+        PositionService::new(self)
     }
     pub fn migrations(&mut self) -> MigrationService<'_> {
         MigrationService::new(self)
