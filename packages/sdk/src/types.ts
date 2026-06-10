@@ -609,7 +609,6 @@ export interface LendingInfo {
   liquidation_threshold_bps: number
   liquidation_bonus_bps: number
   liquidation_close_bps: number
-  utilization_cap_bps: number
   lending_enabled: boolean
   short_selling_enabled: boolean
   /** Lendable SOL custodied in the System-owned treasury_sol_vault (lamports). */

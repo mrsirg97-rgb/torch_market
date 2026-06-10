@@ -26,7 +26,6 @@ import {
   SIMNET_PROGRAM_ID,
   BONDING_CURVE_SEED,
   TREASURY_SEED,
-  STAR_RECORD_SEED,
   USER_POSITION_SEED,
   LAMPORTS_PER_SOL as LSOL,
   TOKEN_MULTIPLIER as TMUL,
@@ -130,7 +129,6 @@ export interface UseTokenResult {
   totalSolLent: number
   activeLoans: number
   reserveRatioBps: number
-  utilizationCapBps: number
 
   // Token supply data
   tokensInCurve: number
@@ -175,7 +173,6 @@ export function useToken(mintAddress: string): UseTokenResult {
   const [totalSolLent, setTotalSolLent] = useState<number>(0)
   const [activeLoans, setActiveLoans] = useState<number>(0)
   const [reserveRatioBps, setReserveRatioBps] = useState<number>(3000)
-  const [utilizationCapBps, setUtilizationCapBps] = useState<number>(5000)
 
   // User-specific data
   const [userTokenBalance, setUserTokenBalance] = useState<bigint>(BigInt(0))
@@ -256,7 +253,7 @@ export function useToken(mintAddress: string): UseTokenResult {
         treasuryLockAta ? connection.getAccountInfo(treasuryLockAta) : Promise.resolve(null),
         treasuryTokenAccount ? connection.getAccountInfo(treasuryTokenAccount) : Promise.resolve(null),
         getTreasuryState(connection, mintAddress),
-        getLendingInfo(connection, mintAddress, lendingGateLamports).catch(() => null),
+        getLendingInfo(connection, mintAddress).catch(() => null),
         getTokenMetadata(connection, mintAddress).catch(() => null),
       ])
       if (!bcAccount) return
@@ -348,16 +345,15 @@ export function useToken(mintAddress: string): UseTokenResult {
       const circulating = mintSupply - realTokens - TREASURY_LOCK_TOKENS
       // Market cap = fully diluted (total supply × price), matching pump.fun convention
       const marketCapSol = (priceInSol * Number(TOTAL_SUPPLY)) / TMUL
-      const treasurySol = treasury?.sol_balance_sol ?? 0
+      const treasurySol = treasury?.treasury_sol_vault_sol ?? 0
       // Read actual token balance from treasury ATA (tokens_held accounting field is not updated by handlers)
       const treasuryAtaBalance = treasuryAtaAccount && treasuryAtaAccount.data.length >= 72
         ? treasuryAtaAccount.data.readBigUInt64LE(64)
         : BigInt(0)
       const treasuryTokens = Number(treasuryAtaBalance) / TMUL
-      const stars = treasury?.total_stars ?? 0
-      const totalSolLent = lendingInfo ? (lendingInfo.total_sol_lent ?? 0) / LSOL : 0
-      const activeLoans = lendingInfo?.active_loans ?? 0
-      const utilizationCapBps = lendingInfo?.utilization_cap_bps ?? 5000
+      const stars = 0 // [V21] star feature removed from the program
+      const totalSolLent = lendingInfo ? (lendingInfo.total_sol_lent_to_longs ?? 0) / LSOL : 0
+      const activeLoans = lendingInfo?.active_longs ?? 0
       // reserve_ratio_bps isn't exposed by the SDK's LendingInfo; fall back to the historical default
       const reserveRatioBps = 3000
 
@@ -417,7 +413,6 @@ export function useToken(mintAddress: string): UseTokenResult {
       setTotalSolLent(totalSolLent)
       setActiveLoans(activeLoans)
       setReserveRatioBps(reserveRatioBps)
-      setUtilizationCapBps(utilizationCapBps)
 
       setTokenDetail((prev) => {
         if (!prev) return detail
@@ -480,25 +475,10 @@ export function useToken(mintAddress: string): UseTokenResult {
     }
   }, [connection, wallet.publicKey, bondingCurvePda, isSimnet])
 
-  // Fetch star record
+  // [V21] Star feature removed from the program — no-op kept for callers.
   const fetchStarRecord = useCallback(async () => {
-    if (!wallet.publicKey || !mint) {
-      setHasStarred(false)
-      return
-    }
-    try {
-      const programId = isSimnet ? SIMNET_PROGRAM_ID : PROGRAM_ID
-      const [starRecordPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from(STAR_RECORD_SEED), wallet.publicKey.toBuffer(), mint.toBuffer()],
-        programId,
-      )
-      const starRecordAccount = await connection.getAccountInfo(starRecordPda)
-      setHasStarred(!!starRecordAccount)
-    } catch (err) {
-      if (isDev) console.error('Error fetching star record:', err)
-      setHasStarred(false)
-    }
-  }, [connection, wallet.publicKey, mint, isSimnet])
+    setHasStarred(false)
+  }, [])
 
   // Fetch messages — indexer-first when configured (SDK handles the
   // indexer→RPC fallback internally), falls back to the server-side
@@ -810,7 +790,6 @@ export function useToken(mintAddress: string): UseTokenResult {
     totalSolLent,
     activeLoans,
     reserveRatioBps,
-    utilizationCapBps,
     deepPoolPda: deepPool?.pool ?? null,
     deepPoolTokenVault: deepPool?.tokenVault ?? null,
     fetchToken,

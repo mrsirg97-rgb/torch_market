@@ -107,13 +107,18 @@ Both opens charge a flat `OPEN_FEE_BPS = 50` (0.5%) on the **borrow value in SOL
 
 ```
 open_short(collateral_sol, min_sol_out_from_sale):
-  1. Validate: pool depth band, lock has tokens, per-user borrow cap
-  2. Compute borrow plan at pre-swap price + LTV bound:
-       desired_borrow_value_sol = collateral_sol * effective_ltv_bps / 10_000
-       open_fee_sol = desired_borrow_value_sol * OPEN_FEE_BPS / 10_000
+  1. Validate: pool depth band, lock has inventory, per-user aggregate cap
+  2. Compute borrow plan at pre-swap price + LTV bound — ALL clamps before the
+     fee, so the fee prices the capacity actually consumed ([F-5], mirrors the
+     long side's post-clamp fee):
+       borrow_value_sol = (collateral_sol * effective_ltv_bps / 10_000)
+                          .min(rail2_size_cap)                    # ρ_max · pool_sol
+       tokens_to_borrow = (borrow_value_sol * pool_tokens / pool_sol)
+                          .min(lock_physical_balance)             # full-drain by design
+                          .min(MAX_WALLET_TOKENS - user_risk.short_tokens_debt)  # per-USER aggregate
+       realized_borrow_value_sol = tokens_to_borrow * pool_sol / pool_tokens
+       open_fee_sol = realized_borrow_value_sol * OPEN_FEE_BPS / 10_000
        net_collateral_sol = collateral_sol - open_fee_sol
-       tokens_to_borrow = (net_collateral_sol * effective_ltv_bps * pool_tokens)
-                          / (pool_sol * 10_000)
   3. Transfer open_fee_sol: user → treasury (lamport shift, no fee)
   4. Transfer net_collateral_sol: user → position_sol_vault
   5. CPI deep_pool::swap(direction=sell, amount_in=tokens_to_borrow, min_out=min_sol_out_from_sale)
@@ -168,8 +173,11 @@ close_short(min_surplus_sol_out):
   5. Require position_sol_vault.amount >= sol_needed (else: partial close)
   6. CPI deep_pool::swap(direction=buy, amount_in=sol_needed, min_out=debt_gross)
      source = position_sol_vault, destination = lock_vault (repays borrow at gross)
-  7. surplus_sol = position_sol_vault.amount   (whatever's left after the buy)
-  8. Require surplus_sol >= min_surplus_sol_out (slippage protection)
+  7. Require position_sol_vault.amount >= min_surplus_sol_out — enforced on BOTH
+     partial and full close ([F-6]): sol_needed is quoted from live reserves, so
+     the floor on the remaining vault balance is what bounds the SOL a partial
+     close can spend; on a full close it equals the surplus paid out
+  8. surplus_sol = position_sol_vault.amount   (whatever's left after the buy)
   9. Transfer surplus_sol: position_sol_vault → user (lamport shift, no fee)
   10. Decrement treasury.total_tokens_lent by total_token_debt; increment treasury.short_interest_collected
   11. Close position + vault accounts, reclaim rent to user
@@ -284,117 +292,83 @@ V21 reshapes the fee structure to grow the treasury (and therefore the lending p
 
 Fee is computed against **borrow value in SOL**, not collateral. A 50% LTV position pays half what a 100% LTV one pays. Conservative borrowers don't subsidize aggressive ones, and the fee scales with the risk/lending capacity the position consumes.
 
-### D-10: TWAP-hardened liquidation mark (oracle-manipulation defense)
+### D-10: Liquidation mark — keeperless TWAP (manipulation defense)
 
-**Problem (sim-confirmed).** V21 marks position LTV — both the liquidation
-*trigger* and the *seize* sizing — at the raw spot ratio (`pool_sol / pool_tokens`;
-see `calc_collateral_value` / `calc_short_debt_value`). DeepPool is a generic CPMM
-with no oracle, so that mark is an unguarded spot price. Sim scenario
-`oracle_liquidation_attack` (+ depth×size sweep) shows an attacker with capital
-and *no stake in the victim* can pump the pool to push a **healthy** position —
-one opened at the protocol's own depth-band max LTV — past the 65% threshold,
-liquidate it, and over-seize the collateral at the inflated mark. Net-positive
-EV across every pool depth (10→700 SOL) and victim size (≈16–25% of the victim's
-collateral), conservation-verified. Atomic in one transaction (`pool_buy` CPI →
-`liquidate`), so the victim cannot react. The depth-band cap guards the *open*;
-nothing guarded the *mark*. This is the canonical spot-AMM-as-oracle class
-(Mango-style).
+**The mark lives in DeepPool now, not here.** Earlier V21 drafts kept a
+per-observation **ratchet** TWAP inside `torch_market` — an observation ring on
+`Treasury`, advanced by a permissionless `RecordObservation` crank, with a
+per-step clamp (`MAX_PER_OBS_DEVIATION_BPS`). That whole design is **removed**.
+The oracle was lifted into the AMM — the layer that actually owns the price — so
+DeepPool self-publishes a manipulation-resistant mark and torch just reads it.
+Full mechanism: [twap-oracle.md](./twap-oracle.md). Why the move: in a CPMM the
+marginal price changes *only* on swaps, so an accumulator advanced on the swap
+itself never misses a move — there is nothing to sample between swaps, which
+means **no keeper** and **no ratchet** (a true fixed window already dilutes a
+single out-of-band swap by its dwell-time in the window; the per-step clamp was
+compensating for coarse sampling that no longer exists).
 
-**Decision.** Mark the liquidation **trigger** and **seize accounting** against a
-**hardened TWAP** of the spot pool, never raw spot. Lift the TWAP primitive
-already designed and verified in `torch_perp` (whose funding index faces the same
-oracle-free-spot surface): a cumulative-reserve observation ring (`cumulative_sol`,
-`cumulative_token` advanced by `reserve × slot_delta`), read oldest→newest as
-`twap = Σsol_delta / Σtoken_delta`, behind three structural gates —
+**Problem it defends (sim-confirmed).** Marking LTV at raw spot
+(`pool_sol / pool_tokens`) is the canonical spot-AMM-as-oracle attack
+(Mango-style): `oracle_liquidation_attack` (+ depth×size sweep) shows an attacker
+with no stake in the victim can pump the pool in one transaction, push a position
+opened at the protocol's own depth-band max LTV past the 65% threshold, liquidate
+it, and over-seize at the inflated mark — net-positive EV across every depth
+(10→700 SOL). The depth-band cap guarded the *open*; nothing guarded the *mark*.
 
-| Gate | Constant | Property |
-|---|---|---|
-| Observation spacing | `MIN_OBSERVATION_SPACING_SLOTS = 500` | rate-limits ring compression; floors the effective TWAP window (`ring × spacing`) regardless of crank frequency |
-| Liquidity gate | `MIN_SPOT_POOL_SOL = 5 SOL` | thin pools (cheap to move) don't feed the mark; reuses the lending floor — one "too thin to trust" boundary |
-| Per-obs clamp | `MAX_PER_OBS_DEVIATION_BPS = 100` (1%) | if spot deviates >1% from the prior step's implied price, freeze to last-good reserves until spot returns to band; non-lossy within band |
+**What DeepPool exposes.** A price-cumulative oracle on `Pool`
+(`Σ price_q64 × Δslot`, Q64.64, both directions), advanced every swap from
+pre-swap reserves, snapshotted into a 16-slot ring at `MIN_OBS_SPACING_SLOTS =
+500`. `Pool::read_twap_sol_per_tok(reserves_now, now, lookback)` returns the
+time-weighted mark, or `None` during warmup. A dust gate (`MIN_SPOT_RESERVE = 5
+SOL`) advances the clock but skips accumulation on thin pools. Only swaps move
+price; only swaps update the oracle — add/remove-liquidity is price-neutral and
+writes nothing.
 
-A single-tx pump records no observation (no slot advance) so it can't move the
-mark → the trigger (LTV-at-TWAP) stays below threshold → the manufactured
-liquidation is refused. (torch_perp sim: a 438× spot crash held the TWAP within
-0.0001% of reference; the clamp/cap math carries 11 Kani harnesses — reuse them.)
+**What torch owns (consumer policy).**
 
-**Clamp variant — ratchet, not freeze (sim finding).** torch_perp's clamp
-*freezes* the index at last-good until spot returns to band; correct for funding
-(a stale index only drives bounded, capped accrual). The sim
-(`oracle_mitigation_test`) shows freeze is **wrong for a liquidation mark**: under
-a legitimate sustained move it never lifts the trigger, so a genuinely underwater
-position can never be liquidated → unbounded bad debt (no funding-cap backstop
-here). The liquidation mark therefore **ratchets** — each out-of-band observation
-records a price clamped ≤1% toward spot — so it eventually tracks a real move
-while a one-tx pump still can't move it. Empirically: the manufacture-from-open
-attack flips from **+9.6 SOL** to **−0.27 SOL (blocked)** with the guard on, and a
-real 93% move still liquidates after a bounded lag (~86 observations at 1%/obs ×
-500-slot spacing). The lag is the cost; `MAX_PER_OBS_DEVIATION_BPS` / spacing /
-ring size tune manipulation-resistance vs tracking speed, and per-position
-custody (D-2) bounds the bad debt that can accrue during the lag.
+- **Window** — `LIQ_TWAP_LOOKBACK_SLOTS = 3000` (~20 min @ 400ms/slot). Window
+  length is the *consumer's* risk choice, not DeepPool's; the realized window is
+  ≥ lookback and ≤ lookback + spacing.
+- **Trigger** — LTV is marked at the TWAP, never raw spot, for both the
+  liquidation *trigger* and the *seize* sizing. A single-tx pump writes no
+  qualifying observation, so it cannot move the mark → the manufactured
+  liquidation is refused.
+- **Spot veto (one-way safety)** — spot LTV may only *veto* a TWAP-triggered
+  liquidation, and only when **clearly healthy**: at least
+  `LIQ_SPOT_VETO_MARGIN_BPS = 1000` (10 LTV points) below threshold. This shields
+  a genuinely healthy position from a stale-high TWAP without handing an attacker
+  a cheap way to *block* a real liquidation (a sustained move heals the TWAP
+  anyway).
+- **Warmup → fail-closed** — if the ring lacks `lookback`-old history the read is
+  `None` and liquidation is refused (litesvm `liquidate_short_warmup_fail_closed`).
+- **Seize at the mark** — seized SOL/tokens are priced at the same TWAP; sim
+  `twap_tuning` shows the seize is invariant (≈0% drift) to a 3.2× spot pump. So
+  neither trigger nor seize is atomically manipulable.
+- **Distress-scaled bonus cap** — the liquidation bonus ramps 0 → full from
+  `DEFAULT_LIQUIDATION_THRESHOLD_BPS` (65%) to `LIQ_FULL_BONUS_LTV_BPS` (≈75.5%),
+  measured on the TWAP LTV; the ceiling is `DEFAULT_LIQUIDATION_BONUS_BPS` =
+  1.3·ρ_max = 32.5%. A just-over-threshold liquidation earns ~0 bonus, removing
+  the *prize* from any residual manipulation. Proven symbolically by Kani group
+  #85 (`effective_liq_bonus_bps`: 0 below threshold, monotone non-decreasing,
+  bounded by the ceiling).
 
-**Why not a vAMM (torch_perp's mark) here.** torch_perp marks on a *synthetic*
-vAMM and never swaps the spot pool on settlement — mark and payout are both
-internal, so spot only feeds funding. V21 is the opposite: it settles
-**physically** (open/close/liquidate are real pool swaps; the vault holds real
-SOL/tokens). A synthetic mark on a physically-settled position creates basis
-risk — you'd mark "healthy" while the real close realizes a loss, and the gap is
-itself farmable. And a V21 vAMM would have *no synthetic order flow* to price it
-(all flow routes through the real pool), so it degenerates into a TWAP with extra
-steps. The vAMM belongs to the synthetic product (torch_perp); V21 keeps its
-physical/closed-loop identity and hardens the *real-pool* mark instead.
+**Residual (inherent to physical settlement).** The TWAP gates the *trigger* and
+bounds the *seize accounting*, killing atomic/manufactured liquidations — but the
+seize *execution* is still a real swap at real spot; V21 settles physically and
+cannot escape the real pool the way a synthetic perp can. The defense shrinks the
+exploitable surface to "can't fake the trigger, can't over-credit the seize": a
+determined attacker must hold an off-market price across the whole lookback —
+bleeding to arbitrage every block, exposed to the victim closing — not snipe it
+atomically. Per-position custody (D-2) bounds whatever bad debt can accrue during
+a TWAP-lagged genuine move (sim `long_baddebt_severity`: 0 bad debt up to ~55%
+crash, capped at the position's own debt even in a 98% wipeout).
 
-**Residual (inherent to physical settlement).** The TWAP gates the trigger and
-bounds the seize *accounting*, killing manufactured liquidations. But the actual
-seize *execution* is still a real swap at real spot — V21 cannot escape the real
-pool the way a synthetic perp does. The clamp shrinks the exploitable window to
-"can't fake the trigger, can't over-credit the seize": a determined attacker must
-now hold an off-market price across the whole TWAP window (expensive, exposed to
-arb and to the victim closing), not snipe it atomically.
-
-**Trade-off.** TWAP-marking lags a genuine fast gap → liquidation is delayed until
-the TWAP catches up, re-opening the D-6 gap-bad-debt window. Acceptable because
-per-position custody already **bounds** that loss to the single position's debt
-(sim `long_baddebt_severity`: bad debt is 0 up to ~55% crash and stays capped at
-the position's own debt even in a 98% wipeout). Manipulation-resistance is bought
-with bounded, already-contained lag risk.
-
-**Parameters — the liquidation mark needs its OWN, not funding's** (sim
-`twap_tuning`, ring × band sweep). **Band dominates lag** (≈ move/band
-observations); ring only trims the averaging tail (~ring/2 obs). The decisive
-finding: the lag to liquidate a real move **equals** the time an attacker must
-HOLD an off-market price to manufacture a trigger — *one knob, not two*. A
-symmetric ratchet TWAP cannot make liquidation both fast and force a long
-manipulation-hold. What it does: convert an **atomic** theft (the #1 finding —
-blocked at every param, EV −0.27 SOL) into a **timed, capital-intensive hold**
-whose real cost is arb-bleed + fees + locked capital across the lag — a cost a
-genuine move doesn't pay. Consequences:
-
-- **Separate params from funding.** Funding wants a long, smooth window (ring 32,
-  1%/obs). Liquidation wants responsiveness: **ring 8–16, band ~300 bps (3%/obs),
-  spacing 500** → ~90–130 min lag (= forced manipulation-hold). They share the
-  primitive, not the constants.
-- **The TWAP is not sufficient alone** against a sustained-hold manipulator. Pair
-  it with: (a) per-position custody — already bounds the loss accrued during the
-  lag (D-2); (b) a **bonus/seize cap** so even a manufactured liquidation extracts
-  too little to repay the hold cost; (c) arb, which raises the hold cost (useful,
-  not load-bearing). The TWAP's role is to kill the atomic attack and force any
-  manipulation into a slow, observable, expensive hold the other layers then make
-  uneconomic.
-
-**Seize-accounting clamp (implemented + validated).** Beyond the trigger, the
-liquidation *seize* is priced at the same hardened mark, not raw spot — sim
-`twap_tuning` shows the SOL seized is invariant (0.00% drift) to a 3.2× spot pump
-at liquidation. So neither the trigger nor the seize can be manipulated atomically.
-
-**Distress-scaled bonus cap (implemented + validated).** The liquidation bonus
-ramps 0 → full from `DEFAULT_LIQ_THRESHOLD` to `LIQ_FULL_BONUS_LTV_BPS` (90%),
-measured on the hardened LTV. Sim `liq_bonus_ramp`: a just-over-threshold (66%)
-liquidation earns **0.24%** bonus; a genuine deep one (93%) earns the full **10%**.
-This removes the *prize* from the residual sustained-hold manipulation — an
-attacker can only push a position just over the line, where the bonus is ~0 —
-completing the stack: **trigger guard + seize clamp + bonus cap + per-position
-custody.**
+**The stack:** trigger guard (TWAP) + seize clamp (TWAP-priced) + bonus cap
+(distress-scaled) + per-position custody (D-2). Proofs: torch
+`verify_twap_value_q64_exact` (#83) on the Q64.64 pricing and group #85 on the
+bonus ramp; the oracle math itself is proven DeepPool-side (`accumulate_price`
+window-difference exact past a 2^128 wrap). Sim: `oracle_liquidation_attack`,
+`oracle_mitigation_test`, `twap_tuning`, `liq_bonus_ramp`.
 
 ---
 
@@ -411,7 +385,7 @@ custody.**
 
 ## What V21 preserves
 
-- DeepPool: **zero changes**. Generic CPMM. Jupiter listing thesis intact.
+- DeepPool: **CPMM swap semantics unchanged** — generic, Jupiter-routable, leverage-agnostic. (V21 *did* add an in-pool TWAP oracle: `Pool` layout grew + every `swap` advances a price cumulative — so it's no longer literally "zero changes." The *swap math* is what's preserved; the oracle is additive. See [twap-oracle.md](./twap-oracle.md).)
 - Bonding curve, migration, treasury fee splits, harvest, buyback gating: unchanged.
 - Token-2022 handling, transfer fees, extension blocklist: unchanged.
 - Kani proofs for AMM math: unchanged.
@@ -552,6 +526,6 @@ the via_vault handlers differ only in the funding edges + the position seed.
 - `scenario_basis_trade`: long + short on same mint, net PnL = fees + slippage (delta-neutral confirmation)
 - `scenario_directional_profitability`: long profits on up moves, short profits on down moves, all PnL settled in SOL at close
 - Kani proofs on new math: all pass
-- DeepPool: zero changes, Jupiter integration story intact
+- DeepPool: swap/CPMM semantics + Jupiter integration intact; in-pool TWAP oracle added (see twap-oracle.md)
 - Total ix count: V20's 40 minus ~9 (margin + V20 short variants) plus ~12 (V21 six handlers + via_vault) ≈ similar or slightly higher
 - Wallet view of a user with N open positions: indistinguishable from a user with no positions (modulo collateral debits)

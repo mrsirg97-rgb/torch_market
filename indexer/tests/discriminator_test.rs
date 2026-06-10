@@ -67,6 +67,8 @@ fn all_discriminators_unique_across_both_programs() {
         d.liquidate_long,
         d.revival_contribution,
         d.token_revived,
+        d.bonding_completed,
+        d.token_reclaimed,
         dp.pool_created,
         dp.swap_executed,
         dp.liquidity_added,

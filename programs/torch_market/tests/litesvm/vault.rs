@@ -114,3 +114,29 @@ fn transfer_authority_changes_authority() {
         TorchMarketError::VaultUnauthorized
     );
 }
+
+// [F-13] TorchVault balance identity: the DERIVED balance (vault_sol lamports
+// − rent) must equal total_deposited + total_received − total_withdrawn −
+// total_spent after a mixed lifecycle. There is no sol_balance field — this is
+// the comment-spec from architecture.md made executable.
+#[test]
+fn vault_derived_balance_matches_lifetime_totals() {
+    let mut env = Env::new();
+    let creator = env.new_funded(2 * LAMPORTS_PER_SOL);
+    let t = env.create_token(&creator, torch_market::constants::BONDING_TARGET_FLAME, false);
+    let owner = env.new_funded(5 * LAMPORTS_PER_SOL);
+    let vault = env.create_vault(&owner);
+
+    env.deposit_vault(&owner, &vault, 2 * LAMPORTS_PER_SOL).expect("deposit");
+    env.buy_via_vault(&owner, &vault, &t, 500_000_000, 0).expect("spend (buy)");
+    env.sell_via_vault(&owner, &vault, &t, 100_000_000_000, 0).expect("receive (sell)");
+    env.withdraw_vault(&owner, &vault, 300_000_000).expect("withdraw");
+
+    let v = env.get_torch_vault(&vault.vault);
+    let expected = v.total_deposited + v.total_received - v.total_withdrawn - v.total_spent;
+    assert_eq!(
+        env.vault_sol(&vault),
+        expected,
+        "derived vault balance == deposit + received − withdrawn − spent"
+    );
+}

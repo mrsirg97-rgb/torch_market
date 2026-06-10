@@ -104,6 +104,7 @@ fn open_long_happy() {
     let tr = env.get_treasury(&t);
     assert_eq!(tr.total_sol_lent_to_longs, pos.debt_amount);
     assert_eq!(tr.active_longs, 1);
+    env.assert_treasury_counters(&t, &[(borrower.pubkey(), POSITION_SIDE_LONG, 0)]);
 }
 
 #[test]
@@ -156,14 +157,17 @@ fn open_long_lending_not_yet_unlocked() {
 
 #[test]
 fn open_long_lending_cap_exceeded() {
-    // Gate cleared, but the pool's lending capacity is effectively exhausted:
-    // poke the utilization cap to 1 bp so max_lendable ≈ 0.02 SOL → global
-    // headroom < MIN_BORROW_AMOUNT → LendingCapExceeded (the explicit reject we
-    // kept distinct from the dust floor).
+    // Gate cleared (sticky: principal pool = physical + lent ≥ MIN), but the
+    // FLOAT is exhausted — everything is lent out. New opens reject with
+    // LendingCapExceeded until repayments or transfer-fee growth restore the
+    // float. This is the first-come-first-serve capacity model: the gate
+    // certifies lending scale once; the physical float is what's borrowable.
     let (mut env, t, borrower) = lending_ready();
     let mut tr = env.get_treasury(&t);
-    tr.lending_utilization_cap_bps = 1;
+    tr.total_sol_lent_to_longs = 200 * LAMPORTS_PER_SOL; // all lent out
     env.poke_anchor(t.treasury, tr);
+    // Float to dust (below MIN_BORROW_AMOUNT); the gate still passes via lent.
+    env.poke_lamports(&t.treasury_sol_vault, 10_000_000);
 
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
     expect_err!(
@@ -182,13 +186,12 @@ fn open_long_clamps_to_caps() {
     let (mut env, t, borrower) = lending_ready();
     let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
 
-    // Compute the expected cap from the DERIVED treasury balance BEFORE the borrow
-    // (treasury_sol_vault lamports − rent; the airdrop + bonding fees, not a round
-    // 200 SOL). Mirror the handler's apply_bps order (multiply then ÷10_000).
-    let tr = env.get_treasury(&t);
+    // Expected cap from the principal pool BEFORE the borrow (= derived float;
+    // nothing lent yet). No utilization multiplier — the float is fully
+    // lendable; the per-user absolute cap (20% of the pool) is what binds here
+    // (this borrower holds ~1.9% of supply, so the formula cap ≈ 44% > 20%).
     let available = env.treasury_sol(&t);
-    let max_lendable = available * tr.lending_utilization_cap_bps as u64 / 10_000;
-    let absolute_cap = max_lendable * MAX_USER_BORROW_SHARE_BPS as u64 / 10_000;
+    let absolute_cap = available * MAX_USER_BORROW_SHARE_BPS as u64 / 10_000;
 
     // Full token balance as collateral → implied borrow exceeds the per-user cap;
     // handler clamps. Position opens; debt == the absolute cap.
@@ -199,6 +202,65 @@ fn open_long_clamps_to_caps() {
         .get_position(&t, &borrower.pubkey(), POSITION_SIDE_LONG, 0)
         .expect("position exists");
     assert_eq!(pos.debt_amount, absolute_cap, "borrow clamped to per-user cap");
+}
+
+// [F-1] The per-user cap is per-USER across position_index values, not per
+// position: idx 0 consumes the full allowance, so idx 1 gets nothing
+// (BorrowTooSmall — the clamp floors at dust), while a fresh user is served.
+// Pre-fix, every new index re-granted the full 20% allowance.
+#[test]
+fn open_long_user_cap_aggregates_across_indices() {
+    let (mut env, t, borrower) = lending_ready();
+    let bal = token_balance(&env, &borrower.pubkey(), &t.mint);
+    env.open_long(&borrower, &t, 0, bal, 1).expect("idx 0 opens at the cap");
+
+    // Restock the wallet (idx 0 absorbed the balance); the second index must
+    // be refused — the user's aggregate allowance is already consumed.
+    let ata = get_associated_token_address_2022_local(&borrower.pubkey(), &t.mint);
+    env.poke_token_amount(ata, bal);
+    expect_err!(
+        env.open_long(&borrower, &t, 1, bal, 1),
+        TorchMarketError::BorrowTooSmall
+    );
+
+    // The cap is per-user: a fresh wallet still borrows.
+    let other = env.new_funded(5 * LAMPORTS_PER_SOL);
+    env.ensure_token2022_ata(&other, &other.pubkey(), &t.mint).expect("ata");
+    let oata = get_associated_token_address_2022_local(&other.pubkey(), &t.mint);
+    env.poke_token_amount(oata, bal);
+    env.open_long(&other, &t, 0, bal, 1).expect("fresh user unaffected");
+
+    env.assert_user_risk(
+        &t,
+        &borrower.pubkey(),
+        &[(POSITION_SIDE_LONG, 0), (POSITION_SIDE_LONG, 1)],
+    );
+}
+
+// [F-3] The formula cap (collateral-share × BORROW_SHARE_MULTIPLIER, from
+// calc_user_borrow_cap — documented + Kani-proven but previously never wired
+// into a handler) binds for small-collateral users: with the pool price poked
+// high, the LTV-implied borrow exceeds the formula cap, so the borrow clamps
+// to exactly assets × collateral × 23 / TOTAL_SUPPLY.
+#[test]
+fn open_long_formula_cap_binds_for_small_collateral() {
+    let (mut env, t, borrower) = lending_ready();
+    env.poke_pool_sol(&t, 5000 * LAMPORTS_PER_SOL); // price up → LTV borrow large
+
+    let collateral = 1_000_000_000_000u64; // 1M tokens = 0.1% of supply
+    let assets = env.treasury_sol(&t); // principal pool (nothing lent yet)
+    env.open_long(&borrower, &t, 0, collateral, 1).expect("open");
+
+    let pos = env
+        .get_position(&t, &borrower.pubkey(), POSITION_SIDE_LONG, 0)
+        .expect("position exists");
+    // Mirror calc_user_borrow_cap's formula arm on the NET collateral the
+    // handler recorded (post Token-2022 deposit fee).
+    let expected = (assets as u128 * pos.collateral_amount as u128
+        * BORROW_SHARE_MULTIPLIER as u128
+        / TOTAL_SUPPLY as u128) as u64;
+    assert_eq!(pos.debt_amount, expected, "formula cap binds exactly");
+    env.assert_user_risk(&t, &borrower.pubkey(), &[(POSITION_SIDE_LONG, 0)]);
 }
 
 #[test]
@@ -280,6 +342,7 @@ fn close_long_partial() {
         "≈half the SOL debt repaid"
     );
     assert!(after.debt_amount > 0, "still open after partial");
+    env.assert_treasury_counters(&t, &[(borrower.pubkey(), POSITION_SIDE_LONG, 0)]);
 }
 
 #[test]
@@ -306,6 +369,7 @@ fn close_long_full_returns_surplus() {
     );
     let tr = env.get_treasury(&t);
     assert_eq!(tr.active_longs, 0);
+    env.assert_treasury_counters(&t, &[(borrower.pubkey(), POSITION_SIDE_LONG, 0)]);
 }
 
 #[test]
@@ -332,6 +396,7 @@ fn close_long_interest_first() {
         pos.debt_amount, opened.debt_amount,
         "principal untouched (interest paid first)"
     );
+    env.assert_treasury_counters(&t, &[(borrower.pubkey(), POSITION_SIDE_LONG, 0)]);
 }
 
 #[test]
@@ -391,6 +456,7 @@ fn close_long_via_vault_happy() {
     );
     let tr = env.get_treasury(&t);
     assert_eq!(tr.active_longs, 0);
+    env.assert_treasury_counters(&t, &[(vault.vault, POSITION_SIDE_LONG, 0)]);
 }
 
 // ============================================================================
@@ -424,6 +490,7 @@ fn liquidate_long_happy() {
         .expect("pos");
     assert!(after.debt_amount < before.debt_amount, "debt reduced");
     assert!(after.debt_amount > 0, "partial: position still open");
+    env.assert_treasury_counters(&t, &[(borrower.pubkey(), POSITION_SIDE_LONG, 0)]);
 }
 
 #[test]
@@ -466,6 +533,7 @@ fn liquidate_long_partial_capped_at_close_bps() {
     // DEFAULT_LIQUIDATION_CLOSE_BPS = 50%: at most half the debt per call.
     assert!(covered <= before.debt_amount / 2 + 1_000_000, "≤50% per call");
     assert!(after.debt_amount > 0, "still has debt after partial");
+    env.assert_treasury_counters(&t, &[(borrower.pubkey(), POSITION_SIDE_LONG, 0)]);
 }
 
 #[test]
@@ -508,6 +576,9 @@ fn liquidate_long_full_with_bad_debt() {
         tr.total_sol_lent_to_longs < lent_before,
         "residual debt written off the lent counter"
     );
+    // [F-8] Full reconciliation: with the only position resolved, every
+    // aggregate must return exactly to zero (write-off = full principal).
+    env.assert_treasury_counters(&t, &[(borrower.pubkey(), POSITION_SIDE_LONG, 0)]);
 }
 
 #[test]
@@ -559,6 +630,7 @@ fn liquidate_long_via_vault_happy() {
     // Liquidator received seized tokens.
     let seized = token_balance(&env, &liquidator.pubkey(), &t.mint);
     assert!(seized > 0, "liquidator received seized vault tokens");
+    env.assert_treasury_counters(&t, &[(vault.vault, POSITION_SIDE_LONG, 0)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -610,6 +682,56 @@ fn get_associated_token_address_2022_local(
 //      any test pokes. Mainnet's 100 SOL gate requires sustained post-
 //      launch trading volume to clear naturally — verified in production,
 //      not here.
+
+// [F-2] Lending capacity is the FULL float, first-come-first-serve. The
+// sticky gate (principal pool = physical + lent, lending-unlock.md semantics)
+// certifies scale once and stays open as the float is consumed; borrowers open
+// until the float is exhausted and the next open rejects with
+// LendingCapExceeded. (Pre-fix, the double-counted formula converged at ~31%
+// of the float and the gate itself re-locked on the way down.)
+#[test]
+fn lending_capacity_exhausts_full_float() {
+    let (mut env, t, _) = lending_ready();
+    let float_start = env.treasury_sol(&t); // nothing lent → principal pool
+
+    let mut opens = 0;
+    let mut exhausted = false;
+    for _ in 0..12 {
+        let b = env.new_funded(5 * LAMPORTS_PER_SOL);
+        env.ensure_token2022_ata(&b, &b.pubkey(), &t.mint).expect("ata");
+        let ata = get_associated_token_address_2022_local(&b.pubkey(), &t.mint);
+        env.poke_token_amount(ata, 15_000_000_000_000); // 15M tokens collateral
+        match env.open_long(&b, &t, 0, 15_000_000_000_000, 1) {
+            Ok(()) => opens += 1,
+            Err(e) => {
+                let code = crate::harness::anchor_err_code(&e)
+                    .expect("expected Anchor custom error on exhaustion");
+                assert_eq!(
+                    code,
+                    TorchMarketError::LendingCapExceeded as u32 + 6000,
+                    "exhausted float must reject with LendingCapExceeded"
+                );
+                exhausted = true;
+                break;
+            }
+        }
+    }
+    assert!(exhausted, "the loop must run the float to exhaustion");
+    assert!(opens >= 4, "several concentrated borrowers served (got {opens})");
+
+    // The whole starting float is lent (open fees returned to the float during
+    // the loop are re-lent too); only sub-MIN_BORROW dust can remain.
+    let lent = env.get_treasury(&t).total_sol_lent_to_longs;
+    assert!(
+        lent + 2 * MIN_BORROW_AMOUNT >= float_start,
+        "full float lent out (lent={lent}, float={float_start})"
+    );
+    // Sticky gate: still unlocked with the float drained.
+    assert!(
+        env.treasury_sol(&t) < MIN_BORROW_AMOUNT * 2,
+        "float drained to dust"
+    );
+}
 
 #[test]
 fn treasury_grows_via_swap_fees_to_sol_path() {

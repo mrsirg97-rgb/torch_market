@@ -195,16 +195,25 @@ pub async fn mark_status(
 ) -> sqlx::Result<()> {
     // Track the slot specific to the new status so the API can render
     // lifecycle timestamps without reading the whole event log.
+    // Status-specific lifecycle timestamp column (None when the status has no
+    // dedicated column — last_activity_slot alone then; duplicating it in SET
+    // is a Postgres error, the bug that kept this helper dead-on-arrival).
     let column = match status {
-        MarketStatus::Rd => "bonding_complete_slot",
-        MarketStatus::Reclaimed => "reclaimed_slot",
-        _ => "last_activity_slot",
+        MarketStatus::Complete => Some("bonding_complete_slot"),
+        MarketStatus::Reclaimed => Some("reclaimed_slot"),
+        _ => None,
     };
-    let sql = format!(
-        "UPDATE markets
-         SET status = $2, {column} = $3, last_activity_slot = $3, updated_at = $4
-         WHERE mint = $1",
-    );
+    let sql = match column {
+        Some(col) => format!(
+            "UPDATE markets
+             SET status = $2, {col} = $3, last_activity_slot = $3, updated_at = $4
+             WHERE mint = $1",
+        ),
+        None => "UPDATE markets
+             SET status = $2, last_activity_slot = $3, updated_at = $4
+             WHERE mint = $1"
+            .to_string(),
+    };
     sqlx::query(&sql)
         .bind(mint)
         .bind(status)

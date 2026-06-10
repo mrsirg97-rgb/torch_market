@@ -66,6 +66,7 @@ fn open_short_happy() {
     let vault = short_vault_pda(&t, &shorter.pubkey(), 0);
     let vault_lamports = env.svm.get_account(&vault).map(|a| a.lamports).unwrap_or(0);
     assert!(vault_lamports > 0, "collateral + sale proceeds in position vault");
+    env.assert_treasury_counters(&t, &[(shorter.pubkey(), POSITION_SIDE_SHORT, 0)]);
 }
 
 #[test]
@@ -140,6 +141,147 @@ fn open_short_clamps_to_caps() {
     );
 }
 
+// [F-1] The 2% wallet cap is per-USER across position_index values: idx 0
+// consumes the full allowance, idx 1 gets nothing (ShortTooSmall), and a
+// fresh wallet is unaffected. Pre-fix, every new index re-granted 2%.
+#[test]
+fn open_short_user_cap_aggregates_across_indices() {
+    let (mut env, t, _) = migrated();
+    env.poke_token_amount(t.treasury_lock_token_account, 100_000_000_000_000_000);
+    env.poke_pool_sol(&t, 1000 * LAMPORTS_PER_SOL);
+    env.poke_token_amount(t.deep_pool_token_vault, 100_000_000_000_000);
+
+    let shorter = env.new_funded(3000 * LAMPORTS_PER_SOL);
+    env.open_short(&shorter, &t, 0, 1000 * LAMPORTS_PER_SOL, 1)
+        .expect("idx 0 opens at the wallet cap");
+    let p0 = env
+        .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+        .expect("pos 0");
+    assert_eq!(p0.debt_amount, MAX_WALLET_TOKENS, "idx 0 at the cap");
+
+    expect_err!(
+        env.open_short(&shorter, &t, 1, 1000 * LAMPORTS_PER_SOL, 1),
+        TorchMarketError::ShortTooSmall
+    );
+
+    // Per-user, not global: a fresh wallet still opens.
+    let other = env.new_funded(1500 * LAMPORTS_PER_SOL);
+    env.open_short(&other, &t, 0, 1000 * LAMPORTS_PER_SOL, 1)
+        .expect("fresh wallet unaffected");
+
+    env.assert_user_risk(
+        &t,
+        &shorter.pubkey(),
+        &[(POSITION_SIDE_SHORT, 0), (POSITION_SIDE_SHORT, 1)],
+    );
+}
+
+// [F-1] Same aggregation for VAULT-owned shorts — the vault is the owner, so
+// the cap pools across the vault's indices regardless of which linked wallet
+// signs.
+#[test]
+fn open_short_via_vault_user_cap_aggregates() {
+    let (mut env, t, _) = migrated();
+    env.poke_token_amount(t.treasury_lock_token_account, 100_000_000_000_000_000);
+    env.poke_pool_sol(&t, 1000 * LAMPORTS_PER_SOL);
+    env.poke_token_amount(t.deep_pool_token_vault, 100_000_000_000_000);
+
+    let owner = env.new_funded(3000 * LAMPORTS_PER_SOL);
+    let vault = env.create_vault(&owner);
+    env.deposit_vault(&owner, &vault, 2500 * LAMPORTS_PER_SOL)
+        .expect("deposit");
+
+    env.open_short_via_vault(&owner, &vault, &t, 0, 1000 * LAMPORTS_PER_SOL, 1)
+        .expect("idx 0 opens at the wallet cap");
+    let p0 = env
+        .get_position(&t, &vault.vault, POSITION_SIDE_SHORT, 0)
+        .expect("pos 0");
+    assert_eq!(p0.debt_amount, MAX_WALLET_TOKENS, "idx 0 at the cap");
+
+    expect_err!(
+        env.open_short_via_vault(&owner, &vault, &t, 1, 1000 * LAMPORTS_PER_SOL, 1),
+        TorchMarketError::ShortTooSmall
+    );
+    env.assert_user_risk(
+        &t,
+        &vault.vault,
+        &[(POSITION_SIDE_SHORT, 0), (POSITION_SIDE_SHORT, 1)],
+    );
+}
+
+// Aggregate short exposure is bounded by the PHYSICAL lock balance only — the
+// lock may drain to ZERO by design (closes/liquidations only pay INTO it,
+// never need its inventory; the real aggregate brake is pool depth — every
+// short open drains pool SOL, shrinking rail-2 and the depth-LTV curve until
+// PoolTooThin stops new opens). A borrow sized past the remaining inventory
+// clamps to exactly what's left; an empty lock rejects the next short.
+#[test]
+fn open_short_can_drain_lock() {
+    let (mut env, t, _) = migrated();
+    // Small lock (10M tokens < MAX_WALLET_TOKENS) so the inventory binds before
+    // the per-user cap; deep pool so the desired borrow (~17M tokens) exceeds it.
+    env.poke_token_amount(t.treasury_lock_token_account, 10_000_000_000_000);
+    env.poke_pool_sol(&t, 1000 * LAMPORTS_PER_SOL);
+    env.poke_token_amount(t.deep_pool_token_vault, 100_000_000_000_000);
+
+    let shorter = env.new_funded(400 * LAMPORTS_PER_SOL);
+    env.open_short(&shorter, &t, 0, 300 * LAMPORTS_PER_SOL, 1)
+        .expect("open_short clamps to the whole remaining lock");
+
+    let pos = env
+        .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+        .expect("short pos");
+    assert_eq!(
+        pos.debt_amount, 10_000_000_000_000,
+        "borrow clamped to the full lock inventory"
+    );
+    // Lock fully drained.
+    use solana_sdk::account::ReadableAccount;
+    let lock = env.svm.get_account(&t.treasury_lock_token_account).unwrap();
+    let lock_bal = u64::from_le_bytes(lock.data()[64..72].try_into().unwrap());
+    assert_eq!(lock_bal, 0, "lock drains to zero by design");
+    env.assert_treasury_counters(&t, &[(shorter.pubkey(), POSITION_SIDE_SHORT, 0)]);
+
+    // Nothing left to borrow → the next short rejects.
+    let second = env.new_funded(3 * LAMPORTS_PER_SOL);
+    expect_err!(
+        env.open_short(&second, &t, 0, LAMPORTS_PER_SOL, 1),
+        TorchMarketError::ShortTooSmall
+    );
+}
+
+// [F-5] The open fee prices the REALIZED borrow value, not the pre-clamp
+// desired value. When the wallet cap binds (borrow clamped to 20M tokens ≈
+// 200 SOL at this pool ratio), the fee must be ~0.5% × 200 SOL = 1 SOL — NOT
+// 0.5% of the unclamped desired value (1000 SOL × ~57% → 2.85 SOL), which is
+// what the pre-fix code charged. Mirrors open_long's post-clamp fee.
+#[test]
+fn open_short_fee_priced_on_realized_borrow() {
+    let (mut env, t, _) = migrated();
+    env.poke_token_amount(t.treasury_lock_token_account, 100_000_000_000_000_000);
+    env.poke_pool_sol(&t, 1000 * LAMPORTS_PER_SOL);
+    env.poke_token_amount(t.deep_pool_token_vault, 100_000_000_000_000);
+
+    let shorter = env.new_funded(1500 * LAMPORTS_PER_SOL);
+    env.open_short(&shorter, &t, 0, 1000 * LAMPORTS_PER_SOL, 1)
+        .expect("open");
+
+    let pos = env
+        .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+        .expect("short pos");
+    assert_eq!(pos.debt_amount, MAX_WALLET_TOKENS, "wallet cap binds");
+    // Fee = posted collateral − net collateral recorded on the position.
+    let fee = 1000 * LAMPORTS_PER_SOL - pos.collateral_amount;
+    assert!(
+        fee >= LAMPORTS_PER_SOL * 9 / 10,
+        "fee ≈ 0.5% of the realized ~200 SOL borrow (got {fee})"
+    );
+    assert!(
+        fee <= LAMPORTS_PER_SOL * 11 / 10,
+        "fee must not revert to the pre-clamp basis (~2.85 SOL) (got {fee})"
+    );
+}
+
 #[test]
 fn open_short_via_vault_happy() {
     // A linked wallet opens a short funded by the VAULT. The position is
@@ -177,6 +319,53 @@ fn open_short_via_vault_happy() {
     );
 }
 
+// [F-9] Multi-position lifecycle: two indices coexist independently; closing
+// one leaves the other untouched; a closed index can be REOPENED (the PDA was
+// reaped — init must succeed again); counters + the per-user aggregate
+// reconcile at every step.
+#[test]
+fn multi_position_lifecycle_out_of_order_close_and_index_reuse() {
+    let (mut env, t, _) = migrated();
+    // Deepen the pool: each short open SELLS into the pool and drains pool SOL,
+    // and the migrated fixture sits right at the 100-SOL depth floor — idx 0's
+    // sale would push idx 1 under PoolTooThin.
+    env.poke_pool_sol(&t, 300 * LAMPORTS_PER_SOL);
+    let shorter = env.new_funded(8 * LAMPORTS_PER_SOL);
+    let positions = [(POSITION_SIDE_SHORT, 0u32), (POSITION_SIDE_SHORT, 1u32)];
+
+    env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1).expect("open idx 0");
+    env.open_short(&shorter, &t, 1, LAMPORTS_PER_SOL, 1).expect("open idx 1");
+    let p1_before = env
+        .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 1)
+        .expect("idx 1");
+    env.assert_treasury_counters(&t, &[(shorter.pubkey(), POSITION_SIDE_SHORT, 0), (shorter.pubkey(), POSITION_SIDE_SHORT, 1)]);
+    env.assert_user_risk(&t, &shorter.pubkey(), &positions);
+
+    // Close idx 0 FIRST (out of order) — idx 1 must be untouched.
+    env.close_short(&shorter, &t, 0, 10_000, 0).expect("close idx 0");
+    assert!(env.get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0).is_none());
+    let p1_after = env
+        .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 1)
+        .expect("idx 1 still open");
+    assert_eq!(p1_after.debt_amount, p1_before.debt_amount, "idx 1 untouched");
+    env.assert_user_risk(&t, &shorter.pubkey(), &positions);
+
+    // REUSE idx 0: the PDA was closed + reaped; init must succeed again.
+    env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1).expect("reopen idx 0");
+    let p0_new = env
+        .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+        .expect("idx 0 reopened");
+    assert!(p0_new.debt_amount > 0);
+    env.assert_treasury_counters(&t, &[(shorter.pubkey(), POSITION_SIDE_SHORT, 0), (shorter.pubkey(), POSITION_SIDE_SHORT, 1)]);
+    env.assert_user_risk(&t, &shorter.pubkey(), &positions);
+
+    // Unwind everything; all aggregates return to zero.
+    env.close_short(&shorter, &t, 1, 10_000, 0).expect("close idx 1");
+    env.close_short(&shorter, &t, 0, 10_000, 0).expect("close idx 0 again");
+    env.assert_treasury_counters(&t, &[(shorter.pubkey(), POSITION_SIDE_SHORT, 0), (shorter.pubkey(), POSITION_SIDE_SHORT, 1)]);
+    env.assert_user_risk(&t, &shorter.pubkey(), &positions);
+}
+
 // ============================================================================
 // close_short (6)
 // ============================================================================
@@ -207,6 +396,29 @@ fn close_short_partial() {
         after.debt_amount
     );
     assert!(after.debt_amount > 0, "still open after partial");
+    env.assert_treasury_counters(&t, &[(shorter.pubkey(), POSITION_SIDE_SHORT, 0)]);
+}
+
+// [F-6] Partial close is price-protected: `min_surplus_sol_out` bounds the
+// post-buy vault balance on the PARTIAL path too. Pre-fix the arg was silently
+// ignored unless the close was full, so a partial close executed at whatever
+// price the live reserves demanded.
+#[test]
+fn close_short_partial_respects_min_surplus_floor() {
+    let (mut env, t, _) = migrated();
+    let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
+    env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1).expect("open");
+    let vault = short_vault_pda(&t, &shorter.pubkey(), 0);
+    let vault_before = env.svm.get_account(&vault).unwrap().lamports;
+
+    // A partial buyback must spend SOL, so demanding the full pre-close vault
+    // balance as the floor must trip the guard (pre-fix: silently succeeded).
+    expect_err!(
+        env.close_short(&shorter, &t, 0, 5_000, vault_before),
+        TorchMarketError::SlippageExceeded
+    );
+    // Same partial close with no floor succeeds.
+    env.close_short(&shorter, &t, 0, 5_000, 0).expect("partial close");
 }
 
 #[test]
@@ -232,6 +444,7 @@ fn close_short_full() {
         before_lamports,
         after_lamports
     );
+    env.assert_treasury_counters(&t, &[(shorter.pubkey(), POSITION_SIDE_SHORT, 0)]);
 }
 
 #[test]
@@ -260,6 +473,7 @@ fn close_short_interest_first() {
         pos.debt_amount, opened.debt_amount,
         "principal untouched (interest paid first)"
     );
+    env.assert_treasury_counters(&t, &[(shorter.pubkey(), POSITION_SIDE_SHORT, 0)]);
 }
 
 #[test]
@@ -319,6 +533,7 @@ fn close_short_via_vault_happy() {
         env.vault_sol(&vault) > vault_sol_after_open,
         "surplus returned to vault_sol, not the signer wallet"
     );
+    env.assert_treasury_counters(&t, &[(vault.vault, POSITION_SIDE_SHORT, 0)]);
 }
 
 // ============================================================================
@@ -354,6 +569,7 @@ fn liquidate_short_happy() {
     let vault = short_vault_pda(&t, &shorter.pubkey(), 0);
     let vault_lamports = env.svm.get_account(&vault).map(|a| a.lamports).unwrap_or(0);
     assert!(vault_lamports < LAMPORTS_PER_SOL, "vault SOL seized");
+    env.assert_treasury_counters(&t, &[(shorter.pubkey(), POSITION_SIDE_SHORT, 0)]);
 }
 
 #[test]
@@ -393,6 +609,7 @@ fn liquidate_short_partial_close_bps() {
     // DEFAULT_LIQUIDATION_CLOSE_BPS = 50%: at most half the debt per call.
     assert!(covered <= before.debt_amount / 2 + 1, "≤50% covered per call");
     assert!(after.debt_amount > 0, "still has debt after partial");
+    env.assert_treasury_counters(&t, &[(shorter.pubkey(), POSITION_SIDE_SHORT, 0)]);
 }
 
 #[test]
@@ -430,6 +647,72 @@ fn liquidate_short_bad_debt() {
         tr.total_tokens_lent < lent_before,
         "residual token debt written off the lent counter"
     );
+    // [F-8] Full reconciliation: the only position is resolved, so every
+    // aggregate must return exactly to zero (write-off = full principal).
+    env.assert_treasury_counters(&t, &[(shorter.pubkey(), POSITION_SIDE_SHORT, 0)]);
+}
+
+// [F-10] Distress-scaled bonus ramp, end to end (Kani #85 proves the pure fn;
+// this pins the WIRING twap_ltv → effective_liq_bonus_bps → seize). The same
+// position shape is liquidated at two distress levels; the effective bonus is
+// recovered from observables (SOL seized vs the TWAP value of the debt
+// covered). Barely-over must earn a small bonus (the manipulation-prize cap);
+// deep distress must earn near the 32.5% ceiling.
+#[test]
+fn liquidate_short_bonus_ramps_with_distress() {
+    fn effective_bonus_bps(pool_sol_poke: u64) -> i64 {
+        let (mut env, t, liquidator) = migrated();
+        let shorter = env.new_funded(3 * LAMPORTS_PER_SOL);
+        let cranker = env.new_funded(2 * LAMPORTS_PER_SOL);
+        env.open_short(&shorter, &t, 0, LAMPORTS_PER_SOL, 1).expect("open");
+        let before = env
+            .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+            .expect("pos");
+        let vault = short_vault_pda(&t, &shorter.pubkey(), 0);
+        let vault_before = env.svm.get_account(&vault).map(|a| a.lamports).unwrap_or(0);
+
+        env.poke_pool_sol(&t, pool_sol_poke);
+        env.warm_twap(&cranker, &t);
+        env.liquidate_short(&liquidator, shorter.pubkey(), &t, 0)
+            .expect("liquidate");
+
+        // Position may close fully (insolvent write-off) or stay open (partial).
+        let after_debt = env
+            .get_position(&t, &shorter.pubkey(), POSITION_SIDE_SHORT, 0)
+            .map(|p| p.debt_amount)
+            .unwrap_or(0);
+        let vault_after = env.svm.get_account(&vault).map(|a| a.lamports).unwrap_or(0);
+        let seized = vault_before - vault_after; // residual returns to borrower, not vault
+
+        // TWAP price ≈ the poked spot (warmed at it; same-slot extension).
+        use solana_sdk::account::ReadableAccount;
+        let pool_tokens = {
+            let acct = env.svm.get_account(&t.deep_pool_token_vault).unwrap();
+            u64::from_le_bytes(acct.data()[64..72].try_into().unwrap())
+        };
+        let covered = before.debt_amount - after_debt;
+        assert!(covered > 0, "liquidation covered some debt");
+        let covered_value =
+            covered as f64 * pool_sol_poke as f64 / pool_tokens as f64;
+        (((seized as f64) / covered_value - 1.0) * 10_000.0) as i64
+    }
+
+    // TUNE (fixture: ltv ≈ 23 bps per poked SOL — threshold 6500 ≈ 282 SOL,
+    // full-bonus 7547 ≈ 328 SOL): 290 lands just past the threshold (~6680,
+    // ramp ≈ 560 bps); 400 lands past full-bonus (~9200) while the vault still
+    // covers the slice + bonus (solvent partial liquidation).
+    let bonus_low = effective_bonus_bps(290 * LAMPORTS_PER_SOL);
+    let bonus_high = effective_bonus_bps(400 * LAMPORTS_PER_SOL);
+
+    assert!(
+        bonus_low < 1_500,
+        "barely-over liquidation earns a small bonus (got {bonus_low} bps)"
+    );
+    assert!(
+        bonus_high > 2_500,
+        "deep distress earns near the 32.5% ceiling (got {bonus_high} bps)"
+    );
+    assert!(bonus_high > bonus_low, "bonus is monotone in distress");
 }
 
 #[test]
@@ -544,6 +827,7 @@ fn liquidate_short_via_vault_happy() {
     // Seized SOL paid out to the external liquidator (net of tx fee it covered).
     let liq_after = env.svm.get_account(&liquidator.pubkey()).unwrap().lamports;
     assert!(liq_after > liq_before, "liquidator received seized SOL");
+    env.assert_treasury_counters(&t, &[(vault.vault, POSITION_SIDE_SHORT, 0)]);
 }
 
 // ---------------------------------------------------------------------------

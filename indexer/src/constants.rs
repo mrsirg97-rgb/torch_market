@@ -16,3 +16,9 @@ pub const EVENT_IX_TAG_LE: [u8; 8] = [0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 
 // Memo program id, base58. Memo instructions co-resident with a torch ix in
 // the same tx are persisted to `messages`; bare memos (no torch ix) are dropped.
 pub const MEMO_PROGRAM_ID: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
+
+// [I-2] On-chain interest parameters, mirrored for the position reconcile:
+// accrued_interest_stored = prior + interest(prior_debt, Δslots) − interest_paid.
+// Mirrors programs/torch_market constants (DEFAULT_INTEREST_RATE_BPS / EPOCH_DURATION_SLOTS).
+pub const INTEREST_RATE_BPS: u128 = 150;
+pub const EPOCH_DURATION_SLOTS: u128 = 7 * 24 * 60 * 60 * 1000 / 400;

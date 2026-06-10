@@ -26,7 +26,7 @@ use torch_market::{
     constants::*,
     pool_validation,
     state::{
-        BondingCurve, GlobalConfig, Position, ProtocolTreasury, TorchVault,
+        BondingCurve, GlobalConfig, Position, PositionSide, ProtocolTreasury, TorchVault,
         Treasury,
     },
     token_2022_utils::{get_associated_token_address_2022, TOKEN_2022_PROGRAM_ID},
@@ -79,6 +79,9 @@ fn deep_pool_so() -> Vec<u8> {
 
 pub struct Env {
     pub svm: LiteSVM,
+    // Metadata of the last successful tx — event-assertion tests decode
+    // emit_cpi! payloads from its inner instructions (see extract_event).
+    pub last_meta: Option<litesvm::types::TransactionMetadata>,
     pub authority: Keypair, // protocol authority (global_config.authority)
     pub treasury_wallet: Keypair, // global_config.treasury
     pub dev_wallet: Keypair, // global_config.dev_wallet
@@ -110,6 +113,7 @@ impl Env {
 
         let mut env = Env {
             svm,
+            last_meta: None,
             authority,
             treasury_wallet,
             dev_wallet,
@@ -185,7 +189,10 @@ impl Env {
         let mut tx = Transaction::new_with_payer(ixs, Some(&payer));
         tx.sign(signers, self.latest_blockhash());
         match self.svm.send_transaction(tx) {
-            Ok(_) => Ok(()),
+            Ok(meta) => {
+                self.last_meta = Some(meta);
+                Ok(())
+            }
             Err(failed) => {
                 if std::env::var("LITESVM_LOGS").is_ok() {
                     eprintln!("--- tx failed: {:?} ---", failed.err);
@@ -282,6 +289,51 @@ impl Env {
 
     pub fn get_torch_vault(&self, vault: &Pubkey) -> TorchVault {
         deserialize_anchor(&self.svm, vault)
+    }
+
+    // [F-8] Counter-reconciliation invariant: the treasury's tracked aggregates
+    // must equal the sums re-derived from the live Position accounts at all
+    // times. The conservation is emergent across 12 handler paths and every
+    // decrement is a saturating_sub, so drift would otherwise be silent — call
+    // this after EVERY state-mutating leverage op in lifecycle tests.
+    //
+    // `positions` lists every position the test ever opened as
+    // (owner, side, index) — owner is the wallet for direct positions and the
+    // torch_vault for via_vault positions. Closed positions deserialize to
+    // None and contribute zero, so the full history can be passed unchanged.
+    pub fn assert_treasury_counters(&self, t: &TokenCtx, positions: &[(Pubkey, u8, u32)]) {
+        let mut tokens_lent = 0u64; // Σ open-short debt_amount (principal)
+        let mut sol_lent = 0u64; // Σ open-long debt_amount (gross principal)
+        let mut shorts = 0u64;
+        let mut longs = 0u64;
+        let mut collateral_locked = 0u64; // Σ open-long collateral_amount
+        for (owner, side, index) in positions {
+            if let Some(p) = self.get_position(t, owner, *side, *index) {
+                match p.side {
+                    PositionSide::Short => {
+                        shorts += 1;
+                        tokens_lent += p.debt_amount;
+                    }
+                    PositionSide::Long => {
+                        longs += 1;
+                        sol_lent += p.debt_amount;
+                        collateral_locked += p.collateral_amount;
+                    }
+                }
+            }
+        }
+        let tr = self.get_treasury(t);
+        assert_eq!(tr.total_tokens_lent, tokens_lent, "total_tokens_lent drift");
+        assert_eq!(
+            tr.total_sol_lent_to_longs, sol_lent,
+            "total_sol_lent_to_longs drift"
+        );
+        assert_eq!(tr.active_shorts, shorts, "active_shorts drift");
+        assert_eq!(tr.active_longs, longs, "active_longs drift");
+        assert_eq!(
+            tr.total_token_collateral_locked, collateral_locked,
+            "total_token_collateral_locked drift"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -863,6 +915,8 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::ReclaimFailedToken {
+                event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+                program: torch_market::ID,
                 payer: payer.pubkey(),
                 mint: t.mint,
                 bonding_curve: t.bonding_curve,
@@ -1192,11 +1246,11 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::OpenLongPosition {
+                user_risk: user_risk_pda(&borrower.pubkey(), &t.mint),
                 event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
                 borrower: borrower.pubkey(),
                 mint: t.mint,
-                bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
                 treasury_sol_vault: t.treasury_sol_vault,
                 borrower_token_account,
@@ -1258,11 +1312,11 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::CloseLongPosition {
+                user_risk: user_risk_pda(&borrower.pubkey(), &t.mint),
                 event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
                 borrower: borrower.pubkey(),
                 mint: t.mint,
-                bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
                 treasury_sol_vault: t.treasury_sol_vault,
                 position,
@@ -1316,12 +1370,12 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::LiquidateLongPosition {
+                user_risk: user_risk_pda(&borrower, &t.mint),
                 event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
                 liquidator: liquidator.pubkey(),
                 borrower,
                 mint: t.mint,
-                bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
                 treasury_sol_vault: t.treasury_sol_vault,
                 position,
@@ -1394,13 +1448,13 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::OpenLongViaVault {
+                user_risk: user_risk_pda(&vault.vault, &t.mint),
                 event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
                 signer: signer.pubkey(),
                 torch_vault: vault.vault,
                 vault_wallet_link,
                 mint: t.mint,
-                bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
                 treasury_sol_vault: t.treasury_sol_vault,
                 vault_token_account,
@@ -1466,6 +1520,7 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::CloseLongViaVault {
+                user_risk: user_risk_pda(&vault.vault, &t.mint),
                 event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
                 signer: signer.pubkey(),
@@ -1473,7 +1528,6 @@ impl Env {
                 vault_sol: vault.vault_sol,
                 vault_wallet_link,
                 mint: t.mint,
-                bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
                 treasury_sol_vault: t.treasury_sol_vault,
                 position,
@@ -1526,13 +1580,13 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::LiquidateLongViaVault {
+                user_risk: user_risk_pda(&vault.vault, &t.mint),
                 event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
                 liquidator: liquidator.pubkey(),
                 torch_vault: vault.vault,
                 vault_sol: vault.vault_sol,
                 mint: t.mint,
-                bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
                 treasury_sol_vault: t.treasury_sol_vault,
                 position,
@@ -1592,11 +1646,11 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::OpenShortPosition {
+                user_risk: user_risk_pda(&shorter.pubkey(), &t.mint),
                 event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
                 shorter: shorter.pubkey(),
                 mint: t.mint,
-                bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
                 treasury_sol_vault: t.treasury_sol_vault,
                 treasury_lock: t.treasury_lock,
@@ -1660,6 +1714,7 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::OpenShortViaVault {
+                user_risk: user_risk_pda(&vault.vault, &t.mint),
                 event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
                 signer: signer.pubkey(),
@@ -1667,7 +1722,6 @@ impl Env {
                 vault_sol: vault.vault_sol,
                 vault_wallet_link,
                 mint: t.mint,
-                bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
                 treasury_sol_vault: t.treasury_sol_vault,
                 treasury_lock: t.treasury_lock,
@@ -1727,11 +1781,11 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::CloseShortPosition {
+                user_risk: user_risk_pda(&shorter.pubkey(), &t.mint),
                 event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
                 shorter: shorter.pubkey(),
                 mint: t.mint,
-                bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
                 treasury_lock: t.treasury_lock,
                 treasury_lock_token_account: t.treasury_lock_token_account,
@@ -1782,6 +1836,7 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::CloseShortViaVault {
+                user_risk: user_risk_pda(&vault.vault, &t.mint),
                 event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
                 signer: signer.pubkey(),
@@ -1789,7 +1844,6 @@ impl Env {
                 vault_sol: vault.vault_sol,
                 vault_wallet_link,
                 mint: t.mint,
-                bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
                 treasury_lock: t.treasury_lock,
                 treasury_lock_token_account: t.treasury_lock_token_account,
@@ -1850,12 +1904,12 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::LiquidateShortPosition {
+                user_risk: user_risk_pda(&borrower, &t.mint),
                 event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
                 liquidator: liquidator.pubkey(),
                 borrower,
                 mint: t.mint,
-                bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
                 treasury_lock: t.treasury_lock,
                 treasury_lock_token_account: t.treasury_lock_token_account,
@@ -1912,13 +1966,13 @@ impl Env {
         let ix = Instruction {
             program_id: torch_market::ID,
             accounts: torch_market::accounts::LiquidateShortViaVault {
+                user_risk: user_risk_pda(&vault.vault, &t.mint),
                 event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
                 program: torch_market::ID,
                 liquidator: liquidator.pubkey(),
                 torch_vault: vault.vault,
                 vault_sol: vault.vault_sol,
                 mint: t.mint,
-                bonding_curve: t.bonding_curve,
                 treasury: t.treasury,
                 treasury_lock: t.treasury_lock,
                 treasury_lock_token_account: t.treasury_lock_token_account,
@@ -2041,6 +2095,72 @@ impl Env {
             .map(|a| !a.data().is_empty())
             .unwrap_or(false)
     }
+}
+
+
+// [F-1] Per-(owner, mint) aggregate-exposure PDA (UserRisk).
+pub fn user_risk_pda(owner: &Pubkey, mint: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[USER_RISK_SEED, owner.as_ref(), mint.as_ref()],
+        &torch_market::ID,
+    )
+    .0
+}
+
+impl Env {
+    // [F-1] Reconcile an owner's UserRisk aggregate against their live
+    // positions: short_tokens_debt == Σ open short debt, long_sol_debt == Σ
+    // open long debt, long_collateral_tokens == Σ open long collateral.
+    // `positions` lists every (side, index) the owner ever opened; closed
+    // positions deserialize to None and contribute zero.
+    pub fn assert_user_risk(&self, t: &TokenCtx, owner: &Pubkey, positions: &[(u8, u32)]) {
+        let mut short_debt = 0u64;
+        let mut long_debt = 0u64;
+        let mut long_coll = 0u64;
+        for (side, idx) in positions {
+            if let Some(p) = self.get_position(t, owner, *side, *idx) {
+                match p.side {
+                    PositionSide::Short => short_debt += p.debt_amount,
+                    PositionSide::Long => {
+                        long_debt += p.debt_amount;
+                        long_coll += p.collateral_amount;
+                    }
+                }
+            }
+        }
+        let risk: torch_market::state::UserRisk =
+            deserialize_anchor(&self.svm, &user_risk_pda(owner, &t.mint));
+        assert_eq!(risk.short_tokens_debt, short_debt, "user_risk short debt drift");
+        assert_eq!(risk.long_sol_debt, long_debt, "user_risk long debt drift");
+        assert_eq!(
+            risk.long_collateral_tokens, long_coll,
+            "user_risk long collateral drift"
+        );
+    }
+}
+
+/// Decode the first emitted event of type `T` from the last tx's inner
+/// instructions (same decode path as the indexer). Port of the deep_pool
+/// harness helper.
+pub fn extract_event<T: anchor_lang::Discriminator + anchor_lang::AnchorDeserialize>(
+    meta: &litesvm::types::TransactionMetadata,
+) -> Option<T> {
+    for group in &meta.inner_instructions {
+        for inner in group {
+            let data: &[u8] = &inner.instruction.data;
+            if data.len() >= 16 && &data[8..16] == T::DISCRIMINATOR {
+                if let Ok(ev) = T::deserialize(&mut &data[16..]) {
+                    return Some(ev);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Compare an event-payload Pubkey with a context Pubkey.
+pub fn b58_eq(a: &anchor_lang::prelude::Pubkey, b: &Pubkey) -> bool {
+    a == b
 }
 
 // ============================================================================

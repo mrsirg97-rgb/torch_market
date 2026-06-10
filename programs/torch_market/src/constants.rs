@@ -6,7 +6,6 @@ pub const TREASURY_FEE_BPS: u16 = 0;
 pub const DEV_WALLET_SHARE_BPS: u16 = 5000; // 50% of protocol fee to dev, 50% to user rewards
 pub const SELL_FEE_BPS: u16 = 0;
 pub const BONDING_TARGET_LAMPORTS: u64 = 200_000_000_000;
-pub const BONDING_TARGET_SPARK: u64 = 50_000_000_000; // 50 SOL
 pub const BONDING_TARGET_FLAME: u64 = 100_000_000_000; // 100 SOL
 pub const BONDING_TARGET_TORCH: u64 = 200_000_000_000; // 200 SOL (default)
 pub const VALID_BONDING_TARGETS: [u64; 2] = [BONDING_TARGET_FLAME, BONDING_TARGET_TORCH];
@@ -20,7 +19,6 @@ pub const INITIAL_VIRTUAL_TOKENS_V27: u64 = 756_250_000_000_000;
 
 pub fn initial_virtual_reserves(bonding_target: u64) -> (u64, u64) {
     match bonding_target {
-        BONDING_TARGET_SPARK => (18_750_000_000, INITIAL_VIRTUAL_TOKENS_V27), // 18.75 SOL
         BONDING_TARGET_FLAME => (37_500_000_000, INITIAL_VIRTUAL_TOKENS_V27), // 37.5 SOL
         BONDING_TARGET_TORCH => (75_000_000_000, INITIAL_VIRTUAL_TOKENS_V27), // 75 SOL
         _ => (INITIAL_VIRTUAL_SOL, INITIAL_VIRTUAL_TOKENS),                   // Legacy
@@ -103,7 +101,6 @@ pub const DEFAULT_LIQUIDATION_THRESHOLD_BPS: u16 = 6500;
 pub const DEFAULT_LIQUIDATION_BONUS_BPS: u16 =
     (RHO_MAX_BPS as u32 * BONUS_SAFETY_BPS as u32 / 10_000) as u16;
 pub const DEFAULT_LIQUIDATION_CLOSE_BPS: u16 = 5000;
-pub const DEFAULT_LENDING_UTILIZATION_CAP_BPS: u16 = 8000;
 pub const MIN_BORROW_AMOUNT: u64 = 100_000_000;
 pub const BORROW_SHARE_MULTIPLIER: u64 = 23; // Per-user cap: max borrow = lendable * (collateral / denominator) * multiplier
 // Hard ceiling on per-user borrow regardless of collateral size. Without
@@ -144,6 +141,10 @@ pub const LONG_SOL_VAULT_SEED: &[u8] = b"long_sol_vault";
 // discriminants (state.rs) — enforced by repr(u8) + explicit values there.
 pub const POSITION_SIDE_LONG: u8 = 0;
 pub const POSITION_SIDE_SHORT: u8 = 1;
+// [F-1][F-3] Per-(owner, mint) aggregate exposure PDA — makes the per-user
+// caps hold across position_index values. Owner = wallet (direct) or
+// torch_vault (via_vault).
+pub const USER_RISK_SEED: &[u8] = b"user_risk";
 pub const MIN_POOL_SOL_LENDING: u64 = 5_000_000_000;
 
 // Lending unlocks once the protocol has accumulated enough SOL fees in the

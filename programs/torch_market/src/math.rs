@@ -383,6 +383,20 @@ pub fn apply_bps(value: u64, bps: u16) -> Option<u64> {
 // Lending / short caps
 // ============================================================================
 
+// [F-2] Long-lending principal pool: physical float + outstanding receivables.
+// The physical balance (treasury_sol_vault lamports) is ALREADY net of lent
+// funds — borrowed SOL physically leaves the vault at open — so the treasury's
+// principal is the sum. Constant across normal borrow/repay (open moves B from
+// physical to lent; the sum is unchanged), grows with fees + interest, shrinks
+// ONLY on bad-debt write-off. This is the V21 translation of V20's tracked
+// `sol_balance` (docs/lending-unlock.md: "it tracks liquid_lamports +
+// total_sol_lent conceptually") — the unlock gate reads it, so the gate is
+// STICKY: once crossed it stays open unless the protocol takes a real loss.
+// Returns None on overflow (unreachable for real balances).
+pub fn calc_lending_assets(physical: u64, total_lent: u64) -> Option<u64> {
+    physical.checked_add(total_lent)
+}
+
 // Per-user borrow cap: `max_lendable × user_collateral × BORROW_SHARE_MULTIPLIER
 // / denominator`, clamped to `max_lendable × MAX_USER_BORROW_SHARE_BPS / 10000`.
 //

@@ -1,5 +1,15 @@
 # Lending Unlock (Treasury-Gated)
 
+> **[V21 update]** `sol_balance` no longer exists as a tracked field (the
+> derive-don't-track refactor). The gate now reads the same quantity derived:
+> `treasury_physical_sol(treasury_sol_vault) + treasury.total_sol_lent_to_longs`
+> (`math::calc_lending_assets`). Identical semantics to this doc: invariant
+> under borrow/repay (sticky), grows with fees + interest, decreases only on a
+> bad-debt write-off. Capacity within the gate is the physical float,
+> first-come-first-serve — no utilization cap (`lending_utilization_cap_bps`
+> was removed as dead config). Stickiness proven by Kani
+> (`verify_lending_gate_sticky_under_borrow`).
+
 Not implemented. Design captured for execution.
 
 ## Problem

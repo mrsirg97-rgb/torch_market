@@ -788,3 +788,35 @@ proptest! {
         if lo >= f as u64 { prop_assert_eq!(blo, m as u64); }
     }
 }
+
+// ============================================================================
+// [F-12] Rate-curve ordering — full range (the buy split's
+// `total_split − creator_sol` is underflow-free iff creator ≤ treasury at
+// EVERY point, not just the const-asserted endpoints; this survives a future
+// non-linear curve where endpoint checks wouldn't).
+// ============================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(CASES))]
+
+    #[test]
+    fn creator_rate_never_exceeds_treasury_rate(
+        reserves in 0u64..=BONDING_TARGET_TORCH,
+        target in prop_oneof![Just(BONDING_TARGET_FLAME), Just(BONDING_TARGET_TORCH)],
+    ) {
+        let creator = calc_creator_rate_bps(reserves, target).unwrap();
+        let treasury = calc_treasury_rate_bps(reserves, target).unwrap();
+        prop_assert!(creator <= treasury, "buy-split subtraction must never underflow");
+    }
+}
+
+// [F-13] Revival threshold coupling: the handler reads the threshold from the
+// initial-virtual-reserves table; the documented formula is 3·target/8. Pins
+// the equality so a table edit can't silently decouple them.
+#[test]
+fn revival_threshold_is_three_eighths_of_target() {
+    for target in [BONDING_TARGET_FLAME, BONDING_TARGET_TORCH] {
+        let (ivs, _) = initial_virtual_reserves(target);
+        assert_eq!(ivs, 3 * target / 8, "IVS table decoupled from 3·target/8 at {target}");
+    }
+}

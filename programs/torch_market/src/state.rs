@@ -131,7 +131,6 @@ pub struct Treasury {
     pub liquidation_threshold_bps: u16,
     pub liquidation_bonus_bps: u16,
     pub liquidation_close_bps: u16,
-    pub lending_utilization_cap_bps: u16,
     // [V21][D-10] The TWAP mark now lives in DeepPool (read at liquidation time);
     // no observation ring is stored here. See docs/twap-oracle.md.
 }
@@ -161,8 +160,7 @@ impl Treasury {
         + 2   // max_ltv_bps
         + 2   // liquidation_threshold_bps
         + 2   // liquidation_bonus_bps
-        + 2   // liquidation_close_bps
-        + 2; // lending_utilization_cap_bps
+        + 2; // liquidation_close_bps
 }
 
 #[account]
@@ -200,7 +198,13 @@ pub struct ProtocolTreasury {
     pub last_epoch_ts: i64,
     pub total_volume_current_epoch: u64,
     pub total_volume_previous_epoch: u64,
+    // Live spend-down ledger: decremented per claim, recomputed at epoch advance.
     pub distributable_amount: u64,
+    // [F-7] Immutable share base for the epoch, set once at advance_protocol_epoch.
+    // Claims compute pro-rata (and the 10% anti-monopoly cap) against THIS, not
+    // the shrinking ledger — equal-volume claimers get equal payouts regardless
+    // of claim order. `distributable_amount` still bounds the actual payout.
+    pub epoch_distributable_snapshot: u64,
     pub bump: u8,
 }
 
@@ -216,6 +220,7 @@ impl ProtocolTreasury {
         + 8   // total_volume_current_epoch
         + 8   // total_volume_previous_epoch
         + 8   // distributable_amount
+        + 8   // epoch_distributable_snapshot
         + 1; // bump
 }
 
@@ -325,4 +330,47 @@ impl Position {
         + 8   // last_slot
         + 1   // bump
         + 1; // vault_bump
+}
+
+/// [F-1][F-3] Per-(owner, mint) aggregate leverage exposure. `owner` is the
+/// economic owner of the positions — a wallet for direct positions, the
+/// `torch_vault` for via_vault positions — so the per-USER caps
+/// (`MAX_WALLET_TOKENS` for shorts, `calc_user_borrow_cap` for longs) hold
+/// across all of an owner's `position_index` values, not per position.
+/// Maintained by every leverage handler: opens add, closes/liquidations
+/// subtract (principal + bad debt). Created lazily on first open
+/// (init_if_needed), never closed — one rent payment per (owner, mint).
+///
+/// Invariant: `short_tokens_debt == Σ open short debt_amount` and
+/// `long_sol_debt == Σ open long debt_amount` over the owner's positions
+/// (litesvm `assert_user_risk` reconciles).
+///
+/// Zero-copy (`AccountLoader`) on purpose: the leverage contexts run within
+/// bytes of the SBF 4096-byte `try_accounts` stack frame (same reason
+/// `deep_pool::Pool` is Boxed in all its contexts) — a borsh `Account<UserRisk>`
+/// field deserializes onto that frame and overflows the short via_vault
+/// contexts; the loader only checks owner + discriminator at resolution time.
+/// `_padding` makes the compiler's 7 trailing alignment bytes explicit —
+/// bytemuck `Pod` (which zero_copy derives) forbids implicit padding because
+/// the struct is cast directly to/from the account bytes.
+#[account(zero_copy)]
+pub struct UserRisk {
+    pub owner: Pubkey,
+    pub mint: Pubkey,
+    pub short_tokens_debt: u64,      // Σ open short principal (tokens)
+    pub long_sol_debt: u64,          // Σ open long principal (SOL, gross)
+    pub long_collateral_tokens: u64, // Σ open long collateral (formula-cap basis)
+    pub bump: u8,
+    pub _padding: [u8; 7],
+}
+
+impl UserRisk {
+    pub const LEN: usize = 8   // discriminator
+        + 32  // owner
+        + 32  // mint
+        + 8   // short_tokens_debt
+        + 8   // long_sol_debt
+        + 8   // long_collateral_tokens
+        + 1   // bump
+        + 7; // explicit repr(C) tail padding (align 8)
 }

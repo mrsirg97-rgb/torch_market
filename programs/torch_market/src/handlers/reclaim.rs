@@ -95,5 +95,20 @@ pub fn reclaim_failed_token(ctx: Context<ReclaimFailedToken>) -> Result<()> {
         .checked_add(total_sol)
         .ok_or(TorchMarketError::MathOverflow)?;
 
+    // [lifecycle] Reclaim previously emitted nothing — the indexer's RECLAIMED
+    // status was unreachable. One event, one emit (single source of truth).
+    emit_cpi!(TokenReclaimed {
+        mint: ctx.accounts.mint.key(),
+        sol_to_protocol_treasury: total_sol,
+    });
+
     Ok(())
+}
+
+// [lifecycle] Emitted once when a failed (never-bonded, 7-day-inactive) token
+// is reclaimed: curve SOL → protocol treasury. Indexer: status → RECLAIMED.
+#[event]
+pub struct TokenReclaimed {
+    pub mint: Pubkey,
+    pub sol_to_protocol_treasury: u64,
 }

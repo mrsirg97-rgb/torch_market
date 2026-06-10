@@ -15,10 +15,10 @@ use sha2::{Digest, Sha256};
 
 use crate::constants::EVENT_IX_TAG_LE;
 use crate::contracts::{
-    BondingCurveTrade, CloseLongEvent, CloseShortEvent, DeepPoolEvent, LiquidateLongEvent,
+    BondingCompleted, BondingCurveTrade, CloseLongEvent, CloseShortEvent, DeepPoolEvent, LiquidateLongEvent,
     LiquidateShortEvent, LiquidityAdded, LiquidityRemoved, MarketCreated, MigratedToDex,
-    OpenLongEvent, OpenShortEvent, PoolCreated, RevivalContribution, SwapExecuted, TokenRevived,
-    TorchEvent, VaultSwapExecuted,
+    OpenLongEvent, OpenShortEvent, PoolCreated, RevivalContribution, SwapExecuted, TokenReclaimed,
+    TokenRevived, TorchEvent, VaultSwapExecuted,
 };
 use crate::error::DecodeError;
 
@@ -91,6 +91,8 @@ pub struct TorchDiscriminators {
     pub liquidate_long: Discriminator,
     pub revival_contribution: Discriminator,
     pub token_revived: Discriminator,
+    pub bonding_completed: Discriminator,
+    pub token_reclaimed: Discriminator,
     // Instruction (not event) discriminators for the 6 `*_via_vault` variants.
     pub via_vault_ixs: [Discriminator; 6],
 }
@@ -114,6 +116,8 @@ impl TorchDiscriminators {
             liquidate_long: event_discriminator("LiquidateLongEvent"),
             revival_contribution: event_discriminator("RevivalContribution"),
             token_revived: event_discriminator("TokenRevived"),
+            bonding_completed: event_discriminator("BondingCompleted"),
+            token_reclaimed: event_discriminator("TokenReclaimed"),
             via_vault_ixs,
         }
     }
@@ -197,6 +201,10 @@ pub fn try_decode_torch_event(
         TorchEvent::CloseLong(CloseLongEvent::deserialize(&mut payload)?)
     } else if event_disc == discs.liquidate_long {
         TorchEvent::LiquidateLong(LiquidateLongEvent::deserialize(&mut payload)?)
+    } else if event_disc == discs.bonding_completed {
+        TorchEvent::BondingCompleted(BondingCompleted::deserialize(&mut payload)?)
+    } else if event_disc == discs.token_reclaimed {
+        TorchEvent::TokenReclaimed(TokenReclaimed::deserialize(&mut payload)?)
     } else if event_disc == discs.revival_contribution {
         TorchEvent::RevivalContribution(RevivalContribution::deserialize(&mut payload)?)
     } else if event_disc == discs.token_revived {

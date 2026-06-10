@@ -32,6 +32,7 @@ fn fixed_ts() -> DateTime<Utc> {
 
 fn de_for(event: AnyEvent, slot: i64, inner: i32) -> DecodedEvent {
     DecodedEvent {
+        tx_idx: 0,
         signature: format!("sig_{slot}_{inner}"),
         inner_ix_idx: inner,
         slot,
@@ -60,6 +61,7 @@ fn b58_encodes_pubkey_array() {
 #[test]
 fn ts_falls_back_to_now_when_block_time_missing() {
     let de = DecodedEvent {
+        tx_idx: 0,
         signature: "x".into(),
         inner_ix_idx: 0,
         slot: 1,
@@ -102,8 +104,9 @@ fn ts_uses_provided_block_time() {
 #[test]
 fn tier_from_target_spark_at_10_sol() {
     const LAMPORTS: u64 = 1_000_000_000;
-    assert_eq!(tier_from_target(LAMPORTS), MarketTier::Spark);
-    assert_eq!(tier_from_target(10 * LAMPORTS), MarketTier::Spark);
+    // Spark removed: everything ≤ 100 SOL is flame.
+    assert_eq!(tier_from_target(LAMPORTS), MarketTier::Flame);
+    assert_eq!(tier_from_target(10 * LAMPORTS), MarketTier::Flame);
 }
 
 #[test]
@@ -143,7 +146,7 @@ fn new_market_empty_uri_becomes_none() {
     );
     let row = new_market(&event, &de);
     assert_eq!(row.metadata_uri, None);
-    assert_eq!(row.status, MarketStatus::Rs);
+    assert_eq!(row.status, MarketStatus::Bonding);
     assert_eq!(row.tier, MarketTier::Flame); // 30 SOL target
     assert_eq!(row.created_at_slot, 500);
     assert_eq!(row.last_activity_slot, 500);

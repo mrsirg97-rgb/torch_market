@@ -180,6 +180,11 @@ async fn walk_program(
         }
 
         let mut decoded: Vec<DecodedEvent> = Vec::new();
+        // [I-1] Per-slot transaction ordinal: the reversed signature walk is
+        // chain order, so a per-slot counter reproduces in-block position.
+        // (A slot split across page boundaries restarts its counter — rare,
+        // and the idempotent unique keys make replays safe; documented.)
+        let mut slot_ordinals: HashMap<i64, i32> = HashMap::new();
         for entry in sigs.iter().rev() {
             // Per-sig cutoff: skip entries below START_SLOT but keep paging
             // since older sigs in *next* pages could still be relevant.
@@ -191,7 +196,15 @@ async fn walk_program(
             match decode_tx(client, rpc_url, entry, program_id, kind, torch_discs, deep_pool_discs)
                 .await
             {
-                Ok(events) => decoded.extend(events),
+                Ok(events) => {
+                    let ord = slot_ordinals.entry(entry.slot as i64).or_insert(0);
+                    let idx = *ord;
+                    *ord += 1;
+                    decoded.extend(events.into_iter().map(|mut e| {
+                        e.tx_idx = idx;
+                        e
+                    }));
+                }
                 Err(e) => {
                     warn!(sig = %entry.signature, error = %e, "decode failed; skipping");
                 }
@@ -243,11 +256,13 @@ async fn apply_page(db: &PgPool, events: Vec<DecodedEvent>) -> Result<usize> {
     // also have multi-slot events in one page, so add slot as the primary
     // sort key for deterministic per-page ordering.
     let mut events = events;
+    // [I-1] chain order: slot, then in-block tx position, then inner ix.
     events.sort_by(|a, b| {
         a.slot
             .cmp(&b.slot)
-            .then(a.signature.cmp(&b.signature))
+            .then(a.tx_idx.cmp(&b.tx_idx))
             .then(a.inner_ix_idx.cmp(&b.inner_ix_idx))
+            .then(a.signature.cmp(&b.signature))
     });
 
     // Group by slot, then feed each slot's events through write_block_no_checkpoint.
@@ -476,6 +491,7 @@ async fn decode_tx(
                     };
                     if let Some(event) = decoded {
                         events.push(DecodedEvent {
+                            tx_idx: 0, // assigned by the page walk (per-slot ordinal)
                             signature: entry.signature.clone(),
                             inner_ix_idx: flat_idx,
                             slot: entry.slot as i64,

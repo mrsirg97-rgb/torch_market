@@ -28,7 +28,7 @@ async fn market_set_then_get_by_mint() {
     assert!(inserted.is_some());
     let inserted = inserted.unwrap();
     assert_eq!(inserted.mint, mint);
-    assert_eq!(inserted.status, MarketStatus::Rs);
+    assert_eq!(inserted.status, MarketStatus::Bonding);
     assert_eq!(inserted.tier, MarketTier::Flame);
 
     let fetched = market::get_by_mint(&mut tx, &mint).await.unwrap().unwrap();
@@ -133,7 +133,7 @@ async fn market_list_filters_by_status() {
     let rs_only = market::list(
         &mut tx,
         MarketFilter {
-            status: Some(MarketStatus::Rs),
+            status: Some(MarketStatus::Bonding),
             ..Default::default()
         },
     )

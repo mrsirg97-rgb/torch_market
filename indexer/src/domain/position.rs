@@ -146,7 +146,7 @@ pub mod event {
         if let Some(kind) = filter.kind {
             qb.push(" AND kind = ").push_bind(kind);
         }
-        qb.push(" ORDER BY slot DESC");
+        qb.push(" ORDER BY slot DESC, event_id DESC");
         if let Some(limit) = filter.limit {
             qb.push(" LIMIT ").push_bind(limit);
         }

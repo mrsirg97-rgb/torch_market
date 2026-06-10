@@ -6,7 +6,7 @@ import { useMwaSendTransaction } from '@/hooks/useMwaSendTransaction'
 import { PublicKey } from '@solana/web3.js'
 import { getAssociatedTokenAddressSync, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token'
 import Link from 'next/link'
-import { buildStarTransaction, buildSwapFeesToSolTransaction, getVault } from 'torchsdk'
+import { buildSwapFeesToSolTransaction, getVault } from 'torchsdk'
 import { Header, TreasuryModal, HowItWorksModal } from '@/components'
 import { useSaidVerificationBatch } from '@/hooks/useSaidVerification'
 import {
@@ -34,10 +34,6 @@ export default function TokenPage({ params }: { params: Promise<{ mint: string }
   // Panel state
   const [showHowItWorks, setShowHowItWorks] = useState(false)
   const [showTreasuryModal, setShowTreasuryModal] = useState(false)
-
-  // Star error/success
-  const [starError, setStarError] = useState<string | null>(null)
-  const [starSuccess, setStarSuccess] = useState<string | null>(null)
 
   // Treasury crank state
   const [crankLoading, setCrankLoading] = useState<'harvest' | null>(null)
@@ -112,68 +108,7 @@ export default function TokenPage({ params }: { params: Promise<{ mint: string }
     return () => clearTimeout(timeout)
   }, [token.mint])
 
-  // Star handler
-  async function handleStarToken() {
-    if (!wallet.publicKey || !token.tokenDetail || !token.mint) return
-
-    if (wallet.publicKey.toString() === token.creator) {
-      setStarError('You cannot star your own token')
-      return
-    }
-
-    token.setStarLoading(true)
-    setStarError(null)
-
-    try {
-      const { transaction } = await buildStarTransaction(connection, {
-        mint: token.mintAddress,
-        user: wallet.publicKey.toString(),
-      })
-
-      const latestBlockhash = await connection.getLatestBlockhash()
-      const signature = await sendTransaction(transaction)
-
-      try {
-        const confirmation = await connection.confirmTransaction(
-          {
-            signature,
-            blockhash: latestBlockhash.blockhash,
-            lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-          },
-          'confirmed',
-        )
-        if (confirmation.value.err) {
-          throw new Error('Transaction failed on-chain')
-        }
-      } catch (confirmErr) {
-        const msg = confirmErr instanceof Error ? confirmErr.message : ''
-        if (
-          !msg.includes('block height exceeded') &&
-          !msg.includes('TransactionExpiredBlockheightExceededError')
-        ) {
-          throw confirmErr
-        }
-        if (isDev)
-          console.warn('Confirmation timed out, but transaction may have succeeded:', signature)
-      }
-
-      await token.fetchStarRecord()
-      await token.fetchToken()
-      token.setHasStarred(true)
-      setStarSuccess('Star recorded! (0.02 SOL)')
-      setTimeout(() => setStarSuccess(null), 3000)
-    } catch (err: unknown) {
-      if (isDev) console.error('Error starring token:', err)
-      const errorMessage = err instanceof Error ? err.message : 'Failed to star token'
-      if (errorMessage.includes('already in use') || errorMessage.includes('AlreadyStarred')) {
-        setStarError('You have already starred this token')
-      } else {
-        setStarError(errorMessage)
-      }
-    } finally {
-      token.setStarLoading(false)
-    }
-  }
+  // [V21] Star feature removed from the program.
 
   function handleTradeComplete() {
     token.fetchMessages()
@@ -307,7 +242,7 @@ export default function TokenPage({ params }: { params: Promise<{ mint: string }
 
       <main className="w-full">
         <div className="w-full max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-2">
-          {/* Breadcrumb + star messages */}
+          {/* Breadcrumb */}
           <div className="flex items-center justify-between mb-2 gap-2">
             <Link
               href="/markets"
@@ -316,24 +251,6 @@ export default function TokenPage({ params }: { params: Promise<{ mint: string }
             >
               ← markets
             </Link>
-            <div className="flex items-center gap-2">
-              {starError && (
-                <div
-                  className="rounded-full px-3 py-1 text-danger text-xs"
-                  style={{ background: 'color-mix(in srgb, var(--danger) 14%, transparent)' }}
-                >
-                  {starError}
-                </div>
-              )}
-              {starSuccess && (
-                <div
-                  className="rounded-full px-3 py-1 text-success text-xs"
-                  style={{ background: 'color-mix(in srgb, var(--success) 14%, transparent)' }}
-                >
-                  {starSuccess}
-                </div>
-              )}
-            </div>
           </div>
 
           {/* Two-column main layout: MarketViewPanel left, action area right */}
@@ -350,7 +267,6 @@ export default function TokenPage({ params }: { params: Promise<{ mint: string }
                 onCopyMint={handleCopyMint}
                 onCopyCreator={handleCopyCreator}
                 copiedDev={copiedCreator}
-                onStarClick={handleStarToken}
                 walletConnected={!!wallet.publicKey}
                 isOwnToken={isOwnToken}
                 crankMsg={crankMsg}
@@ -441,7 +357,6 @@ export default function TokenPage({ params }: { params: Promise<{ mint: string }
                   vaultTokenBalance={vaultTokenBalance}
                   priceInSol={token.priceInSol}
                   treasurySolBalance={token.treasurySolBalance}
-                  utilizationCapBps={token.utilizationCapBps}
                   totalSolLent={token.totalSolLent}
                 />
               )}

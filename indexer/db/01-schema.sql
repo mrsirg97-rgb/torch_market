@@ -16,11 +16,11 @@
 -- ============================================================================
 
 DO $$ BEGIN
-    CREATE TYPE market_status AS ENUM ('RS', 'RD', 'ASN', 'MIGRATED', 'RECLAIMED');
+    CREATE TYPE market_status AS ENUM ('BONDING', 'COMPLETE', 'MIGRATED', 'RECLAIMED');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
-    CREATE TYPE market_tier AS ENUM ('spark', 'flame', 'torch');
+    CREATE TYPE market_tier AS ENUM ('flame', 'torch');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
@@ -262,6 +262,8 @@ CREATE INDEX IF NOT EXISTS positions_owner_idx
 -- seized) — that the current-state `positions` table can't retain. NULL columns are
 -- kind-specific (e.g. liquidation fields are NULL on open/close).
 CREATE TABLE IF NOT EXISTS position_events (
+    -- [I-1] serial = intra-slot chain order (single chain-ordered writer)
+    event_id                    BIGSERIAL PRIMARY KEY,
     mint                        TEXT NOT NULL REFERENCES markets(mint),
     owner                       TEXT NOT NULL,
     side                        position_side NOT NULL,

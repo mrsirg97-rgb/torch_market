@@ -26,10 +26,10 @@ import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { useMwaSendTransaction } from '@/hooks/useMwaSendTransaction'
 import {
   getLendingInfo,
-  getLoanPosition,
-  getShortPosition,
-  buildBorrowTransaction,
-  buildRepayTransaction,
+  getBorrowQuote,
+  getPosition,
+  buildOpenLongTransaction,
+  buildCloseLongTransaction,
   buildOpenShortTransaction,
   buildCloseShortTransaction,
   getVault,
@@ -37,8 +37,7 @@ import {
 } from 'torchsdk'
 import type {
   LendingInfo,
-  LoanPositionInfo,
-  ShortPositionInfo,
+  PositionInfo,
   VaultInfo,
 } from 'torchsdk'
 import { LAMPORTS_PER_SOL, TOKEN_MULTIPLIER } from '@/lib/constants'
@@ -179,7 +178,6 @@ interface MarginPanelProps {
   vaultTokenBalance?: bigint | null
   priceInSol: number
   treasurySolBalance: number
-  utilizationCapBps: number
   totalSolLent: number
 }
 
@@ -191,7 +189,6 @@ export function MarginPanel({
   vaultTokenBalance,
   priceInSol,
   treasurySolBalance,
-  utilizationCapBps,
   totalSolLent,
 }: MarginPanelProps) {
   const { connection } = useConnection()
@@ -201,8 +198,13 @@ export function MarginPanel({
 
   // ─── Data ────────────────────────────────────────────────────────────
   const [lendingInfo, setLendingInfo] = useState<LendingInfo | null>(null)
-  const [loanPosition, setLoanPosition] = useState<LoanPositionInfo | null>(null)
-  const [shortPosition, setShortPosition] = useState<ShortPositionInfo | null>(null)
+  // [V21] Depth-scaled rails for this pool — the EFFECTIVE max LTV (the depth
+  // curve, not the flat treasury ceiling) and the size cap (ρ_max · pool SOL).
+  // Pool-derived (independent of the user's input), so fetched once via a
+  // zero-collateral borrow quote; the SDK is the single source of truth.
+  const [rails, setRails] = useState<{ maxLtvBps: number; sizeCapSol: number } | null>(null)
+  const [loanPosition, setLoanPosition] = useState<PositionInfo | null>(null)
+  const [shortPosition, setShortPosition] = useState<PositionInfo | null>(null)
   const [userVault, setUserVault] = useState<VaultInfo | null>(null)
   const [useVault, setUseVault] = useState(false)
   const [walletSolBalance, setWalletSolBalance] = useState<number>(0)
@@ -232,31 +234,27 @@ export function MarginPanel({
   // Borrow side
   const collateralParsed = parseFloat(collateralAmount) || 0
   const collateralValueSol = collateralParsed * priceInSol
-  const maxLtvBps = lendingInfo?.max_ltv_bps ?? 2500
+  // [V21] Effective max LTV = the depth curve (rails), NOT the flat treasury
+  // ceiling — on a thin pool this is ~30%, not 60%. Falls back to the ceiling,
+  // then LTV_MIN, until the rails quote resolves.
+  const maxLtvBps = rails?.maxLtvBps ?? lendingInfo?.max_ltv_bps ?? 3000
+  // [V21] Rail 2 size cap: a position's SOL-debt-value ≤ ρ_max · pool depth.
+  const sizeCapSol = rails?.sizeCapSol ?? Infinity
   const liquidationThresholdBps = lendingInfo?.liquidation_threshold_bps ?? 6500
   const maxBorrowLtv = collateralValueSol * (maxLtvBps / 10000)
-  const correctAvailableSol = Math.max(
-    0,
-    (treasurySolBalance * utilizationCapBps) / 10000 - totalSolLent,
-  )
+  // [F-2] Capacity = the physical float, first-come-first-serve. The vault
+  // lamports are ALREADY net of lent SOL (it physically leaves at open), so
+  // there is no utilization multiplier and no lent subtraction.
+  const correctAvailableSol = Math.max(0, treasurySolBalance)
   const treasuryAvailableSol = lendingInfo ? correctAvailableSol : 0
-  const TOTAL_SUPPLY_TOKENS = 1_000_000_000
-  const maxLendableSol = (treasurySolBalance * utilizationCapBps) / 10000
-  const netCollateralTokens = collateralParsed * (1 - 4 / 10000)
-  const borrowMultiplier = lendingInfo?.borrow_share_multiplier ?? 23
-  const perUserFormulaCap = lendingInfo
-    ? (maxLendableSol * netCollateralTokens * borrowMultiplier) / TOTAL_SUPPLY_TOKENS
-    : 0
-  const perUserAbsoluteCap = lendingInfo
-    ? maxLendableSol * (lendingInfo.max_user_borrow_share_bps / 10000)
-    : 0
-  const perUserCapSol = lendingInfo
-    ? Math.min(perUserFormulaCap, perUserAbsoluteCap)
-    : 0
+  // [V21] The per-user formula/absolute cap is enforced on-chain only — the SDK no
+  // longer surfaces the multiplier/share constants. The estimate is bounded by the
+  // depth-curve LTV, treasury headroom, and the Rail-2 size cap; the program
+  // re-clamps by the per-user cap at open (rarely the binding constraint).
   const effectiveMaxBorrow = Math.min(
     maxBorrowLtv,
     treasuryAvailableSol,
-    perUserCapSol > 0 ? perUserCapSol : Infinity,
+    sizeCapSol, // [V21] Rail 2 size cap
   )
   const borrowParsed = parseFloat(borrowAmount) || 0
   const projectedBorrowLtvBps =
@@ -266,18 +264,29 @@ export function MarginPanel({
   const shortCollateralParsed = parseFloat(shortCollateralSol) || 0
   const shortTokensParsed = parseFloat(shortTokenAmount) || 0
   const shortDebtValueSol = shortTokensParsed * priceInSol
-  const shortMaxLtvRatio = (lendingInfo?.max_ltv_bps ?? 2500) / 10000
+  const shortMaxLtvRatio = maxLtvBps / 10000 // [V21] effective depth-curve LTV
   const projectedShortLtvBps =
     shortCollateralParsed > 0 ? (shortDebtValueSol / shortCollateralParsed) * 10000 : 0
+  // Borrow tokens up to the LTV ratio, then clamp by the size cap (debt VALUE in
+  // SOL ≤ ρ_max · pool → tokens ≤ sizeCapSol / price).
   const shortMaxBorrow =
-    shortCollateralParsed > 0 ? (shortCollateralParsed * shortMaxLtvRatio) / priceInSol : 0
+    shortCollateralParsed > 0 && priceInSol > 0
+      ? Math.min(
+          (shortCollateralParsed * shortMaxLtvRatio) / priceInSol,
+          sizeCapSol / priceInSol,
+        )
+      : 0
 
   // ─── Fetchers ───────────────────────────────────────────────────────
   const fetchLendingInfo = useCallback(async () => {
     if (!isMigrated) return
     try {
-      const info = await getLendingInfo(connection, mintAddress, lendingGateLamports)
+      const info = await getLendingInfo(connection, mintAddress)
       setLendingInfo(info)
+      // Pool-derived rails (effective depth-curve LTV + size cap). A 0-collateral
+      // quote returns both without depending on the user's input.
+      const q = await getBorrowQuote(connection, mintAddress, 0)
+      setRails({ maxLtvBps: q.max_ltv_bps, sizeCapSol: q.size_cap_sol / LAMPORTS_PER_SOL })
     } catch (err) {
       if (isDev) console.error('Error fetching lending info:', err)
     }
@@ -290,7 +299,7 @@ export function MarginPanel({
     }
     try {
       const principal = useVault && userVault ? userVault.creator : wallet.publicKey.toString()
-      const position = await getLoanPosition(connection, mintAddress, principal)
+      const position = await getPosition(connection, mintAddress, principal, 'long')
       setLoanPosition(position)
     } catch (err) {
       if (isDev) console.error('Error fetching loan position:', err)
@@ -305,7 +314,7 @@ export function MarginPanel({
     }
     try {
       const principal = useVault && userVault ? userVault.creator : wallet.publicKey.toString()
-      const position = await getShortPosition(connection, mintAddress, principal)
+      const position = await getPosition(connection, mintAddress, principal, 'short')
       setShortPosition(position)
     } catch (err) {
       if (isDev) console.error('Error fetching short position:', err)
@@ -373,11 +382,12 @@ export function MarginPanel({
     setError(null)
     setSuccess(null)
     try {
-      const { transaction } = await buildBorrowTransaction(connection, {
+      const { transaction } = await buildOpenLongTransaction(connection, {
         mint: mintAddress,
         borrower: wallet.publicKey.toString(),
-        collateral_amount: Math.floor(collateral * TOKEN_MULTIPLIER),
-        sol_to_borrow: Math.floor(solToBorrow * LAMPORTS_PER_SOL),
+        // [V21] open_long auto-clamps the borrow to collateral × depth-LTV (no
+        // sol_to_borrow knob); just post token collateral.
+        collateral: Math.floor(collateral * TOKEN_MULTIPLIER),
         vault: useVault && userVault ? userVault.creator : undefined,
       })
       const txId = await sendTransaction(transaction)
@@ -410,10 +420,15 @@ export function MarginPanel({
     setError(null)
     setSuccess(null)
     try {
-      const { transaction } = await buildRepayTransaction(connection, {
+      // [V21] close_long takes a repay FRACTION (bps) of the debt, not a SOL amount.
+      const owedSol = (loanPosition?.total_owed ?? 0) / LAMPORTS_PER_SOL
+      const fractionBps = owedSol > 0
+        ? Math.min(10000, Math.max(1, Math.round((sol / owedSol) * 10000)))
+        : 10000
+      const { transaction } = await buildCloseLongTransaction(connection, {
         mint: mintAddress,
         borrower: wallet.publicKey.toString(),
-        sol_amount: Math.floor(sol * LAMPORTS_PER_SOL),
+        repay_fraction_bps: fractionBps,
         vault: useVault && userVault ? userVault.creator : undefined,
       })
       const txId = await sendTransaction(transaction)
@@ -455,8 +470,9 @@ export function MarginPanel({
       const { transaction } = await buildOpenShortTransaction(connection, {
         mint: mintAddress,
         shorter: wallet.publicKey.toString(),
-        sol_collateral: Math.floor(sol * LAMPORTS_PER_SOL),
-        tokens_to_borrow: Math.floor(tokens * TOKEN_MULTIPLIER),
+        // [V21] open_short auto-clamps the borrow to collateral × depth-LTV (no
+        // tokens_to_borrow knob); just post SOL collateral.
+        collateral: Math.floor(sol * LAMPORTS_PER_SOL),
         vault: useVault && userVault ? userVault.creator : undefined,
       })
       const txId = await sendTransaction(transaction)
@@ -486,17 +502,23 @@ export function MarginPanel({
     setError(null)
     setSuccess(null)
     try {
+      // [V21] close_short takes a repay FRACTION (bps), not a token amount.
+      // Convert the entered token amount to a fraction of the total owed.
+      const owedDisplay = (shortPosition?.total_owed ?? 0) / TOKEN_MULTIPLIER
+      const fractionBps = owedDisplay > 0
+        ? Math.min(10000, Math.max(1, Math.round((tokens / owedDisplay) * 10000)))
+        : 10000
       const { transaction } = await buildCloseShortTransaction(connection, {
         mint: mintAddress,
         shorter: wallet.publicKey.toString(),
-        token_amount: Math.floor(tokens * TOKEN_MULTIPLIER),
+        repay_fraction_bps: fractionBps,
         vault: useVault && userVault ? userVault.creator : undefined,
       })
       const txId = await sendTransaction(transaction)
       const latest = await connection.getLatestBlockhash()
       await confirmTransactionSafe(connection, txId, latest.blockhash, latest.lastValidBlockHeight)
       setCloseTokenAmount('')
-      const totalOwed = shortPosition?.total_owed_tokens ?? 0
+      const totalOwed = shortPosition?.total_owed ?? 0
       const isFull = tokens >= totalOwed / TOKEN_MULTIPLIER - 0.0001
       setSuccess(isFull ? 'Short fully closed!' : 'Partial close successful!')
       setTimeout(() => setSuccess(null), 3000)
@@ -529,9 +551,12 @@ export function MarginPanel({
     )
   }
 
-  const lendingUnlocked = lendingInfo?.lending_unlocked ?? false
-  const gateAvailableSol = (lendingInfo?.treasury_sol_available_lamports ?? 0) / LAMPORTS_PER_SOL
-  const gateThresholdSol = (lendingInfo?.lending_unlock_threshold_lamports ?? 0) / LAMPORTS_PER_SOL
+  // [V21] LendingInfo no longer exposes the unlock fields — reconstruct the gate
+  // from the lending flag, the live treasury vault balance, and the network's
+  // gate threshold (MIN_TREASURY_SOL_FOR_LENDING via useNetwork).
+  const gateAvailableSol = (lendingInfo?.treasury_sol_vault_lamports ?? 0) / LAMPORTS_PER_SOL
+  const gateThresholdSol = lendingGateLamports / LAMPORTS_PER_SOL
+  const lendingUnlocked = (lendingInfo?.lending_enabled ?? false) && gateAvailableSol >= gateThresholdSol
 
   // ─── Render ─────────────────────────────────────────────────────────
   return (
@@ -653,7 +678,7 @@ export function MarginPanel({
           {shortCollateralParsed > 0 && shortTokensParsed > 0 && lendingInfo && (
             <LtvBar
               currentLtvBps={projectedShortLtvBps}
-              maxLtvBps={lendingInfo.max_ltv_bps}
+              maxLtvBps={maxLtvBps}
               liquidationThresholdBps={lendingInfo.liquidation_threshold_bps}
             />
           )}
@@ -717,6 +742,18 @@ export function MarginPanel({
               liquidationThresholdBps={liquidationThresholdBps}
             />
           )}
+          {rails && Number.isFinite(sizeCapSol) && collateralParsed > 0 && (
+            <div className="flex justify-between text-[10px] text-white/30 mt-1">
+              <span>size cap (25% of pool depth)</span>
+              <span
+                className={
+                  Math.abs(effectiveMaxBorrow - sizeCapSol) < 1e-6 ? 'text-accent/70' : ''
+                }
+              >
+                {sizeCapSol.toFixed(2)} SOL max
+              </span>
+            </div>
+          )}
 
           <button
             onClick={handleBorrow}
@@ -758,8 +795,8 @@ export function MarginPanel({
               expanded={expandShort}
               onToggle={() => setExpandShort((v) => !v)}
               healthLabel={shortPosition.health}
-              line1={`${(shortPosition.total_owed_tokens / TOKEN_MULTIPLIER).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${symbol} owed`}
-              line2={`${(shortPosition.sol_collateral / LAMPORTS_PER_SOL).toFixed(3)} SOL collat · LTV ${shortPosition.current_ltv_bps != null ? (shortPosition.current_ltv_bps / 100).toFixed(1) : '—'}%`}
+              line1={`${(shortPosition.total_owed / TOKEN_MULTIPLIER).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${symbol} owed`}
+              line2={`${(shortPosition.collateral_amount / LAMPORTS_PER_SOL).toFixed(3)} SOL collat · LTV ${shortPosition.current_ltv_bps != null ? (shortPosition.current_ltv_bps / 100).toFixed(1) : '—'}%`}
             >
               <FormRow
                 label={`Repay tokens (${symbol})`}
@@ -768,13 +805,13 @@ export function MarginPanel({
                 suffix={symbol}
                 onMax={() =>
                   setCloseTokenAmount(
-                    (shortPosition.total_owed_tokens / TOKEN_MULTIPLIER).toFixed(2),
+                    (shortPosition.total_owed / TOKEN_MULTIPLIER).toFixed(2),
                   )
                 }
                 presets={[25, 50, 75, 100].map((pct) => ({
                   label: pct === 100 ? 'Max' : `${pct}%`,
                   onClick: () => {
-                    const owedDisplay = shortPosition.total_owed_tokens / TOKEN_MULTIPLIER
+                    const owedDisplay = shortPosition.total_owed / TOKEN_MULTIPLIER
                     // Add 1% buffer at 100% to cover interest accrual between
                     // typing the amount and the tx landing on-chain.
                     const multiplier = pct === 100 ? 1.01 : 1

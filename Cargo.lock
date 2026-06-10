@@ -1027,7 +1027,7 @@ dependencies = [
 
 [[package]]
 name = "deep_pool"
-version = "7.0.0"
+version = "8.0.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
@@ -5602,6 +5602,7 @@ dependencies = [
  "anchor-spl",
  "bincode",
  "borsh 1.6.1",
+ "bytemuck",
  "deep_pool",
  "litesvm",
  "proptest",

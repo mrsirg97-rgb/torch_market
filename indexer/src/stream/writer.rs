@@ -153,7 +153,9 @@ pub async fn write_events_no_checkpoint(
     // since each slot's writer only needs pool_id resolution for the events
     // it actually contains.
     let mut pool_cache = HashMap::new();
-    let mut lp_supply_cache = HashMap::new();
+    // [I-5] Seed lp_supply from the DB — an empty cache made every backfilled
+    // swap-driven reserves row record lp_supply = 0 (backfill ≠ live).
+    let mut lp_supply_cache = load_lp_supply_cache(db).await?;
     let batch = BlockBatch { slot, events };
     let written =
         write_block_inner(db, &mut pool_cache, &mut lp_supply_cache, &batch, false).await?;
@@ -193,11 +195,15 @@ async fn write_block_inner(
     }
 
     // Deterministic processing order.
+    // [I-1] Chain order: tx position within the block, then inner-ix position.
+    // (Sorting by signature reordered same-block transactions arbitrarily —
+    // open→close in one block could apply close-first and skip the reconcile.)
     let mut events: Vec<&DecodedEvent> = batch.events.iter().collect();
     events.sort_by(|a, b| {
-        a.signature
-            .cmp(&b.signature)
+        a.tx_idx
+            .cmp(&b.tx_idx)
             .then(a.inner_ix_idx.cmp(&b.inner_ix_idx))
+            .then(a.signature.cmp(&b.signature))
     });
 
     // ─── Phase 1: MarketCreated ──────────────────────────────────────────
@@ -513,11 +519,42 @@ async fn write_torch_event(
             push_position_event(tx, &translate::pos_event_liquidate_long(e, de), out).await?;
         }
 
-        TorchEvent::RevivalContribution(_) | TorchEvent::TokenRevived(_) => {
-            // Revival events affect bonding curve state but don't currently
-            // have a dedicated table. Reserves snapshot updates flow through
-            // the next BondingCurveTrade after revival. Revisit if a
-            // `revivals` table is added.
+        // [lifecycle] Status transitions ride program events — the indexer
+        // never derives them (single source of truth).
+        TorchEvent::BondingCompleted(e) => {
+            market::mark_status(
+                tx,
+                &translate::b58(&e.mint),
+                MarketStatus::Complete,
+                de.slot,
+                now,
+            )
+            .await?;
+        }
+        TorchEvent::TokenReclaimed(e) => {
+            market::mark_status(
+                tx,
+                &translate::b58(&e.mint),
+                MarketStatus::Reclaimed,
+                de.slot,
+                now,
+            )
+            .await?;
+        }
+        TorchEvent::TokenRevived(e) => {
+            // Revival threshold met → trading resumes on the curve.
+            market::mark_status(
+                tx,
+                &translate::b58(&e.mint),
+                MarketStatus::Bonding,
+                de.slot,
+                now,
+            )
+            .await?;
+        }
+        TorchEvent::RevivalContribution(_) => {
+            // Contributions below the threshold mutate curve SOL only; the
+            // reserves snapshot flows through the next BondingCurveTrade.
         }
     }
     Ok(())
@@ -558,25 +595,42 @@ async fn push_position_event(
     Ok(())
 }
 
-// Build a reconciled `positions` upsert from the prior row, decrementing
-// collateral/debt by the event's deltas (clamped at 0). On full resolution the
-// position drains to zero and flips inactive. PK fields, open_fee_sol, and
-// owner_is_vault are preserved from the prior row.
+// On-chain interest mirror: `debt × rate × Δslots / (10_000 × epoch_slots)`,
+// matching torch_market::math::calc_interest at the indexer's mirrored
+// constants (INTEREST_RATE_BPS / EPOCH_DURATION_SLOTS).
+fn interest_accrued(debt: i64, last_update_slot: i64, now_slot: i64) -> i64 {
+    let slots = now_slot.saturating_sub(last_update_slot).max(0) as u128;
+    let debt = debt.max(0) as u128;
+    let interest = debt * crate::constants::INTEREST_RATE_BPS * slots
+        / (10_000 * crate::constants::EPOCH_DURATION_SLOTS);
+    i64::try_from(interest).unwrap_or(i64::MAX)
+}
+
+// Build a reconciled `positions` upsert from the prior row — the ON-CHAIN
+// mirror ([I-2] remap):
+//   debt_amount        -= principal_paid    (NOT the interest-inclusive total)
+//   vault_balance      -= vault_delta       (the live held asset; events carry it)
+//   collateral_amount   = prior              (on-chain: static record-keeping)
+//   accrued_interest    = prior + accrual(prior_debt, Δslots) − interest_paid
+// On full resolution everything drains to zero and the row flips inactive.
 fn reconcile_position(
     prior: &PositionRow,
-    collateral_delta: i64,
-    debt_delta: i64,
+    vault_delta: i64,
+    principal_paid: i64,
+    interest_paid: i64,
     fully_resolved: bool,
     health: PositionHealth,
     de: &DecodedEvent,
 ) -> NewPositionRow {
-    let (collateral_amount, debt_amount, vault_balance, is_active) = if fully_resolved {
+    let accrued_at_event = prior.accrued_interest_stored
+        + interest_accrued(prior.debt_amount, prior.last_update_slot, de.slot);
+    let (debt_amount, vault_balance, accrued, is_active) = if fully_resolved {
         (0, 0, 0, false)
     } else {
         (
-            (prior.collateral_amount - collateral_delta).max(0),
-            (prior.debt_amount - debt_delta).max(0),
-            prior.vault_balance,
+            (prior.debt_amount - principal_paid).max(0),
+            (prior.vault_balance - vault_delta).max(0),
+            (accrued_at_event - interest_paid).max(0),
             true,
         )
     };
@@ -585,11 +639,11 @@ fn reconcile_position(
         owner: prior.owner.clone(),
         side: prior.side,
         position_index: prior.position_index,
-        collateral_amount,
+        collateral_amount: prior.collateral_amount,
         debt_amount,
         open_fee_sol: prior.open_fee_sol,
         vault_balance,
-        accrued_interest_stored: 0, // interest settled on every close/liquidate
+        accrued_interest_stored: accrued,
         last_update_slot: de.slot,
         health,
         is_active,
@@ -612,12 +666,13 @@ async fn apply_close_short(
         warn!(slot = de.slot, sig = %de.signature, %mint, %owner, idx, "CloseShort for unknown position; skipping reconcile");
         return Ok(());
     };
-    // SOL collateral leaving the position = buyback spend + surplus returned.
-    let collateral_delta = (e.sol_spent_on_buyback as i64) + (e.surplus_sol_to_user as i64);
+    // Vault SOL leaving the position = buyback spend + surplus returned.
+    let vault_delta = (e.sol_spent_on_buyback as i64) + (e.surplus_sol_to_user as i64);
     let row = reconcile_position(
         &prior,
-        collateral_delta,
-        e.debt_repaid as i64,
+        vault_delta,
+        e.principal_paid as i64,
+        e.interest_paid as i64,
         e.fully_closed,
         PositionHealth::Healthy,
         de,
@@ -641,8 +696,9 @@ async fn apply_close_long(
     };
     let row = reconcile_position(
         &prior,
-        e.tokens_sold as i64,  // collateral = tokens
-        e.debt_repaid as i64,  // debt = SOL
+        e.tokens_sold as i64, // vault tokens sold off
+        e.principal_paid as i64,
+        e.interest_paid as i64,
         e.fully_closed,
         PositionHealth::Healthy,
         de,
@@ -664,12 +720,19 @@ async fn apply_liquidate_short(
         warn!(slot = de.slot, sig = %de.signature, %mint, %owner, idx, "LiquidateShort for unknown position; skipping reconcile");
         return Ok(());
     };
-    // SOL leaving = seized by liquidator + residual returned to borrower.
-    let collateral_delta = (e.sol_seized as i64) + (e.residual_sol_to_borrower as i64);
+    // Vault SOL leaving = seized by liquidator + residual returned to borrower.
+    let vault_delta = (e.sol_seized as i64) + (e.residual_sol_to_borrower as i64);
+    // The liquidate events carry the interest-inclusive cover; mirror the
+    // on-chain split (interest first, then principal).
+    let accrued_now = prior.accrued_interest_stored
+        + interest_accrued(prior.debt_amount, prior.last_update_slot, de.slot);
+    let interest_paid = (e.tokens_covered as i64).min(accrued_now);
+    let principal_paid = e.tokens_covered as i64 - interest_paid;
     let row = reconcile_position(
         &prior,
-        collateral_delta,
-        e.tokens_covered as i64,
+        vault_delta,
+        principal_paid,
+        interest_paid,
         e.fully_liquidated,
         PositionHealth::Liquidatable,
         de,
@@ -691,10 +754,15 @@ async fn apply_liquidate_long(
         warn!(slot = de.slot, sig = %de.signature, %mint, %owner, idx, "LiquidateLong for unknown position; skipping reconcile");
         return Ok(());
     };
+    let accrued_now = prior.accrued_interest_stored
+        + interest_accrued(prior.debt_amount, prior.last_update_slot, de.slot);
+    let interest_paid = (e.debt_covered as i64).min(accrued_now);
+    let principal_paid = e.debt_covered as i64 - interest_paid;
     let row = reconcile_position(
         &prior,
-        e.tokens_seized as i64, // collateral = tokens
-        e.debt_covered as i64,  // debt = SOL
+        e.tokens_seized as i64, // vault tokens seized
+        principal_paid,
+        interest_paid,
         e.fully_liquidated,
         PositionHealth::Liquidatable,
         de,

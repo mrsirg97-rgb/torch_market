@@ -230,9 +230,12 @@ export const getBorrowQuote = async (
   //    min(get_depth_max_ltv_bps(pool_sol), treasury.max_ltv_bps).
   const effectiveMaxLtvBps = Math.min(getDepthMaxLtvBps(poolSol), lending.max_ltv_bps)
   const ltvMaxSol = collateralValueSol * (effectiveMaxLtvBps / 10000)
-  // 2. Treasury lendable headroom.
-  const maxLendableSol = (lending.treasury_sol_vault_lamports * lending.utilization_cap_bps) / 10000
-  const poolAvailableSol = Math.max(0, maxLendableSol - lending.total_sol_lent_to_longs)
+  // 2. Treasury lendable headroom — the physical float is fully lendable,
+  //    first-come-first-serve. No utilization cap, and NO lent subtraction:
+  //    the vault lamports are already net of lent SOL (it physically leaves
+  //    at open). The sticky unlock gate reads physical + lent, so capacity
+  //    here can be 0 while lending stays "unlocked".
+  const poolAvailableSol = lending.treasury_sol_vault_lamports
   // 3. [V21] Rail-2 size cap: debt value ≤ ρ_max of pool SOL.
   const sizeCapSol = maxDebtValueForDepth(poolSol)
 

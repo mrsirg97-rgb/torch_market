@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { TokenData } from '@/types/token'
 import { MarginPositionEntry } from '@/hooks/useMarginPositions'
+import { LAMPORTS_PER_SOL, TOKEN_MULTIPLIER } from '@/lib/constants'
 
 interface MarginPositionsListProps {
   positions: MarginPositionEntry[]
@@ -59,12 +60,12 @@ export function MarginPositionsList({ positions, tokens, loading }: MarginPositi
                 <div className="flex items-center gap-3 mt-1 text-xs">
                   {p.loan && (
                     <span style={{ color: healthColor(p.loan.health) }}>
-                      borrow · {p.loan.total_owed.toFixed(3)} SOL
+                      borrow · {(p.loan.total_owed / LAMPORTS_PER_SOL).toFixed(3)} SOL
                     </span>
                   )}
                   {p.short && (
                     <span style={{ color: healthColor(p.short.health) }}>
-                      short · {p.short.tokens_borrowed.toFixed(0)} ${token.symbol}
+                      short · {(p.short.debt_amount / TOKEN_MULTIPLIER).toFixed(0)} ${token.symbol}
                     </span>
                   )}
                 </div>

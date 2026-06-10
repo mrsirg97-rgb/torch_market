@@ -107,3 +107,26 @@ fn bonded_token_blocks_reclaim() {
         TorchMarketError::BondingComplete
     );
 }
+
+// [lifecycle] Reclaim emits TokenReclaimed (previously emitted nothing — the
+// indexer's RECLAIMED status was unreachable).
+#[test]
+fn reclaim_emits_token_reclaimed() {
+    use crate::harness::extract_event;
+    use torch_market::handlers::reclaim::TokenReclaimed;
+
+    let mut env = Env::new();
+    let creator = env.new_funded(2 * LAMPORTS_PER_SOL);
+    let t = env.create_token(&creator, BONDING_TARGET_FLAME, false);
+    let buyer = env.new_funded(LAMPORTS_PER_SOL);
+    env.buy(&buyer, &t, 100_000_000, 0).expect("seed activity");
+    env.warp_to_slot(env.current_slot() + INACTIVITY_PERIOD_SLOTS + 1);
+
+    let payer = env.new_funded(LAMPORTS_PER_SOL);
+    env.reclaim_failed_token(&payer, &t).expect("reclaim");
+
+    let ev: TokenReclaimed = extract_event(env.last_meta.as_ref().unwrap())
+        .expect("reclaim emits TokenReclaimed");
+    assert!(crate::harness::b58_eq(&ev.mint, &t.mint));
+    assert!(ev.sol_to_protocol_treasury > 0);
+}

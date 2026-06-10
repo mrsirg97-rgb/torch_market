@@ -49,6 +49,20 @@ fn close_account(account: &AccountInfo, destination: &AccountInfo) -> Result<()>
     Ok(())
 }
 
+
+// [F-1] Borrow the UserRisk loader for mutation. A fresh init_if_needed
+// account is claimed via load_init (writes the zero-copy discriminator); an
+// existing account falls through to load_mut. Scope every borrow tightly —
+// a RefMut held across a CPI would alias the account buffer.
+fn user_risk_mut<'a, 'info>(
+    loader: &'a AccountLoader<'info, crate::state::UserRisk>,
+) -> Result<std::cell::RefMut<'a, crate::state::UserRisk>> {
+    match loader.load_init() {
+        Ok(risk) => Ok(risk),
+        Err(_) => loader.load_mut(),
+    }
+}
+
 // ============================================================================
 // [V21][D-10] TWAP mark — read from DeepPool (oracle lives there now).
 //
@@ -102,16 +116,9 @@ pub fn open_short(ctx: Context<OpenShortPosition>, args: crate::contexts::OpenPo
     // Oracle: the deep_pool swap this open triggers advances DeepPool's TWAP —
     // torch records nothing (the oracle lives there now). See docs/twap-oracle.md.
 
-    // Borrow plan at pre-swap price (D-4 step 2). The fee is SOL-denominated on
-    // the borrow value, so a 50% LTV position pays half a 100% one.
-    let desired_borrow_value = apply_bps(collateral, effective_max_ltv)
-        .ok_or(TorchMarketError::MathOverflow)?;
-    let open_fee = apply_bps(desired_borrow_value, OPEN_FEE_BPS)
-        .ok_or(TorchMarketError::MathOverflow)?;
-    let net_collateral = collateral
-        .checked_sub(open_fee)
-        .ok_or(TorchMarketError::MathOverflow)?;
-    let borrow_value_sol = apply_bps(net_collateral, effective_max_ltv)
+    // Borrow plan at pre-swap price (D-4 step 2), all clamps applied BEFORE the
+    // fee so the fee prices the capacity actually consumed (D-9 / F-5).
+    let borrow_value_sol = apply_bps(collateral, effective_max_ltv)
         .ok_or(TorchMarketError::MathOverflow)?
         // [V21] Rail 2 size cap: SOL-debt-value ≤ ρ_max of pool depth (clamp, not
         // reject — mirrors the lock/per-user caps; keeps unwind slippage bounded).
@@ -119,13 +126,38 @@ pub fn open_short(ctx: Context<OpenShortPosition>, args: crate::contexts::OpenPo
     let mut tokens_to_borrow = calc_sol_to_token_value(borrow_value_sol, pool_sol, pool_tokens)
         .ok_or(TorchMarketError::MathOverflow)?;
 
-    // Cap by physical lock balance and the per-user wallet cap (D-4 step 1).
-    // The lock ATA balance IS the lendable amount — tokens already lent have
-    // physically left it (no separate debt-counter subtraction needed).
+    // Cap by the physical lock balance and the per-user wallet cap (D-4
+    // step 1). The lock ATA balance IS the lendable amount — tokens already
+    // lent have physically left it, and the lock may drain to zero by design
+    // (closes/liquidations only pay INTO it; the real aggregate brake is pool
+    // depth — every short open drains pool SOL, shrinking rail-2 and the
+    // depth-LTV curve until PoolTooThin stops new opens).
     let lock_available = ctx.accounts.treasury_lock_token_account.amount;
-    tokens_to_borrow = tokens_to_borrow.min(lock_available).min(MAX_WALLET_TOKENS);
+    // [F-1] Per-USER wallet cap: the remaining allowance across ALL of the
+    // owner's open shorts (any position_index), not per position — without
+    // the aggregate, each new index re-granted the full 2% cap.
+    let user_short_remaining = {
+        let risk = user_risk_mut(&ctx.accounts.user_risk)?;
+        MAX_WALLET_TOKENS.saturating_sub(risk.short_tokens_debt)
+    };
+    tokens_to_borrow = tokens_to_borrow
+        .min(lock_available)
+        .min(user_short_remaining);
     require!(tokens_to_borrow > 0, TorchMarketError::ShortTooSmall);
     require!(tokens_to_borrow >= MIN_SHORT_TOKENS, TorchMarketError::ShortTooSmall);
+
+    // [F-5] Open fee on the REALIZED borrow value — the SOL value of the
+    // clamped token borrow at the pre-swap price — so a Rail-2/lock/wallet-
+    // clamped short pays in proportion to what it actually borrows, exactly
+    // like the long side's post-clamp fee. realized ≤ collateral × LTV, so
+    // the fee can never exceed the posted collateral.
+    let realized_borrow_value = calc_collateral_value(tokens_to_borrow, pool_sol, pool_tokens)
+        .ok_or(TorchMarketError::MathOverflow)?;
+    let open_fee = apply_bps(realized_borrow_value, OPEN_FEE_BPS)
+        .ok_or(TorchMarketError::MathOverflow)?;
+    let net_collateral = collateral
+        .checked_sub(open_fee)
+        .ok_or(TorchMarketError::MathOverflow)?;
 
     // ---- Transfer 1: open fee shorter → treasury_sol_vault (unified custody) ----
     system_program::transfer(
@@ -220,6 +252,19 @@ pub fn open_short(ctx: Context<OpenShortPosition>, args: crate::contexts::OpenPo
         .checked_add(1)
         .ok_or(TorchMarketError::MathOverflow)?;
 
+    // [F-1] Aggregate per-user exposure (owner/mint/bump idempotent — zeroed
+    // on a fresh init_if_needed, rewritten cheaply otherwise).
+    {
+        let mut risk = user_risk_mut(&ctx.accounts.user_risk)?;
+        risk.owner = shorter_key;
+        risk.mint = mint_key;
+        risk.bump = ctx.bumps.user_risk;
+        risk.short_tokens_debt = risk
+            .short_tokens_debt
+            .checked_add(tokens_to_borrow)
+            .ok_or(TorchMarketError::MathOverflow)?;
+    }
+
     emit_cpi!(OpenShortEvent {
         user: position.user,
         mint: mint_key,
@@ -275,15 +320,9 @@ pub fn open_short_via_vault(
     require!(depth_max_ltv > 0, TorchMarketError::PoolTooThin);
     let effective_max_ltv = depth_max_ltv.min(ctx.accounts.treasury.max_ltv_bps);
 
-    // Borrow plan at pre-swap price (identical to open_short).
-    let desired_borrow_value = apply_bps(collateral, effective_max_ltv)
-        .ok_or(TorchMarketError::MathOverflow)?;
-    let open_fee = apply_bps(desired_borrow_value, OPEN_FEE_BPS)
-        .ok_or(TorchMarketError::MathOverflow)?;
-    let net_collateral = collateral
-        .checked_sub(open_fee)
-        .ok_or(TorchMarketError::MathOverflow)?;
-    let borrow_value_sol = apply_bps(net_collateral, effective_max_ltv)
+    // Borrow plan at pre-swap price (identical to open_short): clamps first,
+    // then the fee on the REALIZED borrow value (F-4/F-5 — see open_short).
+    let borrow_value_sol = apply_bps(collateral, effective_max_ltv)
         .ok_or(TorchMarketError::MathOverflow)?
         // [V21] Rail 2 size cap: SOL-debt-value ≤ ρ_max of pool depth (clamp, not
         // reject — mirrors the lock/per-user caps; keeps unwind slippage bounded).
@@ -291,9 +330,24 @@ pub fn open_short_via_vault(
     let mut tokens_to_borrow = calc_sol_to_token_value(borrow_value_sol, pool_sol, pool_tokens)
         .ok_or(TorchMarketError::MathOverflow)?;
     let lock_available = ctx.accounts.treasury_lock_token_account.amount;
-    tokens_to_borrow = tokens_to_borrow.min(lock_available).min(MAX_WALLET_TOKENS);
+    // [F-1] Per-USER (here: per-vault) aggregate wallet cap — see open_short.
+    let user_short_remaining = {
+        let risk = user_risk_mut(&ctx.accounts.user_risk)?;
+        MAX_WALLET_TOKENS.saturating_sub(risk.short_tokens_debt)
+    };
+    tokens_to_borrow = tokens_to_borrow
+        .min(lock_available)
+        .min(user_short_remaining);
     require!(tokens_to_borrow > 0, TorchMarketError::ShortTooSmall);
     require!(tokens_to_borrow >= MIN_SHORT_TOKENS, TorchMarketError::ShortTooSmall);
+
+    let realized_borrow_value = calc_collateral_value(tokens_to_borrow, pool_sol, pool_tokens)
+        .ok_or(TorchMarketError::MathOverflow)?;
+    let open_fee = apply_bps(realized_borrow_value, OPEN_FEE_BPS)
+        .ok_or(TorchMarketError::MathOverflow)?;
+    let net_collateral = collateral
+        .checked_sub(open_fee)
+        .ok_or(TorchMarketError::MathOverflow)?;
 
     let mint_key = ctx.accounts.mint.key();
     let vault_key = ctx.accounts.torch_vault.key();
@@ -391,6 +445,18 @@ pub fn open_short_via_vault(
         .active_shorts
         .checked_add(1)
         .ok_or(TorchMarketError::MathOverflow)?;
+
+    // [F-1] Aggregate per-vault exposure.
+    {
+        let mut risk = user_risk_mut(&ctx.accounts.user_risk)?;
+        risk.owner = vault_key;
+        risk.mint = mint_key;
+        risk.bump = ctx.bumps.user_risk;
+        risk.short_tokens_debt = risk
+            .short_tokens_debt
+            .checked_add(tokens_to_borrow)
+            .ok_or(TorchMarketError::MathOverflow)?;
+    }
 
     emit_cpi!(OpenShortEvent {
         user: vault_key,
@@ -513,6 +579,17 @@ pub fn close_short(ctx: Context<CloseShortPosition>, args: crate::contexts::Clos
         },
     )?;
 
+    // [F-6] Slippage guard on BOTH partial and full close. `sol_needed` is
+    // quoted from live reserves in this same instruction, so the swap's
+    // min_out only guarantees token delivery — not the price paid. Requiring
+    // the post-buy vault balance to clear the caller's floor bounds the SOL
+    // spent on a partial close too (on a full close this balance IS the
+    // surplus paid out, so the semantic is unchanged).
+    require!(
+        ctx.accounts.position_sol_vault.lamports() >= args.min_surplus_sol_out,
+        TorchMarketError::SlippageExceeded
+    );
+
     // ---- Apply debt credit: interest first, then principal (D-5 step ~) ----
     // The buy delivers >= debt_to_repay net to the lock by construction (gross-up
     // + min_out), so we credit exactly debt_to_repay; any excess (interest overpay
@@ -535,17 +612,19 @@ pub fn close_short(ctx: Context<CloseShortPosition>, args: crate::contexts::Clos
             .checked_add(interest_paid)
             .ok_or(TorchMarketError::MathOverflow)?;
     }
+    // [F-1] Release the owner's per-user cap headroom.
+    {
+        let mut risk = user_risk_mut(&ctx.accounts.user_risk)?;
+        risk.short_tokens_debt = risk.short_tokens_debt.saturating_sub(principal_paid);
+    }
 
     // ---- Settle: surplus SOL → user; close position + vault on full close ----
     let fully_closed =
         ctx.accounts.position.debt_amount == 0 && ctx.accounts.position.accrued_interest == 0;
     let mut surplus_sol = 0u64;
     if fully_closed {
+        // (min_surplus_sol_out already enforced right after the swap — F-6.)
         surplus_sol = ctx.accounts.position_sol_vault.lamports();
-        require!(
-            surplus_sol >= args.min_surplus_sol_out,
-            TorchMarketError::SlippageExceeded
-        );
         // Drain the system-owned vault → user via SIGNED system transfer. The
         // vault is owned by the System program (bare PDA, 0 data), so this
         // program cannot debit it by direct lamport manipulation — only a
@@ -698,6 +777,12 @@ pub fn close_short_via_vault(
         },
     )?;
 
+    // [F-6] Slippage guard on BOTH partial and full close (see close_short).
+    require!(
+        ctx.accounts.position_sol_vault.lamports() >= args.min_surplus_sol_out,
+        TorchMarketError::SlippageExceeded
+    );
+
     let interest_paid = debt_to_repay.min(ctx.accounts.position.accrued_interest);
     let principal_paid = debt_to_repay - interest_paid;
     {
@@ -713,17 +798,19 @@ pub fn close_short_via_vault(
             .checked_add(interest_paid)
             .ok_or(TorchMarketError::MathOverflow)?;
     }
+    // [F-1] Release the vault's per-user cap headroom.
+    {
+        let mut risk = user_risk_mut(&ctx.accounts.user_risk)?;
+        risk.short_tokens_debt = risk.short_tokens_debt.saturating_sub(principal_paid);
+    }
 
     // ---- Settle: surplus SOL → vault_sol; rent → signer on full close ----
     let fully_closed =
         ctx.accounts.position.debt_amount == 0 && ctx.accounts.position.accrued_interest == 0;
     let mut surplus_sol = 0u64;
     if fully_closed {
+        // (min_surplus_sol_out already enforced right after the swap — F-6.)
         surplus_sol = ctx.accounts.position_sol_vault.lamports();
-        require!(
-            surplus_sol >= args.min_surplus_sol_out,
-            TorchMarketError::SlippageExceeded
-        );
         // Surplus P&L returns to the VAULT (seed-signed; the linked wallet can't
         // skim it). Draining to 0 deallocates the System-owned position vault.
         if surplus_sol > 0 {
@@ -950,6 +1037,14 @@ pub fn liquidate_short(
             .checked_add(interest_paid)
             .ok_or(TorchMarketError::MathOverflow)?;
     }
+    // [F-1] Release the owner's per-user cap headroom (repaid + written off).
+    {
+        let mut risk = user_risk_mut(&ctx.accounts.user_risk)?;
+        risk.short_tokens_debt = risk
+            .short_tokens_debt
+            .saturating_sub(principal_paid)
+            .saturating_sub(bad_debt);
+    }
 
     // ---- Full liquidation: residual vault SOL → borrower, close position+vault ----
     let fully_liquidated =
@@ -1173,6 +1268,14 @@ pub fn liquidate_short_via_vault(
             .checked_add(interest_paid)
             .ok_or(TorchMarketError::MathOverflow)?;
     }
+    // [F-1] Release the vault's per-user cap headroom (repaid + written off).
+    {
+        let mut risk = user_risk_mut(&ctx.accounts.user_risk)?;
+        risk.short_tokens_debt = risk
+            .short_tokens_debt
+            .saturating_sub(principal_paid)
+            .saturating_sub(bad_debt);
+    }
 
     // ---- Full liquidation: residual SOL → vault_sol, rent → vault_sol, close ----
     let fully_liquidated =
@@ -1231,14 +1334,22 @@ pub fn open_long(ctx: Context<OpenLongPosition>, args: crate::contexts::OpenPosi
     let collateral = args.collateral;
     require!(collateral > 0, TorchMarketError::EmptyBorrowRequest);
 
-    // ---- Lending floor + depth-band LTV (D-4 step 1) ----
-    // Available-to-lend = derived physical SOL (treasury_sol_vault lamports) minus
-    // the one tracked obligation against it: SOL already lent to longs. Collateral
-    // is per-position, never in the treasury.
-    let available_pre = treasury_physical_sol(&ctx.accounts.treasury_sol_vault)?
-        .saturating_sub(ctx.accounts.treasury.total_sol_lent_to_longs);
+    // ---- Lending unlock gate + depth-band LTV (D-4 step 1) ----
+    // [F-2] STICKY gate on the principal pool (physical float + outstanding
+    // receivables) — the V21 translation of V20's tracked `sol_balance`
+    // (docs/lending-unlock.md). Normal borrow/repay moves lamports between the
+    // two terms without changing the sum, so once the protocol has EARNED the
+    // threshold the gate stays open; only a bad-debt write-off (a real loss)
+    // re-locks it. The gate certifies meaningful lending scale; the physical
+    // float below is the first-come-first-serve capacity within it.
+    let physical_sol = treasury_physical_sol(&ctx.accounts.treasury_sol_vault)?;
+    let lending_assets = crate::math::calc_lending_assets(
+        physical_sol,
+        ctx.accounts.treasury.total_sol_lent_to_longs,
+    )
+    .ok_or(TorchMarketError::MathOverflow)?;
     require!(
-        available_pre >= MIN_TREASURY_SOL_FOR_LENDING,
+        lending_assets >= MIN_TREASURY_SOL_FOR_LENDING,
         TorchMarketError::LendingNotYetUnlocked
     );
     let (pool_sol, pool_tokens) = read_deep_pool_reserves(
@@ -1279,29 +1390,45 @@ pub fn open_long(ctx: Context<OpenLongPosition>, args: crate::contexts::OpenPosi
     let mut desired_borrow_sol = apply_bps(collateral_value_sol, effective_max_ltv)
         .ok_or(TorchMarketError::MathOverflow)?;
 
-    // Bound the borrow by BOTH caps (clamp, not reject — the UI shows the
+    // Bound the borrow by the caps (clamp, not reject — the UI shows the
     // clamped size before signing, and min_out guards the swap output). Mirrors
-    // open_short's `.min(lock).min(MAX_WALLET_TOKENS)`.
-    let max_lendable = apply_bps(available_pre, ctx.accounts.treasury.lending_utilization_cap_bps)
+    // open_short's `.min(lock_available).min(user cap)`.
+    // No utilization cap: the float is fully lendable, first-come-first-serve
+    // (full-drain by design, mirroring the short side's lock). The per-user
+    // caps below are the fairness rail, based on the principal pool.
+    let max_lendable = lending_assets;
+    let global_headroom = physical_sol;
+    // [F-1][F-3] Per-USER allowance = min(formula cap, absolute 20% cap) on the
+    // owner's AGGREGATE long debt across position_index values, minus what's
+    // already borrowed. The formula cap (calc_user_borrow_cap — scales with the
+    // owner's collateral share of total supply) is measured on aggregate
+    // collateral including this deposit; the absolute cap clamps any single
+    // owner at MAX_USER_BORROW_SHARE_BPS of lendable regardless of collateral.
+    let (prior_long_collateral, prior_long_debt) = {
+        let risk = user_risk_mut(&ctx.accounts.user_risk)?;
+        (risk.long_collateral_tokens, risk.long_sol_debt)
+    };
+    let aggregate_collateral = prior_long_collateral
+        .checked_add(net_collateral)
         .ok_or(TorchMarketError::MathOverflow)?;
-    let absolute_cap =
-        apply_bps(max_lendable, MAX_USER_BORROW_SHARE_BPS).ok_or(TorchMarketError::MathOverflow)?;
+    let user_cap =
+        crate::math::calc_user_borrow_cap(max_lendable, aggregate_collateral, TOTAL_SUPPLY)
+            .ok_or(TorchMarketError::MathOverflow)?;
+    let user_allowance = user_cap.saturating_sub(prior_long_debt);
     // Global utilization: an exhausted pool is its OWN failure (LendingCapExceeded),
     // distinct from the dust floor below — the error matches the intent. Only the
     // clamp below is silent; a tapped-out pool still rejects explicitly.
-    let global_headroom =
-        max_lendable.saturating_sub(ctx.accounts.treasury.total_sol_lent_to_longs);
     require!(
         global_headroom >= MIN_BORROW_AMOUNT,
         TorchMarketError::LendingCapExceeded
     );
     desired_borrow_sol = desired_borrow_sol
-        .min(absolute_cap)
+        .min(user_allowance)
         .min(global_headroom)
         // [V21] Rail 2 size cap: SOL-debt-value ≤ ρ_max of pool depth (clamp).
         .min(max_debt_value_for_depth(pool_sol));
-    // Dust floor: collateral too small to borrow meaningfully (distinct from the
-    // pool-exhausted case above).
+    // Dust floor: collateral too small to borrow meaningfully — or the owner's
+    // per-user allowance is exhausted (distinct from the pool-exhausted case above).
     require!(
         desired_borrow_sol >= MIN_BORROW_AMOUNT,
         TorchMarketError::BorrowTooSmall
@@ -1405,6 +1532,22 @@ pub fn open_long(ctx: Context<OpenLongPosition>, args: crate::contexts::OpenPosi
         treasury.active_longs = treasury
             .active_longs
             .checked_add(1)
+            .ok_or(TorchMarketError::MathOverflow)?;
+    }
+
+    // [F-1][F-3] Aggregate per-user exposure (owner/mint/bump idempotent).
+    {
+        let mut risk = user_risk_mut(&ctx.accounts.user_risk)?;
+        risk.owner = borrower_key;
+        risk.mint = mint_key;
+        risk.bump = ctx.bumps.user_risk;
+        risk.long_sol_debt = risk
+            .long_sol_debt
+            .checked_add(desired_borrow_sol)
+            .ok_or(TorchMarketError::MathOverflow)?;
+        risk.long_collateral_tokens = risk
+            .long_collateral_tokens
+            .checked_add(net_collateral)
             .ok_or(TorchMarketError::MathOverflow)?;
     }
 
@@ -1605,6 +1748,11 @@ pub fn close_long(ctx: Context<CloseLongPosition>, args: crate::contexts::CloseP
             .checked_add(interest_paid)
             .ok_or(TorchMarketError::MathOverflow)?;
     }
+    // [F-1] Release the owner's per-user cap headroom.
+    {
+        let mut risk = user_risk_mut(&ctx.accounts.user_risk)?;
+        risk.long_sol_debt = risk.long_sol_debt.saturating_sub(principal_paid);
+    }
 
     // ---- Full close: release collateral bookkeeping, close position + vaults ----
     let fully_closed =
@@ -1616,6 +1764,13 @@ pub fn close_long(ctx: Context<CloseLongPosition>, args: crate::contexts::CloseP
                 .total_token_collateral_locked
                 .saturating_sub(ctx.accounts.position.collateral_amount);
             treasury.active_longs = treasury.active_longs.saturating_sub(1);
+        }
+        // [F-1] Release the closed position's collateral from the formula-cap basis.
+        {
+            let mut risk = user_risk_mut(&ctx.accounts.user_risk)?;
+            risk.long_collateral_tokens = risk
+                .long_collateral_tokens
+                .saturating_sub(ctx.accounts.position.collateral_amount);
         }
         // Full close sells 100% of the vault (tokens_to_sell == vault_tokens
         // exactly at 10000 bps), so the token vault is empty here — no residual
@@ -1850,6 +2005,14 @@ pub fn liquidate_long(
             .checked_add(interest_paid)
             .ok_or(TorchMarketError::MathOverflow)?;
     }
+    // [F-1] Release the owner's per-user cap headroom (repaid + written off).
+    {
+        let mut risk = user_risk_mut(&ctx.accounts.user_risk)?;
+        risk.long_sol_debt = risk
+            .long_sol_debt
+            .saturating_sub(principal_paid)
+            .saturating_sub(bad_debt);
+    }
 
     // ---- Full liquidation: residual vault tokens → borrower, close vault + position ----
     let fully_liquidated =
@@ -1902,6 +2065,13 @@ pub fn liquidate_long(
                 .saturating_sub(ctx.accounts.position.collateral_amount);
             treasury.active_longs = treasury.active_longs.saturating_sub(1);
         }
+        // [F-1] Release the resolved position's collateral from the formula-cap basis.
+        {
+            let mut risk = user_risk_mut(&ctx.accounts.user_risk)?;
+            risk.long_collateral_tokens = risk
+                .long_collateral_tokens
+                .saturating_sub(ctx.accounts.position.collateral_amount);
+        }
         let position_ai = ctx.accounts.position.to_account_info();
         let borrower_ai = ctx.accounts.borrower.to_account_info();
         close_account(&position_ai, &borrower_ai)?;
@@ -1950,11 +2120,16 @@ pub fn open_long_via_vault(
     let collateral = args.collateral;
     require!(collateral > 0, TorchMarketError::EmptyBorrowRequest);
 
-    // ---- Lending floor + depth-band LTV (D-4 step 1) ----
-    let available_pre = treasury_physical_sol(&ctx.accounts.treasury_sol_vault)?
-        .saturating_sub(ctx.accounts.treasury.total_sol_lent_to_longs);
+    // ---- Lending unlock gate + depth-band LTV (D-4 step 1) ----
+    // [F-2] Sticky gate on the principal pool (physical + lent) — see open_long.
+    let physical_sol = treasury_physical_sol(&ctx.accounts.treasury_sol_vault)?;
+    let lending_assets = crate::math::calc_lending_assets(
+        physical_sol,
+        ctx.accounts.treasury.total_sol_lent_to_longs,
+    )
+    .ok_or(TorchMarketError::MathOverflow)?;
     require!(
-        available_pre >= MIN_TREASURY_SOL_FOR_LENDING,
+        lending_assets >= MIN_TREASURY_SOL_FOR_LENDING,
         TorchMarketError::LendingNotYetUnlocked
     );
     let (pool_sol, pool_tokens) = read_deep_pool_reserves(
@@ -1996,18 +2171,27 @@ pub fn open_long_via_vault(
     let mut desired_borrow_sol = apply_bps(collateral_value_sol, effective_max_ltv)
         .ok_or(TorchMarketError::MathOverflow)?;
 
-    let max_lendable = apply_bps(available_pre, ctx.accounts.treasury.lending_utilization_cap_bps)
+    // No utilization cap — float is FCFS capacity (see open_long).
+    let max_lendable = lending_assets;
+    let global_headroom = physical_sol;
+    // [F-1][F-3] Per-VAULT aggregate allowance — see open_long.
+    let (prior_long_collateral, prior_long_debt) = {
+        let risk = user_risk_mut(&ctx.accounts.user_risk)?;
+        (risk.long_collateral_tokens, risk.long_sol_debt)
+    };
+    let aggregate_collateral = prior_long_collateral
+        .checked_add(net_collateral)
         .ok_or(TorchMarketError::MathOverflow)?;
-    let absolute_cap =
-        apply_bps(max_lendable, MAX_USER_BORROW_SHARE_BPS).ok_or(TorchMarketError::MathOverflow)?;
-    let global_headroom =
-        max_lendable.saturating_sub(ctx.accounts.treasury.total_sol_lent_to_longs);
+    let user_cap =
+        crate::math::calc_user_borrow_cap(max_lendable, aggregate_collateral, TOTAL_SUPPLY)
+            .ok_or(TorchMarketError::MathOverflow)?;
+    let user_allowance = user_cap.saturating_sub(prior_long_debt);
     require!(
         global_headroom >= MIN_BORROW_AMOUNT,
         TorchMarketError::LendingCapExceeded
     );
     desired_borrow_sol = desired_borrow_sol
-        .min(absolute_cap)
+        .min(user_allowance)
         .min(global_headroom)
         // [V21] Rail 2 size cap: SOL-debt-value ≤ ρ_max of pool depth (clamp).
         .min(max_debt_value_for_depth(pool_sol));
@@ -2103,6 +2287,22 @@ pub fn open_long_via_vault(
         treasury.active_longs = treasury
             .active_longs
             .checked_add(1)
+            .ok_or(TorchMarketError::MathOverflow)?;
+    }
+
+    // [F-1][F-3] Aggregate per-vault exposure.
+    {
+        let mut risk = user_risk_mut(&ctx.accounts.user_risk)?;
+        risk.owner = vault_key;
+        risk.mint = mint_key;
+        risk.bump = ctx.bumps.user_risk;
+        risk.long_sol_debt = risk
+            .long_sol_debt
+            .checked_add(desired_borrow_sol)
+            .ok_or(TorchMarketError::MathOverflow)?;
+        risk.long_collateral_tokens = risk
+            .long_collateral_tokens
+            .checked_add(net_collateral)
             .ok_or(TorchMarketError::MathOverflow)?;
     }
 
@@ -2274,6 +2474,11 @@ pub fn close_long_via_vault(
             .checked_add(interest_paid)
             .ok_or(TorchMarketError::MathOverflow)?;
     }
+    // [F-1] Release the vault's per-user cap headroom.
+    {
+        let mut risk = user_risk_mut(&ctx.accounts.user_risk)?;
+        risk.long_sol_debt = risk.long_sol_debt.saturating_sub(principal_paid);
+    }
 
     // ---- Full close: release collateral bookkeeping, close vaults + position ----
     let fully_closed =
@@ -2285,6 +2490,13 @@ pub fn close_long_via_vault(
                 .total_token_collateral_locked
                 .saturating_sub(ctx.accounts.position.collateral_amount);
             treasury.active_longs = treasury.active_longs.saturating_sub(1);
+        }
+        // [F-1] Release the closed position's collateral from the formula-cap basis.
+        {
+            let mut risk = user_risk_mut(&ctx.accounts.user_risk)?;
+            risk.long_collateral_tokens = risk
+                .long_collateral_tokens
+                .saturating_sub(ctx.accounts.position.collateral_amount);
         }
         // Harvest withheld fees, then close the empty token vault → signer (rent).
         anchor_lang::solana_program::program::invoke(
@@ -2483,6 +2695,14 @@ pub fn liquidate_long_via_vault(
             .checked_add(interest_paid)
             .ok_or(TorchMarketError::MathOverflow)?;
     }
+    // [F-1] Release the vault's per-user cap headroom (repaid + written off).
+    {
+        let mut risk = user_risk_mut(&ctx.accounts.user_risk)?;
+        risk.long_sol_debt = risk
+            .long_sol_debt
+            .saturating_sub(principal_paid)
+            .saturating_sub(bad_debt);
+    }
 
     // ---- Full liquidation: residual tokens → vault ATA, rent → vault_sol, close ----
     let fully_liquidated =
@@ -2534,6 +2754,13 @@ pub fn liquidate_long_via_vault(
                 .total_token_collateral_locked
                 .saturating_sub(ctx.accounts.position.collateral_amount);
             treasury.active_longs = treasury.active_longs.saturating_sub(1);
+        }
+        // [F-1] Release the resolved position's collateral from the formula-cap basis.
+        {
+            let mut risk = user_risk_mut(&ctx.accounts.user_risk)?;
+            risk.long_collateral_tokens = risk
+                .long_collateral_tokens
+                .saturating_sub(ctx.accounts.position.collateral_amount);
         }
         // Position rent → vault_sol (the position's economic owner).
         let position_ai = ctx.accounts.position.to_account_info();

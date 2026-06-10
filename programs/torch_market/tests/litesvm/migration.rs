@@ -173,3 +173,42 @@ fn read_token_amount(env: &Env, ata: &solana_sdk::pubkey::Pubkey) -> u64 {
     let data = acct.data();
     u64::from_le_bytes(data[64..72].try_into().unwrap())
 }
+
+// [F-11] Price-match at migration is exact only up to the DOUBLE Token-2022
+// transfer fee (curve → payer → pool, 7 bps each leg): the pool opens with
+// ~0.14% fewer tokens than the exact price-match amount, i.e. ~0.14% rich in
+// SOL terms. Documented behavior — this pins the bound so a fee change or a
+// third transfer leg can't silently widen it.
+#[test]
+fn migration_price_within_double_transfer_fee_bound() {
+    let mut env = Env::new();
+    let creator = env.new_funded(2 * LAMPORTS_PER_SOL);
+    let t = env.create_token(&creator, BONDING_TARGET_FLAME, false);
+    env.bond_to_completion(&t);
+    let bc = env.get_bonding_curve(&t);
+    // Curve price at migration (virtual reserves are the pricing state).
+    let curve_price = bc.virtual_sol_reserves as f64 / bc.virtual_token_reserves as f64;
+
+    let payer = env.new_funded(2 * LAMPORTS_PER_SOL);
+    env.migrate(&t, &payer).expect("migrate");
+
+    use solana_sdk::account::ReadableAccount;
+    let pool_lamports = env.svm.get_account(&t.deep_pool).unwrap().lamports;
+    let rent = env
+        .svm
+        .get_sysvar::<solana_sdk::rent::Rent>()
+        .minimum_balance(deep_pool::Pool::LEN);
+    let pool_sol = pool_lamports - rent;
+    let pool_tokens = {
+        let acct = env.svm.get_account(&t.deep_pool_token_vault).unwrap();
+        u64::from_le_bytes(acct.data()[64..72].try_into().unwrap())
+    };
+    let pool_price = pool_sol as f64 / pool_tokens as f64;
+
+    let drift = (pool_price - curve_price) / curve_price;
+    // Two fee legs ≈ +14 bps on price; allow rounding headroom, fail at 30 bps.
+    assert!(
+        drift >= -0.0005 && drift <= 0.0030,
+        "pool opens within the double-transfer-fee bound of the curve price (drift={drift})"
+    );
+}

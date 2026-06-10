@@ -48,7 +48,7 @@ pub async fn list(
     if let Some(before) = filter.before {
         qb.push(" AND created_at < ").push_bind(before);
     }
-    qb.push(" ORDER BY slot DESC, signature DESC, inner_ix_idx DESC");
+    qb.push(" ORDER BY slot DESC, message_id DESC");
     if let Some(limit) = filter.limit {
         qb.push(" LIMIT ").push_bind(limit);
     }

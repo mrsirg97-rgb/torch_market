@@ -1,74 +1,70 @@
-# Torch Market — V20.0.0 Architecture
+# Torch Market — V21 Architecture
 
-Every token launches with its own margin market. One Anchor program, 40 instructions, 13 account types, no external dependencies beyond DeepPool (also in-house) and the Token-2022 program.
+Every token launches with its own closed-loop leveraged market. One Anchor program, 36 instructions, 11 account types, no external dependencies beyond DeepPool (also in-house) and the Token-2022 program.
 
-**Program ID:** `E5b4rBqtS5jRvjHcYZ3ZSNo2sdSPJtauQKkEacKmmjqG` (V20 torch_next, current)
+**Program ID:** `E5b4rBqtS5jRvjHcYZ3ZSNo2sdSPJtauQKkEacKmmjqG` (V21, current)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                          TORCH MARKET v20.0.0                            │
+│                          TORCH MARKET v21                               │
 ├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  PROTOCOL LAYER                                                          │
+│                                                                         │
+│  PROTOCOL LAYER                                                         │
 │  ┌──────────────┐  ┌────────────────────────────────────┐               │
 │  │ GlobalConfig │  │ ProtocolTreasury                   │               │
-│  │ (admin,      │  │ (0.5% fees, epoch rewards, dev    │               │
+│  │ (admin,      │  │ (0.5% fees, epoch rewards, dev      │              │
 │  │  settings)   │  │  wallet 50% split)                 │               │
 │  └──────────────┘  └────────────────────────────────────┘               │
-│                                                                          │
-│  PER-TOKEN LAYER                                                         │
-│                                                                          │
+│                                                                         │
+│  PER-TOKEN LAYER                                                        │
 │  ┌──────────────┐    ┌──────────────────┐    ┌──────────────────┐       │
 │  │ Token-2022   │───▶│ BondingCurve     │───▶│ Treasury         │       │
-│  │ Mint         │    │ (const product,  │    │ (SOL + lending + │       │
-│  │ + 0.07% fee  │    │  100 / 200 SOL   │    │  shorts config)  │       │
-│  │ + metadata   │    │  tier targets)   │    └────────┬─────────┘       │
-│  └──────────────┘    └────────┬─────────┘             │                 │
+│  │ Mint         │    │ (const product,  │    │ (long + short    │       │
+│  │ + 0.07% fee  │    │  100 / 200 SOL   │    │  exposure +      │       │
+│  │ + metadata   │    │  tier targets)   │    │  lending config) │       │
+│  └──────────────┘    └────────┬─────────┘    └────────┬─────────┘       │
 │                               │                       │                 │
 │                               ▼                       │                 │
 │                      ┌──────────────────┐             │                 │
 │                      │ DeepPool CPMM    │◀────────────┘                 │
-│                      │ (post-migration  │                                │
-│                      │  liquidity, no   │                                │
-│                      │  WSOL wrapping)  │                                │
-│                      └────────┬─────────┘                                │
-│                               │                                          │
-│         ┌─────────────────────┼─────────────────────┐                    │
-│         ▼                     ▼                     ▼                    │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                │
-│  │ LoanPosition │    │ ShortPosition│    │ TreasuryLock │                │
-│  │ (borrow SOL  │    │ (borrow      │    │ (300M tokens │                │
-│  │  vs tokens)  │    │  tokens vs   │    │  locked at   │                │
-│  │              │    │  SOL)        │    │  creation)   │                │
-│  └──────────────┘    └──────────────┘    └──────────────┘                │
-│                                                                          │
-│  USER LAYER                                                              │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                    │
-│  │ UserPosition │  │ UserStats    │  │ StarRecord   │                    │
-│  │ (per-token)  │  │ (platform-   │  │ (one star    │                    │
-│  │              │  │  wide volume)│  │  per pair)   │                    │
-│  └──────────────┘  └──────────────┘  └──────────────┘                    │
-│                                                                          │
-│  VAULT LAYER (agent custody)                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────────┐                  │
-│  │ TorchVault   │  │ VaultWallet- │  │ TorchVaultSol  │                  │
-│  │ (state + SOL │  │ Link         │  │ (system-owned, │                  │
-│  │  per creator)│  │ (reverse map)│  │  buy-path SOL  │                  │
-│  │              │  │              │  │  hop, ephemeral│                  │
-│  └──────────────┘  └──────────────┘  └────────────────┘                  │
-│                                                                          │
+│                      │ (post-migration  │                               │
+│                      │  liquidity +     │                               │
+│                      │  keeperless TWAP)│                               │
+│                      └────────┬─────────┘                               │
+│                               │                                         │
+│         ┌─────────────────────┼─────────────────────┐                   │
+│         ▼                     ▼                     ▼                   │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐               │
+│  │ Position     │    │ Position     │    │ TreasuryLock │               │
+│  │ (unified;    │    │ vaults       │    │ (300M tokens │               │
+│  │  Long/Short  │    │ (per-pos     │    │  locked =    │               │
+│  │  side)       │    │  custody)    │    │  short pool) │               │
+│  └──────────────┘    └──────────────┘    └──────────────┘               │
+│                                                                         │
+│  USER LAYER                                                             │
+│  ┌──────────────┐  ┌──────────────┐                                     │
+│  │ UserPosition │  │ UserStats    │                                     │
+│  │ (spot buys)  │  │ (platform-   │                                     │
+│  │              │  │  wide volume)│                                     │
+│  └──────────────┘  └──────────────┘                                     │
+│                                                                         │
+│  VAULT LAYER (agent custody)                                            │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────┐                 │
+│  │ TorchVault   │  │ VaultWallet- │  │ TorchVaultSol  │                 │
+│  │ (state + SOL │  │ Link         │  │ (system-owned, │                 │
+│  │  per creator)│  │ (reverse map)│  │  buy-path SOL  │                 │
+│  │              │  │              │  │  hop, ephemeral│                 │
+│  └──────────────┘  └──────────────┘  └────────────────┘                 │
+│                                                                         │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  HANDLERS                                                                │
-│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐      │
-│  │ admin  │ │ token  │ │ market │ │treasury│ │migration│ │rewards │      │
-│  └────────┘ └────────┘ └────────┘ └────────┘ └────────┘ └────────┘      │
-│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐      │
-│  │reclaim │ │revival │ │protocol│ │lending │ │ short  │ │ vault  │      │
-│  │        │ │        │ │treasury│ │        │ │        │ │        │      │
-│  └────────┘ └────────┘ └────────┘ └────────┘ └────────┘ └────────┘      │
-│  ┌────────┐                                                              │
-│  │  swap  │  (vault-routed DeepPool buys/sells)                          │
-│  └────────┘                                                              │
+│  HANDLERS                                                               │
+│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌─────────┐ ┌────────┐     │
+│  │ admin  │ │ token  │ │ market │ │treasury│ │migration│ │reclaim │     │
+│  └────────┘ └────────┘ └────────┘ └────────┘ └─────────┘ └────────┘     │
+│  ┌────────┐ ┌────────┐ ┌──────────┐ ┌────────┐ ┌────────┐               │
+│  │revival │ │protocol│ │ leverage │ │ vault  │ │  swap  │               │
+│  │        │ │treasury│ │long+short│ │        │ │        │               │
+│  └────────┘ └────────┘ └──────────┘ └────────┘ └────────┘               │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -76,11 +72,11 @@ Every token launches with its own margin market. One Anchor program, 40 instruct
 
 ## Overview
 
-Torch turns every token into a self-contained financial system. A token launches with a bonding curve, graduates to a DeepPool CPMM, and immediately gets margin lending + short selling — both backed by real on-chain reserves, no oracle, no governance. The 300M-token treasury lock created at launch is the literal short pool; the SOL accumulated from transfer fees + bonding splits is the literal lending pool.
+Torch turns every token into a self-contained financial system. A token launches with a bonding curve, graduates to a DeepPool CPMM, and immediately gets closed-loop leverage — leveraged longs and shorts, both backed by real on-chain reserves, no external oracle, no governance. The 300M-token treasury lock created at launch is the literal short pool; the SOL accumulated from transfer fees + bonding splits is the literal long-lending pool. Every leveraged position is protocol-custodied in a per-position vault until the user closes — borrowed capital never reaches a wallet (see [v21-closed-loop-leverage.md](./v21-closed-loop-leverage.md)).
 
-Four phases per token: **Bonding → Migration → Trading → Margin**. Each phase builds the next.
+Four phases per token: **Bonding → Migration → Trading → Leverage**. Each phase builds the next.
 
-V20 replaces the Raydium CPMM dependency with DeepPool (in-house, formally verified). All WSOL handling is gone — DeepPool holds native SOL on the pool PDA. The migration handler dropped from ~400 lines to ~100. See [deeppool.md](./deeppool.md) for the integration detail.
+Torch's CPMM is DeepPool (in-house, formally verified) — no Raydium, no WSOL: DeepPool holds native SOL on the pool PDA, and the migration handler is ~100 lines. As of V21, DeepPool also self-publishes the keeperless TWAP mark torch's liquidations read (see [twap-oracle.md](./twap-oracle.md)). See [deeppool.md](./deeppool.md) for the integration detail.
 
 ---
 
@@ -89,9 +85,9 @@ V20 replaces the Raydium CPMM dependency with DeepPool (in-house, formally verif
 | Phase | Trigger | What activates |
 |---|---|---|
 | **Bonding** | `create_token` | Constant-product curve: 700M tokens sellable, 300M locked, 100 SOL (Flame) or 200 SOL (Torch) graduation target |
-| **Migration** | `fund_migration_sol` + `migrate_to_dex` (permissionless after target reached) | DeepPool pool created with bonded SOL + remaining tokens. 100% of LP burned to pool PDA. Mint/freeze/transfer-fee authorities revoked. |
+| **Migration** | `migrate_to_dex` (permissionless after target reached) | DeepPool pool created with bonded SOL + remaining tokens. 100% of LP burned to pool PDA. Mint/freeze/transfer-fee authorities revoked. |
 | **Trading** | Post-migration | DeepPool swap as canonical price. 0.07% Token-2022 transfer fee on every transfer; permissionless `harvest_fees` + `swap_fees_to_sol` recycle into the treasury |
-| **Margin** | Auto-enabled at `create_token` (both longs and shorts) | Treasury SOL is lending pool. 300M `TreasuryLock` tokens are short pool. Depth-scaled rails: concave max-LTV curve (30-60%), 25%-of-pool size cap, 65% liquidation threshold, derived 32.5% bonus, 1.5%/epoch interest, keeperless TWAP mark `[V21]` |
+| **Leverage** | Auto-enabled at `create_token` (longs + shorts) | Closed-loop leveraged markets — every position is protocol-custodied (per-position vault), opening and closing atomically through DeepPool. Treasury SOL backs longs; the 300M `TreasuryLock` backs shorts. Depth-scaled rails: concave max-LTV curve (30-60%), 25%-of-pool size cap, 65% liquidation threshold, distress-scaled 32.5% bonus ceiling, 1.5%/epoch interest, keeperless DeepPool TWAP mark |
 
 ---
 
@@ -99,37 +95,35 @@ V20 replaces the Raydium CPMM dependency with DeepPool (in-house, formally verif
 
 ```
 programs/torch_market/src/
-├── lib.rs               # 30 instruction entry points
+├── lib.rs               # 36 instruction entry points
 ├── handlers/            # Business logic per instruction domain
 │   ├── admin.rs         # initialize, update_dev_wallet
 │   ├── token.rs         # create_token (Token-2022 + treasury_lock + auto-enable shorts)
 │   ├── market.rs        # buy, sell (curve trading, with vault routing)
-│   ├── migration.rs     # fund_migration_sol, migrate_to_dex (DeepPool create_pool CPI)
+│   ├── migration.rs     # migrate_to_dex (DeepPool create_pool CPI)
 │   ├── treasury.rs      # harvest_fees, swap_fees_to_sol (DeepPool swap CPI)
-│   ├── rewards.rs       # star_token
 │   ├── reclaim.rs       # reclaim_failed_token (7-day inactivity)
 │   ├── revival.rs       # contribute_revival
 │   ├── protocol_treasury.rs  # initialize / advance_epoch / claim_protocol_rewards
-│   ├── lending.rs       # borrow, repay, liquidate
-│   ├── short.rs         # open_short, close_short, liquidate_short (+ vault variants)
+│   ├── leverage.rs     # open/close/liquidate × {long, short} + via_vault variants (unified Position)
 │   ├── vault.rs         # create_vault, deposit, withdraw, link/unlink_wallet, transfer_authority, withdraw_tokens
 │   └── swap.rs          # vault_swap (vault-routed DeepPool buy/sell)
 ├── contexts.rs          # Anchor #[derive(Accounts)] for every instruction
-├── state.rs             # 13 #[account] types
+├── state.rs             # 10 #[account] types
 ├── constants.rs         # Protocol parameters and PDA seeds
 ├── errors.rs            # Custom error variants
 ├── math.rs              # Pure arithmetic (single source of truth for fees, curve, lending, shorts, accrual). Kani proofs import directly from here.
 ├── migration.rs         # Migration handler implementation (DeepPool CPI flow)
 ├── pool_validation.rs   # DeepPool PDA derivation + reserve reading + depth-band LTV helpers
 ├── token_2022_utils.rs  # Token-2022 transfer-fee + metadata extension helpers
-└── kani_proofs.rs       # 84 formal verification harnesses (cfg(kani))
+└── kani_proofs.rs       # 97 formal verification harnesses (cfg(kani))
 ```
 
 ---
 
 ## On-Chain Accounts
 
-13 `#[account]` types. One additional system-owned PDA (`TorchVaultSol`) has no data layout — it's referenced by seeds only.
+14 `#[account]` types. One additional system-owned PDA (`TorchVaultSol`) has no data layout — it's referenced by seeds only.
 
 ### GlobalConfig
 
@@ -178,38 +172,37 @@ Per-token curve state. Created at `create_token`.
 
 ### Treasury
 
-Per-token treasury: SOL balance, lending state, shorts state, baseline for ratio gating. The single account that holds per-token margin parameters.
+Per-token treasury: lending/short exposure counters, risk parameters, and the baseline for ratio gating. Holds **no** open-position assets — collateral for both sides lives in per-position vaults (D-2/D-8); the treasury tracks only aggregate exposure for the sticky lending gate + per-user caps. Treasury SOL is **derived** from the System-owned `treasury_sol_vault` lamports (no tracked `sol_balance` field — single source of truth, can't drift). The TWAP observation ring that used to live here is gone — the mark now lives in DeepPool (see [twap-oracle.md](./twap-oracle.md)).
 
 | Field | Type | Description |
 |---|---|---|
 | bonding_curve | Pubkey | Back-reference |
 | mint | Pubkey | Token mint |
-| sol_balance | u64 | SOL available for lending + payouts |
 | is_community_token | bool | `true` = 100% of fees to treasury (creator share = 0); `false` = 85/15 treasury/creator |
-| short_collateral_reserved | u64 | SOL reserved by active shorts (excluded from available-to-lend) |
 | last_buyback_slot | u64 | For sell-cycle cooldown |
 | harvested_fees | u64 | Cumulative SOL from transfer-fee harvest |
 | bump | u8 | |
 | baseline_sol_reserves | u64 | Pool SOL at migration (ratio-gate baseline) |
 | baseline_token_reserves | u64 | Pool tokens at migration |
-| short_selling_enabled | bool | Set true by `create_token` at mint creation. Always on. |
-| min_buyback_interval_slots | u64 | Cooldown between swap_fees_to_sol calls |
+| short_selling_enabled | bool | Set true by `create_token`. Always on. |
+| min_buyback_interval_slots | u64 | Cooldown between `swap_fees_to_sol` calls |
 | baseline_initialized | bool | Set true at migration |
-| total_stars | u64 | Stars received |
-| star_sol_balance | u64 | SOL from stars |
-| creator_paid_out | bool | One-time creator payout triggered |
-| **Lending state** | | |
-| total_sol_lent | u64 | SOL currently lent (longs) |
-| total_collateral_locked | u64 | Tokens held as long collateral |
-| active_loans | u64 | Open `LoanPosition` count |
-| total_interest_collected | u64 | Cumulative interest paid by longs |
+| **Shorts (token debt)** | | |
+| total_tokens_lent | u64 | Aggregate gross token debt across open shorts |
+| active_shorts | u64 | Open short count |
+| short_interest_collected | u64 | Accrued short interest revenue (token-denom) |
+| **Longs (SOL debt)** | | |
+| total_sol_lent_to_longs | u64 | Aggregate gross SOL debt across open longs |
+| active_longs | u64 | Open long count |
+| long_interest_collected | u64 | Accrued long interest revenue (SOL-denom) |
+| total_token_collateral_locked | u64 | Aggregate token collateral across open longs |
+| **Risk parameters** | | |
 | lending_enabled | bool | Auto-enabled at creation |
-| interest_rate_bps | u16 | Long interest, default 150 (1.5%/epoch) `[V21]` |
-| max_ltv_bps | u16 | Default 6000 (60%) ceiling — effective LTV is `min(get_depth_max_ltv_bps(pool_sol), this)`; seeded to the curve asymptote so it rarely binds `[V21]` |
+| interest_rate_bps | u16 | Default 150 (1.5%/epoch) |
+| max_ltv_bps | u16 | Default 6000 (60%) ceiling — effective LTV is `min(get_depth_max_ltv_bps(pool_sol), this)`; seeded to the curve asymptote so it rarely binds |
 | liquidation_threshold_bps | u16 | Default 6500 (65%) |
-| liquidation_bonus_bps | u16 | Default 3250 (32.5%) — derived `1.3·ρ_max`; the ramp ceiling `[V21]` |
-| liquidation_close_bps | u16 | Default 5000 (50% partial close cap) |
-| lending_utilization_cap_bps | u16 | Default 8000 (80% of treasury SOL is lendable) |
+| liquidation_bonus_bps | u16 | Default 3250 (32.5%) — derived `1.3·ρ_max`; the distress-ramp ceiling |
+| liquidation_close_bps | u16 | Default 5000 (50% partial-close cap) |
 
 **Seeds:** `["treasury", mint]`
 
@@ -225,7 +218,6 @@ Per-user, per-token position on the bonding curve (pre-migration trading record)
 | bonding_curve | Pubkey | Reference |
 | total_purchased | u64 | Gross tokens received from buys |
 | tokens_received | u64 | Net after any fees |
-| tokens_burned | u64 | (Legacy field; always 0 in V20 — vote vault was removed) |
 | total_sol_spent | u64 | SOL spent across all buys |
 | bump | u8 | |
 
@@ -252,21 +244,6 @@ Per-user platform-wide volume tracking, drives epoch reward eligibility.
 
 ---
 
-### StarRecord
-
-Idempotent star marker — one per (user, mint) pair.
-
-| Field | Type | Description |
-|---|---|---|
-| user | Pubkey | User who starred |
-| mint | Pubkey | Starred token |
-| starred_at_slot | u64 | Slot of star |
-| bump | u8 | |
-
-**Seeds:** `["star_record", user, mint]`
-
----
-
 ### ProtocolTreasury
 
 Singleton. Accumulates 0.5% protocol fees and reclaimed-token SOL; distributes via epoch claims.
@@ -282,62 +259,53 @@ Singleton. Accumulates 0.5% protocol fees and reclaimed-token SOL; distributes v
 | last_epoch_ts | i64 | Unix timestamp of last `advance_protocol_epoch` |
 | total_volume_current_epoch | u64 | Aggregate trading volume current epoch |
 | total_volume_previous_epoch | u64 | Aggregate volume of just-closed epoch (claim denominator) |
-| distributable_amount | u64 | Current claimable pool |
+| distributable_amount | u64 | Live spend-down ledger (decremented per claim) |
+| epoch_distributable_snapshot | u64 | [F-7] Frozen share base for the epoch — pro-rata shares + the 10% cap compute against this, so payouts are order-independent |
 | bump | u8 | |
 
 **Seeds:** `["protocol_treasury_v11"]`
 
 ---
 
-### LoanPosition
+### Position
 
-Per-user, per-token long position. SOL borrowed against token collateral.
+Unified leveraged position (D-3) — **one** account shape for both sides, distinguished by a `side` discriminant. Long and short share lifecycle, account layout, math, and liquidation; only the held/borrowed asset types mirror. The held asset is **not** a field — it IS the per-position vault balance (`position_sol_vault.lamports()` for shorts, `position_token_vault.amount` for longs), read from the vault, not tracked (derived state over tracked state makes the math unfalsifiable).
 
 | Field | Type | Description |
 |---|---|---|
-| user | Pubkey | Borrower |
+| user | Pubkey | Position owner |
 | mint | Pubkey | Token |
-| collateral_amount | u64 | Tokens locked |
-| borrowed_amount | u64 | SOL principal owed |
-| accrued_interest | u64 | Interest since `last_update_slot` |
-| last_update_slot | u64 | Last accrual slot (advances on every `accrue_interest` call, including zero-debt path — see `verify_interest_accrual_slot_advance`) |
+| side | PositionSide | `Long` (0) or `Short` (1) |
+| position_index | u32 | Allows multiple positions per `(user, mint, side)` — DCA / scaled entries |
+| collateral_amount | u64 | Initial deposit (record-keeping only) |
+| debt_amount | u64 | Owed asset: tokens for short, SOL (gross) for long |
+| accrued_interest | u64 | Interest since `last_slot`, in debt-asset denom |
+| last_slot | u64 | Last accrual slot (advances on every accrual, including the zero-debt early-return path) |
 | bump | u8 | |
+| vault_bump | u8 | Bump of the position's SOL vault PDA |
 
-**Seeds:** `["loan", mint, user]`
+**Seeds:** `["position", user, mint, side, position_index]` — vault-owned positions (via `TorchVault`) seed off `torch_vault` in place of `user`.
+
+**Per-position vaults:** a short's `position_sol_vault` PDA (`["short_vault", user, mint, position_index]`) holds collateral + sale-proceeds SOL; a long's `position_token_vault` (program-owned Token-2022 ATA) holds collateral + bought tokens. The vault balance *is* the held asset — there is no tracked `held_amount`.
 
 ---
 
-### ShortPosition
+### UserRisk
 
-Per-user, per-token short position. Tokens borrowed against SOL collateral.
-
-| Field | Type | Description |
-|---|---|---|
-| user | Pubkey | Shorter |
-| mint | Pubkey | Token |
-| sol_collateral | u64 | SOL posted (held in Treasury) |
-| tokens_borrowed | u64 | Tokens owed |
-| accrued_interest | u64 | Interest in token terms |
-| last_update_slot | u64 | Last accrual slot (same invariant as LoanPosition) |
-| bump | u8 | |
-
-**Seeds:** `["short", mint, user]`
-
----
-
-### ShortConfig
-
-Per-token short market aggregate state. Holds no SOL; purely counters.
+Per-(owner, mint) aggregate leverage exposure — makes the per-user caps hold across `position_index` values (without it, each new index re-granted the full allowance). `owner` is the wallet for direct positions and the `torch_vault` PDA for via_vault positions. Created lazily on the first open (`init_if_needed`), never closed. **Zero-copy** (`AccountLoader`): the leverage contexts run within bytes of the SBF 4096-byte `try_accounts` frame, and a borsh `Account` here overflows the via_vault contexts.
 
 | Field | Type | Description |
 |---|---|---|
+| owner | Pubkey | Wallet (direct) or TorchVault PDA (via_vault) |
 | mint | Pubkey | Token |
-| total_tokens_lent | u64 | Tokens currently borrowed by all shorts |
-| active_positions | u64 | Open short count |
-| total_interest_collected | u64 | Cumulative interest collected (tokens) |
-| bump | u8 | |
+| short_tokens_debt | u64 | Σ open short principal — capped at `MAX_WALLET_TOKENS` |
+| long_sol_debt | u64 | Σ open long principal (gross SOL) — capped at `min(formula, 20%)` |
+| long_collateral_tokens | u64 | Σ open long collateral (formula-cap basis) |
+| bump | u8 | + 7 bytes explicit repr(C) padding |
 
-**Seeds:** `["short_config", mint]`
+**Seeds:** `["user_risk", owner, mint]`
+
+**Invariant:** the debt fields equal the sums over the owner's open positions — opens add; closes/liquidations subtract principal + bad debt (litesvm `assert_user_risk` reconciles). Replaced `bonding_curve` in the leverage contexts (its migrated/!reclaimed checks moved to `treasury.baseline_initialized`), so net accounts-per-leverage-tx is unchanged.
 
 ---
 
@@ -375,7 +343,7 @@ Per-creator full-custody vault for agent interaction. Holds SOL and owns Token-2
 
 **Seeds:** `["torch_vault", creator]`
 
-**Balance invariant:** `sol_balance = total_deposited + total_received - total_withdrawn - total_spent`
+**Balance invariant:** the DERIVED balance (`vault_sol` lamports − rent; there is no `sol_balance` field) `= total_deposited + total_received − total_withdrawn − total_spent` — executable as litesvm `vault_derived_balance_matches_lifetime_totals`
 
 ---
 
@@ -404,7 +372,7 @@ System-owned companion to TorchVault. 0 bytes of data. Used only during `vault_s
 
 ## Instructions
 
-40 instructions across 7 domains. Every user-funded operation has two non-Optional context variants: a wallet path (`buy`, `borrow`, etc.) where the signer funds from their own SOL/ATA, and a `_via_vault` path (`buy_via_vault`, `borrow_via_vault`, etc.) where a linked `TorchVault` funds the operation. The split eliminates the V19 `Option<>` vault-triple pattern, removing all `as_ref().unwrap()` panic surface and moving all defense-in-depth + arg-validation checks to account-resolution time.
+36 instructions across 10 domains. Every user-funded operation has two non-Optional context variants: a wallet path (`buy`, `open_long`, etc.) where the signer funds from their own SOL/ATA, and a `_via_vault` path (`buy_via_vault`, `open_long_via_vault`, etc.) where a linked `TorchVault` funds the operation. The split eliminates the V19 `Option<>` vault-triple pattern, removing all `as_ref().unwrap()` panic surface and moving all defense-in-depth + arg-validation checks to account-resolution time.
 
 ### Admin (2)
 
@@ -430,12 +398,11 @@ System-owned companion to TorchVault. 0 bytes of data. Used only during `vault_s
 | `sell` | Sell tokens back to curve. No sell fee. Per-buyer position tracked. |
 | `sell_via_vault` | Same as `sell`, tokens sourced from vault ATA, SOL proceeds to vault. |
 
-### Migration (2)
+### Migration (1)
 
 | Instruction | Description |
 |---|---|
-| `fund_migration_sol` | Direct-lamport transfer of bonded SOL from BondingCurve PDA to payer. Separated from migrate_to_dex to isolate lamport manipulation from CPIs. |
-| `migrate_to_dex` | Permissionless. CPI `deep_pool::create_pool` with `torch_config` PDA as signer. Burn 100% of LP. Revoke mint + freeze + transfer-fee-config authorities. Record `baseline_sol_reserves` + `baseline_token_reserves`. Reimburse payer migration cost from treasury. |
+| `migrate_to_dex` | Permissionless. Moves bonded SOL out of the BondingCurve PDA, then CPI `deep_pool::create_pool` with `torch_config` PDA as signer. Burn 100% of LP. Revoke mint + freeze + transfer-fee-config authorities. Record `baseline_sol_reserves` + `baseline_token_reserves`. Reimburse payer migration cost from treasury. |
 
 ### Treasury (2)
 
@@ -444,15 +411,13 @@ System-owned companion to TorchVault. 0 bytes of data. Used only during `vault_s
 | `harvest_fees` | Permissionless. Harvest accumulated Token-2022 withheld fees from arbitrary source accounts (passed via `remaining_accounts`) into the treasury's ATA. |
 | `swap_fees_to_sol` | Permissionless. Ratio-gated: only sells when DeepPool price is ≥120% of migration baseline. Sells 15% of held tokens (or 100% if balance ≤ 1M tokens). DeepPool swap CPI (treasury signs as `sol_source`). Creator fee split (15%) carved off the SOL received for creator tokens. |
 
-### Rewards (6)
+### Protocol Rewards (4)
 
 | Instruction | Description |
 |---|---|
-| `star_token` | One-time star per (user, mint) for 0.02 SOL. Goes to `star_sol_balance`. |
-| `star_token_via_vault` | Same as `star_token`, paid by vault. |
 | `initialize_protocol_treasury` | One-time setup of the ProtocolTreasury PDA |
-| `advance_protocol_epoch` | Permissionless crank. Time-gated to one epoch (~7 days). Snapshots previous-epoch volume, opens new epoch, computes `distributable_amount`. |
-| `claim_protocol_rewards` | User claims pro-rata share of `distributable_amount` based on `volume_previous_epoch`. Eligibility: ≥2 SOL volume in previous epoch. Capped at 10% of distributable per user. Min claim: 0.1 SOL. |
+| `advance_protocol_epoch` | Permissionless crank. Time-gated to one epoch (~7 days). Snapshots previous-epoch volume, opens new epoch, computes `distributable_amount` + freezes `epoch_distributable_snapshot` (the epoch's share base). |
+| `claim_protocol_rewards` | User claims pro-rata share of the epoch SNAPSHOT based on `volume_previous_epoch` — order-independent: equal volume → equal payout, first or last to claim ([F-7]). Eligibility: ≥2 SOL volume in previous epoch. Capped at 10% of the snapshot per user; payout additionally bounded by the live `distributable_amount`. Min claim: 0.1 SOL. |
 | `claim_protocol_rewards_via_vault` | Same as `claim_protocol_rewards`, SOL credited to vault. Controller wallet's volume is the basis. |
 
 ### Recovery (2)
@@ -462,27 +427,31 @@ System-owned companion to TorchVault. 0 bytes of data. Used only during `vault_s
 | `reclaim_failed_token` | If bonding not complete and `last_activity_slot` is > 7 days old, anyone can reclaim. All curve SOL moves to protocol treasury (becomes epoch rewards). Marks token reclaimed. |
 | `contribute_revival` | Permissionless deposit toward bringing a reclaimed token back. Threshold: `3 * bonding_target / 8` (37.5 SOL Flame / 75 SOL Torch). When met, trading resumes. Contributors receive no tokens. |
 
-### Lending (6)
+### Leverage — Longs (6)
+
+A long borrows SOL from the treasury, atomically buys tokens through DeepPool into a per-position `position_token_vault`, and owes the gross SOL borrowed. Closed-loop: bought tokens never touch a wallet until close.
 
 | Instruction | Description |
 |---|---|
-| `borrow` | Post token collateral, borrow SOL. Reads pool reserves from DeepPool. `effective_max_ltv = min(get_depth_max_ltv_bps(pool_sol), treasury.max_ltv_bps)`. Clamps the borrow by the utilization cap (80% of treasury), the per-user cap (`max_borrow = lendable * (collateral / TOTAL_SUPPLY) * 23`), **and the Rail-2 size cap (`debt_value ≤ 25% · pool_sol`)**. |
-| `borrow_via_vault` | Same as `borrow`, collateral tokens from vault ATA, borrowed SOL to vault. |
-| `repay` | Interest-first repayment. Full repay returns all collateral. Partial repay leaves position open. |
-| `repay_via_vault` | Same as `repay`, repay SOL from vault, returned collateral to vault ATA. |
-| `liquidate` | Permissionless. Re-checks `twap_ltv > 65%` against the hardened TWAP mark (spot veto only refuses a clearly-healthy position). Liquidator pays up to 50% of total debt, receives collateral at the TWAP-priced seize + a distress-scaled bonus (0 → 32.5% ceiling). Bad-debt write-off correctly decrements `total_sol_lent`. |
-| `liquidate_via_vault` | Same as `liquidate`, liquidator funds + receives via vault. |
+| `open_long` | Post token collateral, borrow SOL (sized by `effective_max_ltv = min(get_depth_max_ltv_bps(pool_sol), treasury.max_ltv_bps)`, clamped by the physical-float headroom, the per-user aggregate cap (`min(formula, 20%)` via `UserRisk`), and the Rail-2 size cap `debt_value ≤ 25% · pool_sol`), atomically `pool_buy` into the position vault. Charges `OPEN_FEE_BPS` (0.5%) on borrow value. |
+| `open_long_via_vault` | Same as `open_long`, collateral + custody routed through a linked `TorchVault`. |
+| `close_long` | Atomically sells all vault tokens through DeepPool, repays SOL debt + interest, returns surplus SOL to the user. Partial close via `repay_fraction_bps`. |
+| `close_long_via_vault` | Same as `close_long`, surplus returned to the vault. |
+| `liquidate_long` | Permissionless. `twap_ltv > 65%` against the DeepPool TWAP mark (spot veto only refuses a clearly-healthy position). Liquidator pays SOL, seizes vault tokens at the TWAP-priced seize + distress-scaled bonus (0 → 32.5% ceiling). Bad-debt write-off decrements `total_sol_lent_to_longs`. |
+| `liquidate_long_via_vault` | Same as `liquidate_long`, funded/received via vault. |
 
-### Shorts (7)
+### Leverage — Shorts (6)
+
+A short borrows tokens from `TreasuryLock`, atomically sells them through DeepPool, and banks the SOL proceeds in a per-position `position_sol_vault`; it owes the token debt. Structural mirror of the long.
 
 | Instruction | Description |
 |---|---|
-| `open_short` | Post SOL collateral, borrow tokens from TreasuryLock. `ShortConfig` PDA is init-if-needed on first call. Same depth-band + per-user cap as lending (denominator is `treasury.sol_balance`, not TOTAL_SUPPLY, since collateral is SOL). |
-| `open_short_via_vault` | Same as `open_short`, SOL collateral from vault, borrowed tokens to vault ATA. |
-| `close_short` | Return tokens (+ interest in token terms). Interest-first. Full close releases SOL collateral. |
-| `close_short_via_vault` | Same as `close_short`, tokens sourced from vault, SOL returned to vault. |
-| `liquidate_short` | Permissionless. Same lifecycle as long liquidation, asset-inverted. Bad-debt write-off decrements `total_tokens_lent`. |
-| `liquidate_short_via_vault` | Same as `liquidate_short`, liquidator funds + receives via vault. |
+| `open_short` | Post SOL collateral, borrow tokens from `TreasuryLock`, atomically `pool_sell` so proceeds land in the position SOL vault. Same depth-band + per-user cap as longs (the SOL-side denominator is the treasury, since collateral is SOL). Charges `OPEN_FEE_BPS` (0.5%). |
+| `open_short_via_vault` | Same as `open_short`, collateral + custody routed through a linked `TorchVault`. |
+| `close_short` | Atomically `pool_buy`s tokens with vault SOL to repay the token debt + interest, returns surplus SOL to the user. Partial close via `repay_fraction_bps`. |
+| `close_short_via_vault` | Same as `close_short`, surplus returned to the vault. |
+| `liquidate_short` | Permissionless. Structural mirror of `liquidate_long`, asset-inverted: liquidator pays tokens, seizes vault SOL + bonus. Bad-debt write-off decrements `total_tokens_lent`. |
+| `liquidate_short_via_vault` | Same as `liquidate_short`, funded/received via vault. |
 
 ### Vault (8)
 
@@ -504,8 +473,8 @@ System-owned companion to TorchVault. 0 bytes of data. Used only during `vault_s
 The full DeepPool integration rationale, account-count reduction, and CPI shape lives in [deeppool.md](./deeppool.md). The architectural shape on torch_market's side:
 
 ```
-fund_migration_sol     ────►  bonded SOL: BondingCurve PDA → payer (lamport debit)
 migrate_to_dex
+  ├─ move bonded SOL: BondingCurve PDA → payer (lamport debit)
   ├─ excess token burn (if any)
   ├─ transfer pool-side tokens BondingCurve → payer (with Token-2022 fee deduction)
   ├─ CPI deep_pool::create_pool (signed by torch_config PDA)
@@ -515,6 +484,11 @@ migrate_to_dex
   ├─ revoke fee-config auth  → None  (transfer fee locked forever)
   ├─ treasury reimburses payer (rent + CPI cost, measured by lamport delta)
   └─ record baseline (pool SOL/token reserves at migration)
+
+**Price-match caveat [F-11]:** the pool-seed tokens cross two Token-2022 transfer
+legs (curve → payer → pool, 7 bps each), so the pool opens ~14 bps rich in SOL
+terms vs the curve's final price. Documented, one-time, bounded by litesvm
+`migration_price_within_double_transfer_fee_bound` (fails at 30 bps).
 ```
 
 **Pool namespace:** every DeepPool pool created by torch lives at `[deep_pool, torch_config, mint]`. The `torch_config` PDA is signed by the program — cryptographically unfrontrunnable. Nobody outside torch_market can create a pool under torch's namespace.
@@ -561,16 +535,20 @@ The formula cap scales with the user's share of total supply. The absolute cap c
 
 ### Per-user short cap
 
-Flat `MAX_WALLET_TOKENS = 2% of TOTAL_SUPPLY` — the same anti-whale constant the bonding curve uses on buys. Unified policy: "no wallet, by any means (buying / borrowing / shorting), can hold or short more than 2% of supply." Decoupled from treasury size; the global short utilization cap (80% of `treasury_lock_token_balance`) bounds aggregate exposure separately.
+Flat `MAX_WALLET_TOKENS = 2% of TOTAL_SUPPLY` — the same anti-whale constant the bonding curve uses on buys, enforced as a per-USER aggregate across all of an owner's `position_index` values via the `UserRisk` account. Unified policy: "no wallet, by any means (buying / borrowing / shorting), can hold or short more than 2% of supply." There is **no aggregate short-utilization cap by design**: the lock may drain to zero (closes and liquidations only pay tokens *into* the lock, never need its inventory), and the real aggregate brake is pool depth — every short open drains pool SOL, shrinking Rail-2 and the depth-LTV curve until `PoolTooThin` stops new opens.
 
 ### Lending unlock gate
 
 ```rust
-available_sol = treasury.sol_balance − treasury.short_collateral_reserved
-require!(available_sol >= MIN_TREASURY_SOL_FOR_LENDING)
+lending_assets = treasury_physical_sol + treasury.total_sol_lent_to_longs
+require!(lending_assets >= MIN_TREASURY_SOL_FOR_LENDING)
 ```
 
-The protocol's *earned* SOL float must clear the threshold before long borrows are permitted. Short collateral is escrowed user funds, not protocol-earned, so it is explicitly excluded. The threshold is build-feature gated so test/dev environments work without organic activity:
+The gate is **sticky** — it reads the treasury's *principal pool*, the V21 translation of V20's tracked `sol_balance` (see [lending-unlock.md](./lending-unlock.md)): the physical float plus outstanding receivables. Normal borrow/repay moves lamports between the two terms without changing the sum, so once the protocol has *earned* the threshold the gate stays open; only a bad-debt write-off (a real loss) re-locks it — the documented intent. The gate certifies meaningful lending scale ("nothing meaningful to lend against collateral at 10 SOL"); it is NOT a liquidity promise.
+
+**Capacity is the physical float, first-come-first-serve.** No utilization cap — the float is fully lendable, mirroring the short side's full-drain lock. The float is already net of lent SOL (borrowed lamports physically leave `treasury_sol_vault` at open), so an exhausted float (`< MIN_BORROW_AMOUNT`) rejects new opens with `LendingCapExceeded` until repayments or transfer-fee growth restore it, while the gate stays open. **Frontends must display the physical float as borrow capacity, never the unlock flag.** Gate stickiness is proven division-free by Kani (`verify_lending_gate_sticky_under_borrow`).
+
+The threshold is build-feature gated so test/dev environments work without organic activity:
 
 | Build feature | `MIN_TREASURY_SOL_FOR_LENDING` |
 |---|---|
@@ -600,11 +578,11 @@ Per-cycle lock change: `+interest`, regardless of hold duration. The borrower fu
 
 Default rate: 1.5%/epoch (`DEFAULT_INTEREST_RATE_BPS = 150`; [V21] lowered from 200). Epoch = 7 days.
 
-Accrual happens at the start of every position-touching instruction (`borrow`, `repay`, `liquidate`, `open_short`, `close_short`, `liquidate_short`). The pure transition function `math::apply_interest_accrual` (and its short variant) ensures `last_update_slot` always advances to the current slot — including on the zero-debt early-return path. This prevents phantom interest on positions that are fully repaid and later re-borrowed without closing the account.
+Accrual happens at the start of every position-touching instruction (`open_long`, `close_long`, `liquidate_long`, `open_short`, `close_short`, `liquidate_short`). The pure transition function `math::apply_interest_accrual` (and its short variant) ensures `last_update_slot` always advances to the current slot — including on the zero-debt early-return path. This prevents phantom interest on positions that are fully repaid and later re-borrowed without closing the account.
 
 ### Liquidation
 
-`twap_ltv > 65%` (`DEFAULT_LIQUIDATION_THRESHOLD_BPS`), triggered on the hardened TWAP mark with a spot veto that can only refuse a *clearly-healthy* position (`LIQ_SPOT_VETO_MARGIN_BPS`). Liquidator covers up to 50% of total debt (`DEFAULT_LIQUIDATION_CLOSE_BPS`), receives collateral at the **TWAP-priced** seize plus a **distress-scaled bonus** — `effective_liq_bonus_bps` ramps 0 at the threshold to the `32.5%` ceiling at the full-bonus LTV (75.5%), so a manufactured barely-over liquidation earns ≈0. Bad-debt write-off: when collateral can't cover the slice, the shortfall reduces `borrowed` and `total_sol_lent` together — proven equivalent to the simple form by Kani.
+`twap_ltv > 65%` (`DEFAULT_LIQUIDATION_THRESHOLD_BPS`), triggered on the hardened TWAP mark with a spot veto that can only refuse a *clearly-healthy* position (`LIQ_SPOT_VETO_MARGIN_BPS`). Liquidator covers up to 50% of total debt (`DEFAULT_LIQUIDATION_CLOSE_BPS`), receives collateral at the **TWAP-priced** seize plus a **distress-scaled bonus** — `effective_liq_bonus_bps` ramps 0 at the threshold to the `32.5%` ceiling at the full-bonus LTV (75.5%), so a manufactured barely-over liquidation earns ≈0. Bad-debt write-off: when collateral can't cover the slice, the shortfall reduces the position's `debt_amount` and `total_sol_lent_to_longs` together — proven equivalent to the simple form by Kani.
 
 ---
 
@@ -658,7 +636,7 @@ Ratio-gated: only sells when `(pool_sol/pool_tokens) >= 1.2 * baseline_ratio`. S
 |---|---|
 | Create pools (CPI into `deep_pool::create_pool` with `torch_config` signer) | Owns pool PDA, enforces fee invariants, validates swap math |
 | Validate Token-2022 extension allowlist on its own `create_token` (rejects `PermanentDelegate`, `NonTransferable`) | Stays permissionless for other integrators |
-| Read pool reserves (`pool_pda.lamports() + vault.amount`) for margin pricing | Holds reserves, computes swap outputs |
+| Read pool reserves (`pool_pda.lamports() + vault.amount`) for leverage pricing | Holds reserves, computes swap outputs |
 | Sign swaps as `user` from PDAs (`torch_vault`, `treasury`) via `invoke_signed` | Verifies `sol_source: Signer` constraint |
 | Burn 100% of LP at migration → pool PDA's own LP ATA → permanently locked | Mints LP per `create_pool`; doesn't enforce burn |
 
@@ -669,21 +647,21 @@ DeepPool has its own audit and 16 separate Kani proofs covering swap math (K inv
 ## Verification Surface
 
 - **84 Kani proof harnesses** (`kani_proofs.rs`, gated by `cfg(kani)`). Cover all fee calculations, bonding curve pricing, lending math, short math, depth-band boundaries, migration arithmetic, interest accrual state transitions, treasury ratio gating, DeepPool CPI accounting, Token-2022 gross-up correctness, and the available-SOL lending-gate invariant. Math harnesses import directly from `math.rs` — every property is proven against the exact code that runs on-chain, not a replica.
-- **42 proptest properties × 5,000 cases** (`tests/math_proptests.rs`). Random-input sweep across the full u64 space; complements Kani's bounded model checking.
-- **105 litesvm integration tests** (`programs/torch_market/tests/litesvm/`). In-process BPF execution against the real torch_market and deep_pool `.so` binaries; ~7s for the full suite. See [litesvm.md](./litesvm.md).
+- **55 proptest properties × 5,000 cases** (`tests/math_proptests.rs`). Random-input sweep across the full u64 space; complements Kani's bounded model checking.
+- **110 litesvm integration tests** (`programs/torch_market/tests/litesvm/`). In-process BPF execution against the real torch_market and deep_pool `.so` binaries; ~7s for the full suite, with treasury-counter + per-user (`UserRisk`) reconciliation asserted across the leverage lifecycle. See [litesvm.md](./litesvm.md).
 - **SDK e2e tests** (`packages/sdk/tests/test_e2e.ts`, `test_devnet_e2e.ts`). Run against Surfpool mainnet fork or devnet for SDK roundtrip and mainnet-state coverage.
 - **Independent audit** (Claude Opus 4.7, see [audit.md](./audit.md)): 0 critical / 0 high / 0 medium / 0 low findings. 24 exploit classes covered in the adversarial redhat pass.
 
 ---
 
-## Out of Scope (V20)
+## Out of Scope
 
 Honest about what V20 does not do:
 
 - **Permissionless migration timing.** Anyone can call `migrate_to_dex` after bonding completes, but nobody is forced to. Economic incentive (treasury reimbursement) handles it in practice.
-- **Opening new positions on shallow pools.** `[V21]` If pool depth is below the `DEPTH_FLOOR_SOL` = 100 SOL leverage floor, `borrow` and `open_short` reject new positions (`PoolTooThin` — the curve returns 0 max-LTV). Existing positions can still be liquidated — the depth gate was removed from the liquidate paths so trapped positions aren't stranded.
+- **Opening new positions on shallow pools.** `[V21]` If pool depth is below the `DEPTH_FLOOR_SOL` = 100 SOL leverage floor, `open_long` and `open_short` reject new positions (`PoolTooThin` — the curve returns 0 max-LTV). Existing positions can still be liquidated — the depth gate was removed from the liquidate paths so trapped positions aren't stranded.
 - **Upgrade authority revocation.** Live on mainnet during stabilization. Migrate to public timelock or multisig within the 30-90 day window post-launch via `solana program set-upgrade-authority --final`.
-- **Cross-token margin.** Each `(user, mint)` pair has its own isolated LoanPosition and ShortPosition. No portfolio margining. Failure of one position cannot affect another.
+- **Cross-token margin.** Each `(user, mint, side, index)` has its own isolated `Position`. No portfolio margining. Failure of one position cannot affect another.
 - **Governance.** None. All parameters are immutable at deploy. No vote, no proposal, no token-gated controls.
 
 ---

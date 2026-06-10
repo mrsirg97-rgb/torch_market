@@ -27,7 +27,7 @@ Located under `tests/` rather than `src/` so the `proptest!` macro DSL isn't par
 | `dev_share_bounded_by_input` | Dev wallet share ≤ total |
 | `token_treasury_fee_bounded` | Token treasury fee ≤ input |
 | `creator_fee_share_bounded` | Creator fee share ≤ input |
-| `transfer_fee_bounded` | Token-2022 transfer fee ≤ `amount + 1` and ≤ `MAX_TRANSFER_FEE` ceiling |
+| `transfer_fee_bounded` | Token-2022 transfer fee ≤ `amount + 1`. (`MAX_TRANSFER_FEE` is `u64::MAX` — deliberately uncapped, so the ceiling clause is vacuous; the effective rate is governed entirely by `TRANSFER_FEE_BPS`) |
 | `transfer_fee_ceiling` | When fee is below the cap, it's computed exactly as `amount × TRANSFER_FEE_BPS / 10_000` (no rounding drift down) |
 
 ### Rate Curves — Treasury Decay, Creator Growth (Properties 8-11)
@@ -130,7 +130,7 @@ These require code audit and adversarial testing.
 | `REALISTIC_MAX` | 10^18 | Upper bound for composite properties — keeps u128 intermediaries safe |
 | `PROTOCOL_FEE_BPS` | — | Protocol fee in bps (defined in constants.rs) |
 | `TRANSFER_FEE_BPS` | — | Token-2022 transfer fee in bps |
-| `MAX_TRANSFER_FEE` | — | Ceiling on absolute transfer fee |
+| `MAX_TRANSFER_FEE` | `u64::MAX` | Deliberately uncapped (no absolute ceiling; rate-only fee) |
 | `MAX_CLAIM_SHARE_BPS` | — | Anti-monopoly cap on per-user reward share |
 | `TREASURY_SOL_MIN_BPS` / `TREASURY_SOL_MAX_BPS` | — | Treasury rate bounds |
 | `CREATOR_SOL_MIN_BPS` / `CREATOR_SOL_MAX_BPS` | — | Creator rate bounds |

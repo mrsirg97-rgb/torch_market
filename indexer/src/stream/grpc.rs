@@ -170,7 +170,7 @@ async fn subscribe_once(
                 }
 
                 let mut events = Vec::new();
-                for tx_update in &block.transactions {
+                for (tx_idx, tx_update) in block.transactions.iter().enumerate() {
                     let Some(meta) = tx_update.meta.as_ref() else {
                         continue;
                     };
@@ -189,7 +189,11 @@ async fn subscribe_once(
                         torch_discs,
                         deep_pool_discs,
                     );
-                    events.extend(tx_events);
+                    // [I-1] chain order within the block — the writer's sort key.
+                    events.extend(tx_events.into_iter().map(|mut e| {
+                        e.tx_idx = tx_idx as i32;
+                        e
+                    }));
                 }
 
                 let batch = BlockBatch { slot, events };
@@ -295,6 +299,7 @@ pub fn decode_block_transaction(
                         tx_events.push(DecodedEvent {
                             signature: signature.clone(),
                             inner_ix_idx: flat_idx,
+                            tx_idx: 0, // assigned by the block loop / backfill walk
                             slot: slot as i64,
                             block_time,
                             event: AnyEvent::Torch(event),
@@ -310,6 +315,7 @@ pub fn decode_block_transaction(
                         tx_events.push(DecodedEvent {
                             signature: signature.clone(),
                             inner_ix_idx: flat_idx,
+                            tx_idx: 0, // assigned by the block loop / backfill walk
                             slot: slot as i64,
                             block_time,
                             event: AnyEvent::DeepPool(event),

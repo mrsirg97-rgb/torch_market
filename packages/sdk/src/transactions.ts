@@ -44,6 +44,7 @@ import {
   getTreasuryLockPda,
   getTreasuryLockTokenAccount,
   getPositionPda,
+  getUserRiskPda,
   getShortVaultPda,
   getLongSolVaultPda,
   getPositionTokenVault,
@@ -1868,7 +1869,6 @@ export const buildOpenShortTransaction = async (
   const { torchVault, walletLink } = deriveVaultAccounts(vaultCreatorStr, shorter)
   const owner = torchVault ?? shorter
 
-  const [bondingCurvePda] = getBondingCurvePda(mint)
   const [treasuryPda] = getTokenTreasuryPda(mint)
   const [treasurySolVaultPda] = getTreasurySolVaultPda(mint)
   const [treasuryLockPda] = getTreasuryLockPda(mint)
@@ -1887,12 +1887,12 @@ export const buildOpenShortTransaction = async (
   }
   const shared = {
     mint,
-    bondingCurve: bondingCurvePda,
     treasury: treasuryPda,
     treasurySolVault: treasurySolVaultPda,
     treasuryLock: treasuryLockPda,
     treasuryLockTokenAccount,
     position: positionPda,
+    userRisk: getUserRiskPda(owner, mint)[0],
     positionSolVault: positionSolVaultPda,
     deepPoolProgram: DEEP_POOL_PROGRAM_ID,
     deepPool: deepPool.pool,
@@ -1942,7 +1942,6 @@ export const buildCloseShortTransaction = async (
   const { torchVault, walletLink } = deriveVaultAccounts(vaultCreatorStr, shorter)
   const owner = torchVault ?? shorter
 
-  const [bondingCurvePda] = getBondingCurvePda(mint)
   const [treasuryPda] = getTokenTreasuryPda(mint)
   const [treasuryLockPda] = getTreasuryLockPda(mint)
   const treasuryLockTokenAccount = getTreasuryLockTokenAccount(mint, treasuryLockPda)
@@ -1960,11 +1959,11 @@ export const buildCloseShortTransaction = async (
   }
   const shared = {
     mint,
-    bondingCurve: bondingCurvePda,
     treasury: treasuryPda,
     treasuryLock: treasuryLockPda,
     treasuryLockTokenAccount,
     position: positionPda,
+    userRisk: getUserRiskPda(owner, mint)[0],
     positionSolVault: positionSolVaultPda,
     deepPoolProgram: DEEP_POOL_PROGRAM_ID,
     deepPool: deepPool.pool,
@@ -2022,7 +2021,6 @@ export const buildLiquidateShortTransaction = async (
   const torchVault = vaultCreatorStr ? getTorchVaultPda(new PublicKey(vaultCreatorStr))[0] : null
   const owner = torchVault ?? borrower
 
-  const [bondingCurvePda] = getBondingCurvePda(mint)
   const [treasuryPda] = getTokenTreasuryPda(mint)
   const [treasuryLockPda] = getTreasuryLockPda(mint)
   const treasuryLockTokenAccount = getTreasuryLockTokenAccount(mint, treasuryLockPda)
@@ -2086,11 +2084,11 @@ export const buildLiquidateShortTransaction = async (
   const args = { positionIndex }
   const shared = {
     mint,
-    bondingCurve: bondingCurvePda,
     treasury: treasuryPda,
     treasuryLock: treasuryLockPda,
     treasuryLockTokenAccount,
     position: positionPda,
+    userRisk: getUserRiskPda(owner, mint)[0],
     positionSolVault: positionSolVaultPda,
     liquidatorTokenAccount,
     deepPool: deepPool.pool,
@@ -2136,7 +2134,6 @@ export const buildOpenLongTransaction = async (
   const { torchVault, walletLink } = deriveVaultAccounts(vaultCreatorStr, borrower)
   const owner = torchVault ?? borrower
 
-  const [bondingCurvePda] = getBondingCurvePda(mint)
   const [treasuryPda] = getTokenTreasuryPda(mint)
   const [treasurySolVaultPda] = getTreasurySolVaultPda(mint)
   const [positionPda] = getPositionPda(owner, mint, 'long', positionIndex)
@@ -2155,10 +2152,10 @@ export const buildOpenLongTransaction = async (
   }
   const shared = {
     mint,
-    bondingCurve: bondingCurvePda,
     treasury: treasuryPda,
     treasurySolVault: treasurySolVaultPda,
     position: positionPda,
+    userRisk: getUserRiskPda(owner, mint)[0],
     positionTokenVault,
     longSolVault: longSolVaultPda,
     deepPoolProgram: DEEP_POOL_PROGRAM_ID,
@@ -2230,7 +2227,6 @@ export const buildCloseLongTransaction = async (
   const { torchVault, walletLink } = deriveVaultAccounts(vaultCreatorStr, borrower)
   const owner = torchVault ?? borrower
 
-  const [bondingCurvePda] = getBondingCurvePda(mint)
   const [treasuryPda] = getTokenTreasuryPda(mint)
   const [treasurySolVaultPda] = getTreasurySolVaultPda(mint)
   const [positionPda] = getPositionPda(owner, mint, 'long', positionIndex)
@@ -2248,10 +2244,10 @@ export const buildCloseLongTransaction = async (
   }
   const shared = {
     mint,
-    bondingCurve: bondingCurvePda,
     treasury: treasuryPda,
     treasurySolVault: treasurySolVaultPda,
     position: positionPda,
+    userRisk: getUserRiskPda(owner, mint)[0],
     positionTokenVault,
     longSolVault: longSolVaultPda,
     deepPoolProgram: DEEP_POOL_PROGRAM_ID,
@@ -2310,7 +2306,6 @@ export const buildLiquidateLongTransaction = async (
   const torchVault = vaultCreatorStr ? getTorchVaultPda(new PublicKey(vaultCreatorStr))[0] : null
   const owner = torchVault ?? borrower
 
-  const [bondingCurvePda] = getBondingCurvePda(mint)
   const [treasuryPda] = getTokenTreasuryPda(mint)
   const [treasurySolVaultPda] = getTreasurySolVaultPda(mint)
   const [positionPda] = getPositionPda(owner, mint, 'long', positionIndex)
@@ -2342,10 +2337,10 @@ export const buildLiquidateLongTransaction = async (
   const args = { positionIndex }
   const shared = {
     mint,
-    bondingCurve: bondingCurvePda,
     treasury: treasuryPda,
     treasurySolVault: treasurySolVaultPda,
     position: positionPda,
+    userRisk: getUserRiskPda(owner, mint)[0],
     positionTokenVault,
     liquidatorTokenAccount,
     deepPool: deepPool.pool,

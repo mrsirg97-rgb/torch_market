@@ -29,6 +29,8 @@ custom-panic = []
 
 [dependencies]
 anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
+# zero_copy UserRisk (state.rs) - Pod/Zeroable derives
+bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
 anchor-spl = { version = "0.32.1", features = ["token", "associated_token"] }
 
 # DeepPool CPI for DEX migration

@@ -166,7 +166,6 @@ pub fn create_token(ctx: Context<CreateToken2022>, args: CreateTokenArgs) -> Res
     treasury.liquidation_threshold_bps = DEFAULT_LIQUIDATION_THRESHOLD_BPS;
     treasury.liquidation_bonus_bps = DEFAULT_LIQUIDATION_BONUS_BPS;
     treasury.liquidation_close_bps = DEFAULT_LIQUIDATION_CLOSE_BPS;
-    treasury.lending_utilization_cap_bps = DEFAULT_LENDING_UTILIZATION_CAP_BPS;
     treasury.short_selling_enabled = true;
 
     let create_vault_ata_ix = build_create_associated_token_account_instruction(

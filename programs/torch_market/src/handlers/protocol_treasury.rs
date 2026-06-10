@@ -17,6 +17,7 @@ pub fn initialize_protocol_treasury(ctx: Context<InitializeProtocolTreasury>) ->
     protocol_treasury.total_volume_current_epoch = 0;
     protocol_treasury.total_volume_previous_epoch = 0;
     protocol_treasury.distributable_amount = 0;
+    protocol_treasury.epoch_distributable_snapshot = 0;
     protocol_treasury.bump = ctx.bumps.protocol_treasury;
     Ok(())
 }
@@ -43,6 +44,11 @@ pub fn advance_protocol_epoch(ctx: Context<AdvanceProtocolEpoch>) -> Result<()> 
     ctx.accounts.protocol_treasury.current_balance = available_balance;
     ctx.accounts.protocol_treasury.distributable_amount =
         available_balance.saturating_sub(reserve_floor);
+    // [F-7] Freeze the epoch's share base. Pro-rata shares and the per-user
+    // anti-monopoly cap are computed against this snapshot, so payouts are
+    // order-independent; distributable_amount remains the spend-down ledger.
+    ctx.accounts.protocol_treasury.epoch_distributable_snapshot =
+        ctx.accounts.protocol_treasury.distributable_amount;
     ctx.accounts.protocol_treasury.total_volume_current_epoch = 0;
     ctx.accounts.protocol_treasury.current_epoch = ctx
         .accounts
@@ -90,12 +96,17 @@ fn compute_claim(
         TorchMarketError::NoVolumeInEpoch
     );
 
+    // [F-7] Pro-rata share + 10% anti-monopoly cap against the epoch SNAPSHOT
+    // (order-independent: equal volume → equal payout, first or last to claim).
+    // Σ pro-rata shares ≤ snapshot by construction; the live ledger clamp is
+    // belt-and-suspenders against any cross-epoch residue interaction.
     let claim_amount = crate::math::calc_claim_with_cap(
         user_stats.volume_previous_epoch,
-        protocol_treasury.distributable_amount,
+        protocol_treasury.epoch_distributable_snapshot,
         protocol_treasury.total_volume_previous_epoch,
     )
-    .ok_or(TorchMarketError::MathOverflow)?;
+    .ok_or(TorchMarketError::MathOverflow)?
+    .min(protocol_treasury.distributable_amount);
     require!(
         claim_amount >= MIN_CLAIM_AMOUNT,
         TorchMarketError::ClaimBelowMinimum

@@ -226,6 +226,22 @@ pub struct LiquidateLongEvent {
     pub fully_liquidated: bool,
 }
 
+// [lifecycle] Emitted once, on the buy that crosses the bonding target.
+#[derive(borsh::BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub struct BondingCompleted {
+    pub mint: [u8; 32],
+    pub real_sol_reserves: u64,
+    pub bonding_complete_slot: u64,
+}
+
+// [lifecycle] Emitted once when a failed token is reclaimed (curve SOL →
+// protocol treasury).
+#[derive(borsh::BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub struct TokenReclaimed {
+    pub mint: [u8; 32],
+    pub sol_to_protocol_treasury: u64,
+}
+
 #[derive(borsh::BorshSerialize, BorshDeserialize, Debug, Clone)]
 pub struct RevivalContribution {
     pub mint: [u8; 32],
@@ -267,6 +283,8 @@ pub enum TorchEvent {
     OpenLong(OpenLongEvent),
     CloseLong(CloseLongEvent),
     LiquidateLong(LiquidateLongEvent),
+    BondingCompleted(BondingCompleted),
+    TokenReclaimed(TokenReclaimed),
     RevivalContribution(RevivalContribution),
     TokenRevived(TokenRevived),
 }
@@ -281,6 +299,13 @@ pub enum AnyEvent {
 #[derive(Debug, Clone)]
 pub struct DecodedEvent {
     pub signature: String,
+    // Index of the containing transaction WITHIN ITS BLOCK (Yellowstone block
+    // order live; signature-walk order on backfill). The writer sorts each
+    // block by (tx_idx, inner_ix_idx) so events apply in chain order —
+    // sorting by signature reordered same-block events arbitrarily (I-1).
+    // Not persisted: single-writer chain-ordered inserts make serial ids the
+    // durable intra-slot order; read queries tiebreak on id.
+    pub tx_idx: i32,
     pub inner_ix_idx: i32,
     pub slot: i64,
     pub block_time: Option<DateTime<Utc>>,
@@ -312,9 +337,13 @@ pub struct BlockBatch {
 #[sqlx(type_name = "market_status", rename_all = "UPPERCASE")]
 #[serde(rename_all = "UPPERCASE")]
 pub enum MarketStatus {
-    Rs,
-    Rd,
-    Asn,
+    // Lifecycle: BONDING → COMPLETE → MIGRATED, or BONDING → RECLAIMED →
+    // (revival) → BONDING. Relabeled from RS/RD (+ dead ASN removed) 2026-06-09;
+    // every transition now rides a program event (BondingCurveTrade /
+    // BondingCompleted / MigratedToDex / TokenReclaimed / TokenRevived) — the
+    // indexer never derives state the program didn't announce.
+    Bonding,
+    Complete,
     Migrated,
     Reclaimed,
 }
@@ -323,7 +352,7 @@ pub enum MarketStatus {
 #[sqlx(type_name = "market_tier", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum MarketTier {
-    Spark,
+    // Spark (50 SOL) removed from the program — insufficient margin safety.
     Flame,
     Torch,
 }
@@ -524,6 +553,7 @@ pub struct PositionRow {
 
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 pub struct PositionEventRow {
+    pub event_id: i64,
     pub mint: String,
     pub owner: String,
     pub side: PositionSide,

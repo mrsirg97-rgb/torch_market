@@ -42,7 +42,7 @@ pub async fn latest_for_pools(
         "SELECT DISTINCT ON (pool_id) *
          FROM reserves
          WHERE pool_id = ANY($1)
-         ORDER BY pool_id, last_slot DESC, signature DESC, inner_ix_idx DESC",
+         ORDER BY pool_id, last_slot DESC, reserve_id DESC",
     )
     .bind(pool_ids)
     .fetch_all(&mut **tx)
@@ -66,7 +66,7 @@ pub async fn list(
     if let Some(before) = filter.before {
         qb.push(" AND created_at < ").push_bind(before);
     }
-    qb.push(" ORDER BY last_slot DESC, signature DESC, inner_ix_idx DESC");
+    qb.push(" ORDER BY last_slot DESC, reserve_id DESC");
     if let Some(limit) = filter.limit {
         qb.push(" LIMIT ").push_bind(limit);
     }

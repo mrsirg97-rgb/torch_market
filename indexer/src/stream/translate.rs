@@ -38,9 +38,8 @@ pub fn tier_from_target(sol_target: u64) -> MarketTier {
     // otherwise torch. Matches the program's BONDING_TARGET_SPARK/FLAME/TORCH
     // constants without needing to import them.
     const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
-    if sol_target <= 10 * LAMPORTS_PER_SOL {
-        MarketTier::Spark
-    } else if sol_target <= 100 * LAMPORTS_PER_SOL {
+    // Spark (50 SOL) removed from the program; anything ≤ 100 SOL is flame.
+    if sol_target <= 100 * LAMPORTS_PER_SOL {
         MarketTier::Flame
     } else {
         MarketTier::Torch
@@ -179,6 +178,8 @@ pub fn torch_event_mint(event: &TorchEvent) -> String {
         TorchEvent::OpenLong(e) => b58(&e.mint),
         TorchEvent::CloseLong(e) => b58(&e.mint),
         TorchEvent::LiquidateLong(e) => b58(&e.mint),
+        TorchEvent::BondingCompleted(e) => b58(&e.mint),
+        TorchEvent::TokenReclaimed(e) => b58(&e.mint),
         TorchEvent::RevivalContribution(e) => b58(&e.mint),
         TorchEvent::TokenRevived(e) => b58(&e.mint),
     }
@@ -196,7 +197,7 @@ pub fn new_market(m: &MarketCreated, de: &DecodedEvent) -> NewMarketRow {
         },
         creator: b58(&m.creator),
         is_community_token: m.is_community_token,
-        status: MarketStatus::Rs,
+        status: MarketStatus::Bonding,
         tier: tier_from_target(m.sol_target),
         sol_target: m.sol_target as i64,
         virtual_sol: m.virtual_sol_reserves as i64,

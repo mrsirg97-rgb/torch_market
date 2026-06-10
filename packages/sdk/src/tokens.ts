@@ -1140,7 +1140,6 @@ export const getLendingInfo = async (
     liquidation_threshold_bps: treasury.liquidation_threshold_bps,
     liquidation_bonus_bps: treasury.liquidation_bonus_bps,
     liquidation_close_bps: treasury.liquidation_close_bps,
-    utilization_cap_bps: treasury.lending_utilization_cap_bps,
     lending_enabled: treasury.lending_enabled,
     short_selling_enabled: treasury.short_selling_enabled,
     treasury_sol_vault_lamports: treasurySolVaultLamports,

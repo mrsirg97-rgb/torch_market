@@ -54,7 +54,8 @@ pub async fn list(
     }
     // Order by slot then disambiguators so cross-page same-slot rows are
     // deterministic (matches the reserves pattern).
-    qb.push(" ORDER BY slot DESC, signature DESC, inner_ix_idx DESC");
+    // [I-1] Serial id = intra-slot chain order (single chain-ordered writer).
+    qb.push(" ORDER BY slot DESC, trade_id DESC");
     if let Some(limit) = filter.limit {
         qb.push(" LIMIT ").push_bind(limit);
     }

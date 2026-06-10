@@ -36,6 +36,7 @@ pub fn fixed_ts() -> DateTime<Utc> {
 
 pub fn de(event: AnyEvent, slot: i64, inner_ix_idx: i32) -> DecodedEvent {
     DecodedEvent {
+        tx_idx: 0,
         signature: format!("sig_{slot}_{inner_ix_idx}"),
         inner_ix_idx,
         slot,
@@ -219,7 +220,7 @@ pub fn new_market_row(mint: &str, creator: &str) -> NewMarketRow {
         metadata_uri: Some("https://arweave.net/test".to_string()),
         creator: creator.to_string(),
         is_community_token: false,
-        status: MarketStatus::Rs,
+        status: MarketStatus::Bonding,
         tier: MarketTier::Flame,
         sol_target: 30_000_000_000,
         virtual_sol: 30_000_000_000,

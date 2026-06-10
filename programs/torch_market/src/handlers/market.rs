@@ -121,7 +121,7 @@ fn finalize_buy_state(
     sol_amount: u64,
     tokens_out: u64,
     computed: &BuyComputed,
-) -> Result<()> {
+) -> Result<bool> {
     protocol_treasury.total_fees_received = protocol_treasury
         .total_fees_received
         .checked_add(computed.protocol_fee)
@@ -160,6 +160,11 @@ fn finalize_buy_state(
         bonding_curve.bonding_target
     };
     let current_slot = Clock::get()?.slot;
+    // [lifecycle] Completion is detected here (shared by buy + buy_via_vault);
+    // the CALLER emits BondingCompleted (this helper has no ctx). Idempotent:
+    // true only on the buy that crosses the target.
+    let newly_completed =
+        !bonding_curve.bonding_complete && bonding_curve.real_sol_reserves >= completion_target;
     if bonding_curve.real_sol_reserves >= completion_target {
         bonding_curve.bonding_complete = true;
         bonding_curve.bonding_complete_slot = current_slot;
@@ -205,7 +210,7 @@ fn finalize_buy_state(
         .checked_add(sol_amount)
         .ok_or(TorchMarketError::MathOverflow)?;
 
-    Ok(())
+    Ok(newly_completed)
 }
 
 // ============================================================================
@@ -277,7 +282,7 @@ pub fn buy(ctx: Context<Buy>, args: BuyArgs) -> Result<()> {
         .as_deref_mut()
         .map(|a| &mut **a);
 
-    finalize_buy_state(
+    let newly_completed = finalize_buy_state(
         &mut ctx.accounts.bonding_curve,
         bonding_curve_key,
         &mut ctx.accounts.user_position,
@@ -306,6 +311,16 @@ pub fn buy(ctx: Context<Buy>, args: BuyArgs) -> Result<()> {
         computed.protocol_fee,
     );
     emit_cpi!(trade);
+    // [lifecycle] One-shot completion event — the indexer flips
+    // markets.status BONDING → COMPLETE off this (single source of truth:
+    // the program emits state changes; the indexer never derives them).
+    if newly_completed {
+        emit_cpi!(BondingCompleted {
+            mint: mint_key,
+            real_sol_reserves: ctx.accounts.bonding_curve.real_sol_reserves,
+            bonding_complete_slot: ctx.accounts.bonding_curve.bonding_complete_slot,
+        });
+    }
     Ok(())
 }
 
@@ -392,7 +407,7 @@ pub fn buy_via_vault(ctx: Context<BuyViaVault>, args: BuyArgs) -> Result<()> {
         .as_deref_mut()
         .map(|a| &mut **a);
 
-    finalize_buy_state(
+    let newly_completed = finalize_buy_state(
         &mut ctx.accounts.bonding_curve,
         bonding_curve_key,
         &mut ctx.accounts.user_position,
@@ -421,6 +436,16 @@ pub fn buy_via_vault(ctx: Context<BuyViaVault>, args: BuyArgs) -> Result<()> {
         computed.protocol_fee,
     );
     emit_cpi!(trade);
+    // [lifecycle] One-shot completion event — the indexer flips
+    // markets.status BONDING → COMPLETE off this (single source of truth:
+    // the program emits state changes; the indexer never derives them).
+    if newly_completed {
+        emit_cpi!(BondingCompleted {
+            mint: mint_key,
+            real_sol_reserves: ctx.accounts.bonding_curve.real_sol_reserves,
+            bonding_complete_slot: ctx.accounts.bonding_curve.bonding_complete_slot,
+        });
+    }
     Ok(())
 }
 
@@ -863,4 +888,13 @@ fn build_bonding_trade(
         real_sol_after: bonding_curve.real_sol_reserves,
         real_token_after: bonding_curve.real_token_reserves,
     }
+}
+
+// [lifecycle] Emitted exactly once per market, on the buy that crosses the
+// bonding target. Indexer: markets.status BONDING → COMPLETE.
+#[event]
+pub struct BondingCompleted {
+    pub mint: Pubkey,
+    pub real_sol_reserves: u64,
+    pub bonding_complete_slot: u64,
 }

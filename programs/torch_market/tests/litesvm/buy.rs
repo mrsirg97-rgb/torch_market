@@ -171,3 +171,22 @@ fn buy_via_vault_happy() {
     assert_eq!(env.vault_sol(&vault), 2 * LAMPORTS_PER_SOL - 100_000_000);
     assert_eq!(env.get_torch_vault(&vault.vault).total_spent, 100_000_000);
 }
+
+// [lifecycle] The buy that crosses the bonding target emits BondingCompleted
+// exactly once — the indexer's BONDING → COMPLETE transition rides on it.
+#[test]
+fn completing_buy_emits_bonding_completed() {
+    use crate::harness::extract_event;
+    use torch_market::handlers::market::BondingCompleted;
+
+    let mut env = Env::new();
+    let creator = env.new_funded(2 * LAMPORTS_PER_SOL);
+    let t = env.create_token(&creator, BONDING_TARGET_FLAME, false);
+    env.bond_to_completion(&t);
+
+    let ev: BondingCompleted = extract_event(env.last_meta.as_ref().unwrap())
+        .expect("completing buy emits BondingCompleted");
+    assert_eq!(crate::harness::b58_eq(&ev.mint, &t.mint), true);
+    assert!(ev.real_sol_reserves >= BONDING_TARGET_FLAME);
+    assert!(env.get_bonding_curve(&t).bonding_complete);
+}

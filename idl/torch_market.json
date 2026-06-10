@@ -1387,35 +1387,6 @@
           "writable": true
         },
         {
-          "name": "bonding_curve",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  99,
-                  117,
-                  114,
-                  118,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
           "name": "treasury",
           "writable": true,
           "pda": {
@@ -1478,6 +1449,36 @@
         {
           "name": "position",
           "writable": true
+        },
+        {
+          "name": "user_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "borrower"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
         },
         {
           "name": "position_token_vault",
@@ -1761,35 +1762,6 @@
           "writable": true
         },
         {
-          "name": "bonding_curve",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  99,
-                  117,
-                  114,
-                  118,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
           "name": "treasury",
           "writable": true,
           "pda": {
@@ -1852,6 +1824,36 @@
         {
           "name": "position",
           "writable": true
+        },
+        {
+          "name": "user_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
         },
         {
           "name": "position_token_vault",
@@ -2041,35 +2043,6 @@
           "name": "mint"
         },
         {
-          "name": "bonding_curve",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  99,
-                  117,
-                  114,
-                  118,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
           "name": "treasury",
           "writable": true,
           "pda": {
@@ -2184,6 +2157,36 @@
         {
           "name": "position",
           "writable": true
+        },
+        {
+          "name": "user_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "shorter"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
         },
         {
           "name": "position_sol_vault",
@@ -2403,35 +2406,6 @@
           "name": "mint"
         },
         {
-          "name": "bonding_curve",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  99,
-                  117,
-                  114,
-                  118,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
           "name": "treasury",
           "writable": true,
           "pda": {
@@ -2546,6 +2520,36 @@
         {
           "name": "position",
           "writable": true
+        },
+        {
+          "name": "user_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
         },
         {
           "name": "position_sol_vault",
@@ -3633,35 +3637,6 @@
           "writable": true
         },
         {
-          "name": "bonding_curve",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  99,
-                  117,
-                  114,
-                  118,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
           "name": "treasury",
           "writable": true,
           "pda": {
@@ -3724,6 +3699,36 @@
         {
           "name": "position",
           "writable": true
+        },
+        {
+          "name": "user_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "borrower"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
         },
         {
           "name": "position_token_vault",
@@ -4045,35 +4050,6 @@
           "writable": true
         },
         {
-          "name": "bonding_curve",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  99,
-                  117,
-                  114,
-                  118,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
           "name": "treasury",
           "writable": true,
           "pda": {
@@ -4136,6 +4112,36 @@
         {
           "name": "position",
           "writable": true
+        },
+        {
+          "name": "user_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
         },
         {
           "name": "position_token_vault",
@@ -4395,35 +4401,6 @@
           "name": "mint"
         },
         {
-          "name": "bonding_curve",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  99,
-                  117,
-                  114,
-                  118,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
           "name": "treasury",
           "writable": true,
           "pda": {
@@ -4537,6 +4514,36 @@
         {
           "name": "position",
           "writable": true
+        },
+        {
+          "name": "user_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "borrower"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
         },
         {
           "name": "position_sol_vault",
@@ -4776,35 +4783,6 @@
           "name": "mint"
         },
         {
-          "name": "bonding_curve",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  99,
-                  117,
-                  114,
-                  118,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
           "name": "treasury",
           "writable": true,
           "pda": {
@@ -4918,6 +4896,36 @@
         {
           "name": "position",
           "writable": true
+        },
+        {
+          "name": "user_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
         },
         {
           "name": "position_sol_vault",
@@ -5362,35 +5370,6 @@
           "name": "mint"
         },
         {
-          "name": "bonding_curve",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  99,
-                  117,
-                  114,
-                  118,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
           "name": "treasury",
           "writable": true,
           "pda": {
@@ -5510,6 +5489,36 @@
         {
           "name": "position",
           "writable": true
+        },
+        {
+          "name": "user_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "borrower"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
         },
         {
           "name": "position_token_vault",
@@ -5760,35 +5769,6 @@
           "name": "mint"
         },
         {
-          "name": "bonding_curve",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  99,
-                  117,
-                  114,
-                  118,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
           "name": "treasury",
           "writable": true,
           "pda": {
@@ -5908,6 +5888,36 @@
         {
           "name": "position",
           "writable": true
+        },
+        {
+          "name": "user_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
         },
         {
           "name": "position_token_vault",
@@ -6101,35 +6111,6 @@
           "name": "mint"
         },
         {
-          "name": "bonding_curve",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  99,
-                  117,
-                  114,
-                  118,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
           "name": "treasury",
           "writable": true,
           "pda": {
@@ -6279,6 +6260,36 @@
         {
           "name": "position",
           "writable": true
+        },
+        {
+          "name": "user_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "shorter"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
         },
         {
           "name": "position_sol_vault",
@@ -6501,35 +6512,6 @@
           "name": "mint"
         },
         {
-          "name": "bonding_curve",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  110,
-                  100,
-                  105,
-                  110,
-                  103,
-                  95,
-                  99,
-                  117,
-                  114,
-                  118,
-                  101
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "mint"
-              }
-            ]
-          }
-        },
-        {
           "name": "treasury",
           "writable": true,
           "pda": {
@@ -6679,6 +6661,36 @@
         {
           "name": "position",
           "writable": true
+        },
+        {
+          "name": "user_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "torch_vault"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
         },
         {
           "name": "position_sol_vault",
@@ -6968,6 +6980,38 @@
         {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "event_authority",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  95,
+                  95,
+                  101,
+                  118,
+                  101,
+                  110,
+                  116,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program"
         }
       ],
       "args": []
@@ -8822,6 +8866,19 @@
       ]
     },
     {
+      "name": "UserRisk",
+      "discriminator": [
+        34,
+        38,
+        126,
+        77,
+        65,
+        53,
+        232,
+        150
+      ]
+    },
+    {
       "name": "UserStats",
       "discriminator": [
         176,
@@ -8849,6 +8906,19 @@
     }
   ],
   "events": [
+    {
+      "name": "BondingCompleted",
+      "discriminator": [
+        184,
+        194,
+        167,
+        167,
+        167,
+        27,
+        185,
+        114
+      ]
+    },
     {
       "name": "BondingCurveTrade",
       "discriminator": [
@@ -8977,6 +9047,19 @@
         122,
         80,
         240
+      ]
+    },
+    {
+      "name": "TokenReclaimed",
+      "discriminator": [
+        66,
+        162,
+        28,
+        255,
+        175,
+        151,
+        71,
+        184
       ]
     },
     {
@@ -9259,6 +9342,26 @@
     }
   ],
   "types": [
+    {
+      "name": "BondingCompleted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "real_sol_reserves",
+            "type": "u64"
+          },
+          {
+            "name": "bonding_complete_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
     {
       "name": "BondingCurve",
       "type": {
@@ -10011,6 +10114,10 @@
             "type": "u64"
           },
           {
+            "name": "epoch_distributable_snapshot",
+            "type": "u64"
+          },
+          {
             "name": "bump",
             "type": "u8"
           }
@@ -10060,6 +10167,22 @@
           },
           {
             "name": "min_sol_out",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TokenReclaimed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "sol_to_protocol_treasury",
             "type": "u64"
           }
         ]
@@ -10229,10 +10352,6 @@
           {
             "name": "liquidation_close_bps",
             "type": "u16"
-          },
-          {
-            "name": "lending_utilization_cap_bps",
-            "type": "u16"
           }
         ]
       }
@@ -10281,6 +10400,74 @@
           {
             "name": "bump",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "UserRisk",
+      "docs": [
+        "[F-1][F-3] Per-(owner, mint) aggregate leverage exposure. `owner` is the",
+        "economic owner of the positions — a wallet for direct positions, the",
+        "`torch_vault` for via_vault positions — so the per-USER caps",
+        "(`MAX_WALLET_TOKENS` for shorts, `calc_user_borrow_cap` for longs) hold",
+        "across all of an owner's `position_index` values, not per position.",
+        "Maintained by every leverage handler: opens add, closes/liquidations",
+        "subtract (principal + bad debt). Created lazily on first open",
+        "(init_if_needed), never closed — one rent payment per (owner, mint).",
+        "",
+        "Invariant: `short_tokens_debt == Σ open short debt_amount` and",
+        "`long_sol_debt == Σ open long debt_amount` over the owner's positions",
+        "(litesvm `assert_user_risk` reconciles).",
+        "",
+        "Zero-copy (`AccountLoader`) on purpose: the leverage contexts run within",
+        "bytes of the SBF 4096-byte `try_accounts` stack frame (same reason",
+        "`deep_pool::Pool` is Boxed in all its contexts) — a borsh `Account<UserRisk>`",
+        "field deserializes onto that frame and overflows the short via_vault",
+        "contexts; the loader only checks owner + discriminator at resolution time.",
+        "`_padding` makes the compiler's 7 trailing alignment bytes explicit —",
+        "bytemuck `Pod` (which zero_copy derives) forbids implicit padding because",
+        "the struct is cast directly to/from the account bytes."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "short_tokens_debt",
+            "type": "u64"
+          },
+          {
+            "name": "long_sol_debt",
+            "type": "u64"
+          },
+          {
+            "name": "long_collateral_tokens",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "_padding",
+            "type": {
+              "array": [
+                "u8",
+                7
+              ]
+            }
           }
         ]
       }

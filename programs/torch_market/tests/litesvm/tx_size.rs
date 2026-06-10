@@ -47,6 +47,14 @@ fn tx_sizes_report() {
     let migrate_ixs = build_migrate_ixs(&env, &payer, &t);
     println!("migrate (4-ix bundle)     : {} bytes", size(&migrate_ixs, &[&payer], bh));
 
+    // --- Leverage (heaviest account lists; [F-1] user_risk in, bonding_curve out) ---
+    let borrower = env.new_funded(LAMPORTS_PER_SOL);
+    let open_long_ix = build_open_long_ix(&borrower, &t);
+    println!("open_long                 : {} bytes", size(&[open_long_ix], &[&borrower], bh));
+
+    let osvv_ix = build_open_short_via_vault_ix(&vault_owner, &vault, &t);
+    println!("open_short_via_vault      : {} bytes", size(&[osvv_ix], &[&vault_owner], bh));
+
     println!("(tx limit                 : 1232 bytes)");
 }
 
@@ -193,6 +201,106 @@ fn build_buy_via_vault_ix(env: &Env, signer: &Keypair, vault: &VaultCtx, t: &Tok
             args: torch_market::contexts::BuyArgs {
                 sol_amount: 100_000_000,
                 min_tokens_out: 0,
+            },
+        }
+        .data(),
+    }
+}
+
+fn build_open_long_ix(borrower: &Keypair, t: &TokenCtx) -> Instruction {
+    use anchor_lang::{InstructionData, ToAccountMetas};
+    use solana_sdk::pubkey::Pubkey;
+    use torch_market::{constants::*, token_2022_utils::*};
+    let borrower_token_account = get_associated_token_address_2022(&borrower.pubkey(), &t.mint);
+    let (position, _) = Pubkey::find_program_address(
+        &[POSITION_SEED, borrower.pubkey().as_ref(), t.mint.as_ref(), &[POSITION_SIDE_LONG], &0u32.to_le_bytes()],
+        &torch_market::ID,
+    );
+    let position_token_vault = get_associated_token_address_2022(&position, &t.mint);
+    let (long_sol_vault, _) = Pubkey::find_program_address(
+        &[LONG_SOL_VAULT_SEED, borrower.pubkey().as_ref(), t.mint.as_ref(), &0u32.to_le_bytes()],
+        &torch_market::ID,
+    );
+    Instruction {
+        program_id: torch_market::ID,
+        accounts: torch_market::accounts::OpenLongPosition {
+            user_risk: crate::harness::user_risk_pda(&borrower.pubkey(), &t.mint),
+            event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+            program: torch_market::ID,
+            borrower: borrower.pubkey(),
+            mint: t.mint,
+            treasury: t.treasury,
+            treasury_sol_vault: t.treasury_sol_vault,
+            borrower_token_account,
+            position,
+            position_token_vault,
+            long_sol_vault,
+            deep_pool_program: deep_pool::ID,
+            deep_pool: t.deep_pool,
+            deep_pool_token_vault: t.deep_pool_token_vault,
+            deep_pool_event_authority: Pubkey::find_program_address(&[b"__event_authority"], &deep_pool::ID).0,
+            token_2022_program: TOKEN_2022_PROGRAM_ID,
+            associated_token_program: ASSOCIATED_TOKEN_PROGRAM_ID,
+            system_program: solana_sdk::system_program::ID,
+        }
+        .to_account_metas(None),
+        data: torch_market::instruction::OpenLong {
+            args: torch_market::contexts::OpenPositionArgs {
+                position_index: 0,
+                collateral: 1_000_000_000,
+                min_out: 1,
+            },
+        }
+        .data(),
+    }
+}
+
+fn build_open_short_via_vault_ix(signer: &Keypair, vault: &VaultCtx, t: &TokenCtx) -> Instruction {
+    use anchor_lang::{InstructionData, ToAccountMetas};
+    use solana_sdk::pubkey::Pubkey;
+    use torch_market::{constants::*, token_2022_utils::*};
+    let (vault_wallet_link, _) = Pubkey::find_program_address(
+        &[VAULT_WALLET_LINK_SEED, signer.pubkey().as_ref()],
+        &torch_market::ID,
+    );
+    let (position, _) = Pubkey::find_program_address(
+        &[POSITION_SEED, vault.vault.as_ref(), t.mint.as_ref(), &[POSITION_SIDE_SHORT], &0u32.to_le_bytes()],
+        &torch_market::ID,
+    );
+    let (position_sol_vault, _) = Pubkey::find_program_address(
+        &[SHORT_VAULT_SEED, vault.vault.as_ref(), t.mint.as_ref(), &0u32.to_le_bytes()],
+        &torch_market::ID,
+    );
+    Instruction {
+        program_id: torch_market::ID,
+        accounts: torch_market::accounts::OpenShortViaVault {
+            user_risk: crate::harness::user_risk_pda(&vault.vault, &t.mint),
+            event_authority: Pubkey::find_program_address(&[b"__event_authority"], &torch_market::ID).0,
+            program: torch_market::ID,
+            signer: signer.pubkey(),
+            torch_vault: vault.vault,
+            vault_sol: vault.vault_sol,
+            vault_wallet_link,
+            mint: t.mint,
+            treasury: t.treasury,
+            treasury_sol_vault: t.treasury_sol_vault,
+            treasury_lock: t.treasury_lock,
+            treasury_lock_token_account: t.treasury_lock_token_account,
+            position,
+            position_sol_vault,
+            deep_pool_program: deep_pool::ID,
+            deep_pool: t.deep_pool,
+            deep_pool_token_vault: t.deep_pool_token_vault,
+            deep_pool_event_authority: Pubkey::find_program_address(&[b"__event_authority"], &deep_pool::ID).0,
+            token_2022_program: TOKEN_2022_PROGRAM_ID,
+            system_program: solana_sdk::system_program::ID,
+        }
+        .to_account_metas(None),
+        data: torch_market::instruction::OpenShortViaVault {
+            args: torch_market::contexts::OpenPositionArgs {
+                position_index: 0,
+                collateral: 1_000_000_000,
+                min_out: 1,
             },
         }
         .data(),

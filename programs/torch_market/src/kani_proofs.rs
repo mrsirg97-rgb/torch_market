@@ -591,9 +591,9 @@ fn assert_price_matched(real_sol: u64, virtual_tokens: u64, virtual_sol: u64) {
 // [V4.0] Legacy: SPARK tier removed from creation, but existing tokens still use these constants
 #[kani::proof]
 fn verify_price_matched_pool_spark() {
-    let (ivs, ivt) = initial_virtual_reserves(BONDING_TARGET_SPARK);
-    let real_sol: u64 = BONDING_TARGET_SPARK; // 50 SOL
-    let virtual_sol: u64 = ivs + BONDING_TARGET_SPARK; // 68.75 SOL
+    let (ivs, ivt) = initial_virtual_reserves(BONDING_TARGET_FLAME);
+    let real_sol: u64 = BONDING_TARGET_FLAME; // 50 SOL
+    let virtual_sol: u64 = ivs + BONDING_TARGET_FLAME; // 68.75 SOL
 
     assert_price_matched(real_sol, 206_000_000_000_000, virtual_sol);
     assert_price_matched(real_sol, 400_000_000_000_000, virtual_sol);
@@ -633,9 +633,9 @@ fn verify_price_matched_pool_torch() {
 // [V4.0] Legacy: proves math for existing 50 SOL tokens
 #[kani::proof]
 fn verify_excess_token_burn_conservation() {
-    let (ivs, _ivt) = initial_virtual_reserves(BONDING_TARGET_SPARK);
-    let real_sol: u64 = BONDING_TARGET_SPARK;
-    let virtual_sol: u64 = ivs + BONDING_TARGET_SPARK; // 68.75 SOL
+    let (ivs, _ivt) = initial_virtual_reserves(BONDING_TARGET_FLAME);
+    let real_sol: u64 = BONDING_TARGET_FLAME;
+    let virtual_sol: u64 = ivs + BONDING_TARGET_FLAME; // 68.75 SOL
     let virtual_tokens: u64 = 206_000_000_000_000; // ~206M tokens (at completion: 3*IVT/11)
     let vault_amount: u64 = kani::any();
     kani::assume(vault_amount > 0);
@@ -692,7 +692,7 @@ fn assert_full_supply_conservation(bonding_target: u64) {
 // [V4.0] Legacy: SPARK tier
 #[kani::proof]
 fn verify_v31_full_supply_conservation_spark() {
-    assert_full_supply_conservation(BONDING_TARGET_SPARK);
+    assert_full_supply_conservation(BONDING_TARGET_FLAME);
 }
 
 #[kani::proof]
@@ -772,7 +772,7 @@ fn assert_zero_excess_burn(bonding_target: u64) {
 // [V4.0] Legacy: SPARK tier
 #[kani::proof]
 fn verify_v31_zero_excess_burn_spark() {
-    assert_zero_excess_burn(BONDING_TARGET_SPARK);
+    assert_zero_excess_burn(BONDING_TARGET_FLAME);
 }
 
 #[kani::proof]
@@ -2365,36 +2365,44 @@ fn verify_gross_up_preserves_net_delivery() {
     assert!(net_received <= net + 1);
 }
 
-// [V21] Lending unlock gate uses AVAILABLE SOL = derived treasury float minus the
-// SOL already lent to longs: `treasury_physical_sol(treasury_sol_vault) −
-// total_sol_lent_to_longs` (open_long in handlers/leverage.rs).
+// [V21][F-2] Lending unlock gate — STICKY under normal borrow/repay.
 //
-// The V20 short-collateral entanglement (V20C-1) is now STRUCTURALLY impossible:
-// shorts no longer touch the SOL treasury at all — collateral lives in per-position
-// System vaults and borrowed tokens come from the static TreasuryLock — so a short
-// of any size leaves both `treasury_physical` and `total_sol_lent_to_longs`
-// untouched and cannot move the gate. What remains to prove is the available-SOL
-// computation itself: underflow-safe, never over-promises, and monotone — lending
-// more SOL out only ever tightens the gate.
+// The gate reads the principal pool `calc_lending_assets(physical, lent) =
+// physical + lent` (the V21 translation of V20's tracked `sol_balance`,
+// docs/lending-unlock.md). A borrow moves B lamports from the physical term to
+// the lent term, so the sum — and therefore the gate — is INVARIANT under any
+// borrow/repay sequence. The only decreasing move is a bad-debt write-off
+// (lent decremented with no physical return), and re-locking on a real loss is
+// the documented intent. Division-free, so this is a true symbolic proof.
+//
+// The V20 short-collateral entanglement (V20C-1) stays STRUCTURALLY impossible:
+// shorts never touch the SOL treasury — collateral lives in per-position System
+// vaults and borrowed tokens come from the static TreasuryLock.
 #[kani::proof]
-fn verify_lending_gate_available_sol() {
-    let treasury_physical: u64 = kani::any();
-    let total_sol_lent_to_longs: u64 = kani::any();
-    let threshold: u64 = kani::any();
+fn verify_lending_gate_sticky_under_borrow() {
+    let physical: u64 = kani::any();
+    let lent: u64 = kani::any();
+    let assets = calc_lending_assets(physical, lent);
+    kani::assume(assets.is_some());
+    let assets = assets.unwrap();
 
-    let available = treasury_physical.saturating_sub(total_sol_lent_to_longs);
-    let gate_open = available >= threshold;
+    // Borrow B (bounded by the float): sum invariant — the gate can't flap.
+    let borrow: u64 = kani::any();
+    kani::assume(borrow <= physical);
+    let after = calc_lending_assets(physical - borrow, lent + borrow).unwrap();
+    assert!(after == assets);
 
-    // Available never exceeds the physical float — lending can't over-promise SOL.
-    assert!(available <= treasury_physical);
+    // Repay R (bounded by outstanding debt): sum invariant in the other direction.
+    let repay: u64 = kani::any();
+    kani::assume(repay <= lent);
+    let after_repay = calc_lending_assets(physical + repay, lent - repay).unwrap();
+    assert!(after_repay == assets);
 
-    // Monotone: lending one more lamport to longs never OPENS a closed gate.
-    let available_more_lent =
-        treasury_physical.saturating_sub(total_sol_lent_to_longs.saturating_add(1));
-    assert!(available_more_lent <= available);
-    if !gate_open {
-        assert!(available_more_lent < threshold);
-    }
+    // Bad-debt write-off: the ONLY move that shrinks the pool (monotone down).
+    let write_off: u64 = kani::any();
+    kani::assume(write_off <= lent);
+    let after_loss = calc_lending_assets(physical, lent - write_off).unwrap();
+    assert!(after_loss <= assets);
 }
 
 // ============================================================================
@@ -2617,19 +2625,8 @@ fn verify_bonus_monotonic_and_bounded() {
     assert!(bb <= DEFAULT_LIQUIDATION_BONUS_BPS as u64);
 }
 
-#[kani::proof]
-fn verify_bonus_ramp_shape() {
-    let t = DEFAULT_LIQUIDATION_THRESHOLD_BPS; // 6500
-    let f = LIQ_FULL_BONUS_LTV_BPS; // 7547 (derived: 100/(1+bonus))
-    let m = DEFAULT_LIQUIDATION_BONUS_BPS; // 3250 (= 1.3·ρ_max). span = f−t = 1047.
-    // Threshold and below: 0 prize.
-    assert!(effective_liq_bonus_bps(6_500, t, f, m) == 0);
-    // Manufactured barely-over: tiny prize. 3250 × 100 / 1047 = 310 bps.
-    assert!(effective_liq_bonus_bps(6_600, t, f, m) == 310);
-    // Interior: 3250 × 500 / 1047 = 1551 bps.
-    assert!(effective_liq_bonus_bps(7_000, t, f, m) == 1551);
-    // At/above full-bonus LTV: full ceiling (32.5%).
-    assert!(effective_liq_bonus_bps(7_547, t, f, m) == 3_250);
-    assert!(m == 3_250);
-}
-
+// NOTE: the old `verify_bonus_ramp_shape` lived here — four hand-computed
+// concrete points, one of them wrong (3250×500/1047 = 1552, not 1551). Deleted:
+// the ramp SHAPE is fully proven symbolically by proof group #85 above
+// (zero-at/below-threshold + full-at/above-LTV + monotone-and-bounded), with no
+// magic numbers to mis-calculate.

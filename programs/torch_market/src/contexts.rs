@@ -642,6 +642,7 @@ pub struct SwapFeesToSol<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[event_cpi]
 #[derive(Accounts)]
 pub struct ReclaimFailedToken<'info> {
     #[account(mut)]
@@ -1134,16 +1135,15 @@ pub struct OpenShortPosition<'info> {
     pub shorter: Signer<'info>,
     pub mint: Box<InterfaceAccount<'info, MintInterface>>,
     #[account(
-        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
-        bump = bonding_curve.bump,
-        constraint = bonding_curve.migrated @ TorchMarketError::NotMigrated,
-        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
-    )]
-    pub bonding_curve: Box<Account<'info, BondingCurve>>,
-    #[account(
         mut,
         seeds = [TREASURY_SEED, mint.key().as_ref()],
         bump = treasury.bump,
+        // Migrated ⟺ baseline_initialized (set once in migrate_to_dex);
+        // replaces the bonding_curve account that existed in this context
+        // only for the migrated/!reclaimed checks (reclaim is mutually
+        // exclusive with bonding completion). Dropping the account frees
+        // try_accounts stack and one account per leverage tx.
+        constraint = treasury.baseline_initialized @ TorchMarketError::NotMigrated,
         constraint = treasury.short_selling_enabled @ TorchMarketError::ShortNotEnabled,
         constraint = args.collateral > 0 @ TorchMarketError::EmptyBorrowRequest,
     )]
@@ -1182,6 +1182,18 @@ pub struct OpenShortPosition<'info> {
         bump,
     )]
     pub position: Box<Account<'info, Position>>,
+    // [F-1][F-3] Per-(owner, mint) aggregate exposure — enforces the per-USER
+    // caps across position_index values. Lazily created on first open.
+    // Zero-copy loader: a borsh Account here overflows the 4096-byte
+    // try_accounts stack frame on the heavier via_vault contexts.
+    #[account(
+        init_if_needed,
+        payer = shorter,
+        space = UserRisk::LEN,
+        seeds = [USER_RISK_SEED, shorter.key().as_ref(), mint.key().as_ref()],
+        bump,
+    )]
+    pub user_risk: AccountLoader<'info, UserRisk>,
     /// CHECK: system-owned per-position SOL vault (0 data, holds lamports only).
     /// Receives net collateral + atomic-sale proceeds; sol_source of the sell.
     #[account(
@@ -1242,16 +1254,15 @@ pub struct OpenShortViaVault<'info> {
     pub vault_wallet_link: Box<Account<'info, VaultWalletLink>>,
     pub mint: Box<InterfaceAccount<'info, MintInterface>>,
     #[account(
-        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
-        bump = bonding_curve.bump,
-        constraint = bonding_curve.migrated @ TorchMarketError::NotMigrated,
-        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
-    )]
-    pub bonding_curve: Box<Account<'info, BondingCurve>>,
-    #[account(
         mut,
         seeds = [TREASURY_SEED, mint.key().as_ref()],
         bump = treasury.bump,
+        // Migrated ⟺ baseline_initialized (set once in migrate_to_dex);
+        // replaces the bonding_curve account that existed in this context
+        // only for the migrated/!reclaimed checks (reclaim is mutually
+        // exclusive with bonding completion). Dropping the account frees
+        // try_accounts stack and one account per leverage tx.
+        constraint = treasury.baseline_initialized @ TorchMarketError::NotMigrated,
         constraint = treasury.short_selling_enabled @ TorchMarketError::ShortNotEnabled,
         constraint = args.collateral > 0 @ TorchMarketError::EmptyBorrowRequest,
     )]
@@ -1285,6 +1296,18 @@ pub struct OpenShortViaVault<'info> {
         bump,
     )]
     pub position: Box<Account<'info, Position>>,
+    // [F-1][F-3] Per-(owner, mint) aggregate exposure — enforces the per-USER
+    // caps across position_index values. Lazily created on first open.
+    // Zero-copy loader: a borsh Account here overflows the 4096-byte
+    // try_accounts stack frame on the heavier via_vault contexts.
+    #[account(
+        init_if_needed,
+        payer = signer,
+        space = UserRisk::LEN,
+        seeds = [USER_RISK_SEED, torch_vault.key().as_ref(), mint.key().as_ref()],
+        bump,
+    )]
+    pub user_risk: AccountLoader<'info, UserRisk>,
     /// CHECK: vault-seeded per-position SOL vault (0 data). Receives net collateral
     /// + atomic-sale proceeds; sol_source of the sell.
     #[account(
@@ -1319,17 +1342,15 @@ pub struct CloseShortPosition<'info> {
     pub shorter: Signer<'info>,
     pub mint: Box<InterfaceAccount<'info, MintInterface>>,
     #[account(
-        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
-        bump = bonding_curve.bump,
-        constraint = bonding_curve.migrated @ TorchMarketError::NotMigrated,
-        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
-        constraint = args.repay_fraction_bps > 0 && args.repay_fraction_bps <= 10_000 @ TorchMarketError::ZeroAmount,
-    )]
-    pub bonding_curve: Box<Account<'info, BondingCurve>>,
-    #[account(
         mut,
         seeds = [TREASURY_SEED, mint.key().as_ref()],
         bump = treasury.bump,
+        // Migrated ⟺ baseline_initialized (set once in migrate_to_dex);
+        // replaces the bonding_curve account that existed in this context
+        // only for the migrated/!reclaimed checks (reclaim is mutually
+        // exclusive with bonding completion). Dropping the account frees
+        // try_accounts stack and one account per leverage tx.
+        constraint = treasury.baseline_initialized @ TorchMarketError::NotMigrated,
     )]
     pub treasury: Box<Account<'info, Treasury>>,
     // mut: passed as deep_pool Swap's `user`, which deep_pool marks writable.
@@ -1354,6 +1375,15 @@ pub struct CloseShortPosition<'info> {
         constraint = position.debt_amount > 0 @ TorchMarketError::NoActiveShort,
     )]
     pub position: Box<Account<'info, Position>>,
+    // [F-1][F-3] Per-(owner, mint) aggregate exposure — debt repaid/written
+    // off here releases the owner's per-user cap headroom. (Zero-copy loader —
+    // see the open contexts.)
+    #[account(
+        mut,
+        seeds = [USER_RISK_SEED, shorter.key().as_ref(), mint.key().as_ref()],
+        bump,
+    )]
+    pub user_risk: AccountLoader<'info, UserRisk>,
     /// CHECK: system-owned per-position SOL vault. SOL source for the buy +
     /// holds the leftover surplus returned to the user.
     #[account(
@@ -1409,17 +1439,15 @@ pub struct CloseShortViaVault<'info> {
     pub vault_wallet_link: Box<Account<'info, VaultWalletLink>>,
     pub mint: Box<InterfaceAccount<'info, MintInterface>>,
     #[account(
-        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
-        bump = bonding_curve.bump,
-        constraint = bonding_curve.migrated @ TorchMarketError::NotMigrated,
-        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
-        constraint = args.repay_fraction_bps > 0 && args.repay_fraction_bps <= 10_000 @ TorchMarketError::ZeroAmount,
-    )]
-    pub bonding_curve: Box<Account<'info, BondingCurve>>,
-    #[account(
         mut,
         seeds = [TREASURY_SEED, mint.key().as_ref()],
         bump = treasury.bump,
+        // Migrated ⟺ baseline_initialized (set once in migrate_to_dex);
+        // replaces the bonding_curve account that existed in this context
+        // only for the migrated/!reclaimed checks (reclaim is mutually
+        // exclusive with bonding completion). Dropping the account frees
+        // try_accounts stack and one account per leverage tx.
+        constraint = treasury.baseline_initialized @ TorchMarketError::NotMigrated,
     )]
     pub treasury: Box<Account<'info, Treasury>>,
     // mut: passed as deep_pool Swap's `user`, which deep_pool marks writable.
@@ -1443,6 +1471,15 @@ pub struct CloseShortViaVault<'info> {
         constraint = position.debt_amount > 0 @ TorchMarketError::NoActiveShort,
     )]
     pub position: Box<Account<'info, Position>>,
+    // [F-1][F-3] Per-(owner, mint) aggregate exposure — debt repaid/written
+    // off here releases the owner's per-user cap headroom. (Zero-copy loader —
+    // see the open contexts.)
+    #[account(
+        mut,
+        seeds = [USER_RISK_SEED, torch_vault.key().as_ref(), mint.key().as_ref()],
+        bump,
+    )]
+    pub user_risk: AccountLoader<'info, UserRisk>,
     /// CHECK: vault-seeded per-position SOL vault. SOL source for the buy + holds
     /// the leftover surplus, which returns to the vault on full close.
     #[account(
@@ -1480,16 +1517,15 @@ pub struct LiquidateShortPosition<'info> {
     pub borrower: AccountInfo<'info>,
     pub mint: Box<InterfaceAccount<'info, MintInterface>>,
     #[account(
-        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
-        bump = bonding_curve.bump,
-        constraint = bonding_curve.migrated @ TorchMarketError::NotMigrated,
-        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
-    )]
-    pub bonding_curve: Box<Account<'info, BondingCurve>>,
-    #[account(
         mut,
         seeds = [TREASURY_SEED, mint.key().as_ref()],
         bump = treasury.bump,
+        // Migrated ⟺ baseline_initialized (set once in migrate_to_dex);
+        // replaces the bonding_curve account that existed in this context
+        // only for the migrated/!reclaimed checks (reclaim is mutually
+        // exclusive with bonding completion). Dropping the account frees
+        // try_accounts stack and one account per leverage tx.
+        constraint = treasury.baseline_initialized @ TorchMarketError::NotMigrated,
     )]
     pub treasury: Box<Account<'info, Treasury>>,
     #[account(
@@ -1512,6 +1548,15 @@ pub struct LiquidateShortPosition<'info> {
         constraint = position.debt_amount > 0 @ TorchMarketError::NoActiveShort,
     )]
     pub position: Box<Account<'info, Position>>,
+    // [F-1][F-3] Per-(owner, mint) aggregate exposure — debt repaid/written
+    // off here releases the owner's per-user cap headroom. (Zero-copy loader —
+    // see the open contexts.)
+    #[account(
+        mut,
+        seeds = [USER_RISK_SEED, borrower.key().as_ref(), mint.key().as_ref()],
+        bump,
+    )]
+    pub user_risk: AccountLoader<'info, UserRisk>,
     /// CHECK: system-owned per-position SOL vault — seized SOL paid to liquidator.
     #[account(
         mut,
@@ -1567,16 +1612,15 @@ pub struct LiquidateShortViaVault<'info> {
     pub vault_sol: AccountInfo<'info>,
     pub mint: Box<InterfaceAccount<'info, MintInterface>>,
     #[account(
-        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
-        bump = bonding_curve.bump,
-        constraint = bonding_curve.migrated @ TorchMarketError::NotMigrated,
-        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
-    )]
-    pub bonding_curve: Box<Account<'info, BondingCurve>>,
-    #[account(
         mut,
         seeds = [TREASURY_SEED, mint.key().as_ref()],
         bump = treasury.bump,
+        // Migrated ⟺ baseline_initialized (set once in migrate_to_dex);
+        // replaces the bonding_curve account that existed in this context
+        // only for the migrated/!reclaimed checks (reclaim is mutually
+        // exclusive with bonding completion). Dropping the account frees
+        // try_accounts stack and one account per leverage tx.
+        constraint = treasury.baseline_initialized @ TorchMarketError::NotMigrated,
     )]
     pub treasury: Box<Account<'info, Treasury>>,
     #[account(
@@ -1600,6 +1644,15 @@ pub struct LiquidateShortViaVault<'info> {
         constraint = position.debt_amount > 0 @ TorchMarketError::NoActiveShort,
     )]
     pub position: Box<Account<'info, Position>>,
+    // [F-1][F-3] Per-(owner, mint) aggregate exposure — debt repaid/written
+    // off here releases the owner's per-user cap headroom. (Zero-copy loader —
+    // see the open contexts.)
+    #[account(
+        mut,
+        seeds = [USER_RISK_SEED, torch_vault.key().as_ref(), mint.key().as_ref()],
+        bump,
+    )]
+    pub user_risk: AccountLoader<'info, UserRisk>,
     /// CHECK: vault-seeded per-position SOL vault — seized SOL paid to liquidator,
     /// residual flows to vault_sol.
     #[account(
@@ -1636,16 +1689,15 @@ pub struct OpenLongPosition<'info> {
     pub borrower: Signer<'info>,
     pub mint: Box<InterfaceAccount<'info, MintInterface>>,
     #[account(
-        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
-        bump = bonding_curve.bump,
-        constraint = bonding_curve.migrated @ TorchMarketError::LendingRequiresMigration,
-        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
-    )]
-    pub bonding_curve: Box<Account<'info, BondingCurve>>,
-    #[account(
         mut,
         seeds = [TREASURY_SEED, mint.key().as_ref()],
         bump = treasury.bump,
+        // Migrated ⟺ baseline_initialized (set once in migrate_to_dex);
+        // replaces the bonding_curve account that existed in this context
+        // only for the migrated/!reclaimed checks (reclaim is mutually
+        // exclusive with bonding completion). Dropping the account frees
+        // try_accounts stack and one account per leverage tx.
+        constraint = treasury.baseline_initialized @ TorchMarketError::LendingRequiresMigration,
         constraint = treasury.lending_enabled @ TorchMarketError::LendingNotEnabled,
         constraint = args.collateral > 0 @ TorchMarketError::EmptyBorrowRequest,
     )]
@@ -1673,6 +1725,18 @@ pub struct OpenLongPosition<'info> {
         bump,
     )]
     pub position: Box<Account<'info, Position>>,
+    // [F-1][F-3] Per-(owner, mint) aggregate exposure — enforces the per-USER
+    // caps across position_index values. Lazily created on first open.
+    // Zero-copy loader: a borsh Account here overflows the 4096-byte
+    // try_accounts stack frame on the heavier via_vault contexts.
+    #[account(
+        init_if_needed,
+        payer = borrower,
+        space = UserRisk::LEN,
+        seeds = [USER_RISK_SEED, borrower.key().as_ref(), mint.key().as_ref()],
+        bump,
+    )]
+    pub user_risk: AccountLoader<'info, UserRisk>,
     // Per-position token vault: canonical ATA of the Position PDA. Holds
     // collateral + atomically-bought tokens. deep_pool's Swap requires the
     // token account be the ATA of `user` (= position), so an ATA is mandatory.
@@ -1721,17 +1785,15 @@ pub struct CloseLongPosition<'info> {
     #[account(mut)]
     pub mint: Box<InterfaceAccount<'info, MintInterface>>,
     #[account(
-        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
-        bump = bonding_curve.bump,
-        constraint = bonding_curve.migrated @ TorchMarketError::NotMigrated,
-        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
-        constraint = args.repay_fraction_bps > 0 && args.repay_fraction_bps <= 10_000 @ TorchMarketError::ZeroAmount,
-    )]
-    pub bonding_curve: Box<Account<'info, BondingCurve>>,
-    #[account(
         mut,
         seeds = [TREASURY_SEED, mint.key().as_ref()],
         bump = treasury.bump,
+        // Migrated ⟺ baseline_initialized (set once in migrate_to_dex);
+        // replaces the bonding_curve account that existed in this context
+        // only for the migrated/!reclaimed checks (reclaim is mutually
+        // exclusive with bonding completion). Dropping the account frees
+        // try_accounts stack and one account per leverage tx.
+        constraint = treasury.baseline_initialized @ TorchMarketError::NotMigrated,
     )]
     pub treasury: Box<Account<'info, Treasury>>,
     // System-owned SOL custody — debt repays land here. The spendable treasury
@@ -1749,6 +1811,15 @@ pub struct CloseLongPosition<'info> {
         constraint = position.debt_amount > 0 @ TorchMarketError::NoActiveLoan,
     )]
     pub position: Box<Account<'info, Position>>,
+    // [F-1][F-3] Per-(owner, mint) aggregate exposure — debt repaid/written
+    // off here releases the owner's per-user cap headroom. (Zero-copy loader —
+    // see the open contexts.)
+    #[account(
+        mut,
+        seeds = [USER_RISK_SEED, borrower.key().as_ref(), mint.key().as_ref()],
+        bump,
+    )]
+    pub user_risk: AccountLoader<'info, UserRisk>,
     // Token source for the atomic sell (ATA of the Position PDA).
     #[account(
         mut,
@@ -1796,16 +1867,15 @@ pub struct LiquidateLongPosition<'info> {
     #[account(mut)]
     pub mint: Box<InterfaceAccount<'info, MintInterface>>,
     #[account(
-        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
-        bump = bonding_curve.bump,
-        constraint = bonding_curve.migrated @ TorchMarketError::NotMigrated,
-        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
-    )]
-    pub bonding_curve: Box<Account<'info, BondingCurve>>,
-    #[account(
         mut,
         seeds = [TREASURY_SEED, mint.key().as_ref()],
         bump = treasury.bump,
+        // Migrated ⟺ baseline_initialized (set once in migrate_to_dex);
+        // replaces the bonding_curve account that existed in this context
+        // only for the migrated/!reclaimed checks (reclaim is mutually
+        // exclusive with bonding completion). Dropping the account frees
+        // try_accounts stack and one account per leverage tx.
+        constraint = treasury.baseline_initialized @ TorchMarketError::NotMigrated,
     )]
     pub treasury: Box<Account<'info, Treasury>>,
     // System-owned SOL custody — debt repays land here. The spendable treasury
@@ -1823,6 +1893,15 @@ pub struct LiquidateLongPosition<'info> {
         constraint = position.debt_amount > 0 @ TorchMarketError::NoActiveLoan,
     )]
     pub position: Box<Account<'info, Position>>,
+    // [F-1][F-3] Per-(owner, mint) aggregate exposure — debt repaid/written
+    // off here releases the owner's per-user cap headroom. (Zero-copy loader —
+    // see the open contexts.)
+    #[account(
+        mut,
+        seeds = [USER_RISK_SEED, borrower.key().as_ref(), mint.key().as_ref()],
+        bump,
+    )]
+    pub user_risk: AccountLoader<'info, UserRisk>,
     // Seized tokens come out of the position vault (ATA of the Position PDA).
     #[account(
         mut,
@@ -1893,16 +1972,15 @@ pub struct OpenLongViaVault<'info> {
     pub vault_wallet_link: Box<Account<'info, VaultWalletLink>>,
     pub mint: Box<InterfaceAccount<'info, MintInterface>>,
     #[account(
-        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
-        bump = bonding_curve.bump,
-        constraint = bonding_curve.migrated @ TorchMarketError::LendingRequiresMigration,
-        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
-    )]
-    pub bonding_curve: Box<Account<'info, BondingCurve>>,
-    #[account(
         mut,
         seeds = [TREASURY_SEED, mint.key().as_ref()],
         bump = treasury.bump,
+        // Migrated ⟺ baseline_initialized (set once in migrate_to_dex);
+        // replaces the bonding_curve account that existed in this context
+        // only for the migrated/!reclaimed checks (reclaim is mutually
+        // exclusive with bonding completion). Dropping the account frees
+        // try_accounts stack and one account per leverage tx.
+        constraint = treasury.baseline_initialized @ TorchMarketError::LendingRequiresMigration,
         constraint = treasury.lending_enabled @ TorchMarketError::LendingNotEnabled,
         constraint = args.collateral > 0 @ TorchMarketError::EmptyBorrowRequest,
     )]
@@ -1930,6 +2008,18 @@ pub struct OpenLongViaVault<'info> {
         bump,
     )]
     pub position: Box<Account<'info, Position>>,
+    // [F-1][F-3] Per-(owner, mint) aggregate exposure — enforces the per-USER
+    // caps across position_index values. Lazily created on first open.
+    // Zero-copy loader: a borsh Account here overflows the 4096-byte
+    // try_accounts stack frame on the heavier via_vault contexts.
+    #[account(
+        init_if_needed,
+        payer = signer,
+        space = UserRisk::LEN,
+        seeds = [USER_RISK_SEED, torch_vault.key().as_ref(), mint.key().as_ref()],
+        bump,
+    )]
+    pub user_risk: AccountLoader<'info, UserRisk>,
     #[account(
         init,
         payer = signer,
@@ -1999,17 +2089,15 @@ pub struct CloseLongViaVault<'info> {
     #[account(mut)]
     pub mint: Box<InterfaceAccount<'info, MintInterface>>,
     #[account(
-        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
-        bump = bonding_curve.bump,
-        constraint = bonding_curve.migrated @ TorchMarketError::NotMigrated,
-        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
-        constraint = args.repay_fraction_bps > 0 && args.repay_fraction_bps <= 10_000 @ TorchMarketError::ZeroAmount,
-    )]
-    pub bonding_curve: Box<Account<'info, BondingCurve>>,
-    #[account(
         mut,
         seeds = [TREASURY_SEED, mint.key().as_ref()],
         bump = treasury.bump,
+        // Migrated ⟺ baseline_initialized (set once in migrate_to_dex);
+        // replaces the bonding_curve account that existed in this context
+        // only for the migrated/!reclaimed checks (reclaim is mutually
+        // exclusive with bonding completion). Dropping the account frees
+        // try_accounts stack and one account per leverage tx.
+        constraint = treasury.baseline_initialized @ TorchMarketError::NotMigrated,
     )]
     pub treasury: Box<Account<'info, Treasury>>,
     #[account(
@@ -2025,6 +2113,15 @@ pub struct CloseLongViaVault<'info> {
         constraint = position.debt_amount > 0 @ TorchMarketError::NoActiveLoan,
     )]
     pub position: Box<Account<'info, Position>>,
+    // [F-1][F-3] Per-(owner, mint) aggregate exposure — debt repaid/written
+    // off here releases the owner's per-user cap headroom. (Zero-copy loader —
+    // see the open contexts.)
+    #[account(
+        mut,
+        seeds = [USER_RISK_SEED, torch_vault.key().as_ref(), mint.key().as_ref()],
+        bump,
+    )]
+    pub user_risk: AccountLoader<'info, UserRisk>,
     #[account(
         mut,
         associated_token::mint = mint,
@@ -2086,16 +2183,15 @@ pub struct LiquidateLongViaVault<'info> {
     #[account(mut)]
     pub mint: Box<InterfaceAccount<'info, MintInterface>>,
     #[account(
-        seeds = [BONDING_CURVE_SEED, mint.key().as_ref()],
-        bump = bonding_curve.bump,
-        constraint = bonding_curve.migrated @ TorchMarketError::NotMigrated,
-        constraint = !bonding_curve.reclaimed @ TorchMarketError::AlreadyReclaimed,
-    )]
-    pub bonding_curve: Box<Account<'info, BondingCurve>>,
-    #[account(
         mut,
         seeds = [TREASURY_SEED, mint.key().as_ref()],
         bump = treasury.bump,
+        // Migrated ⟺ baseline_initialized (set once in migrate_to_dex);
+        // replaces the bonding_curve account that existed in this context
+        // only for the migrated/!reclaimed checks (reclaim is mutually
+        // exclusive with bonding completion). Dropping the account frees
+        // try_accounts stack and one account per leverage tx.
+        constraint = treasury.baseline_initialized @ TorchMarketError::NotMigrated,
     )]
     pub treasury: Box<Account<'info, Treasury>>,
     #[account(
@@ -2111,6 +2207,15 @@ pub struct LiquidateLongViaVault<'info> {
         constraint = position.debt_amount > 0 @ TorchMarketError::NoActiveLoan,
     )]
     pub position: Box<Account<'info, Position>>,
+    // [F-1][F-3] Per-(owner, mint) aggregate exposure — debt repaid/written
+    // off here releases the owner's per-user cap headroom. (Zero-copy loader —
+    // see the open contexts.)
+    #[account(
+        mut,
+        seeds = [USER_RISK_SEED, torch_vault.key().as_ref(), mint.key().as_ref()],
+        bump,
+    )]
+    pub user_risk: AccountLoader<'info, UserRisk>,
     #[account(
         mut,
         associated_token::mint = mint,

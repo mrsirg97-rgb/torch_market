@@ -9,12 +9,10 @@ import {
   getTokenTreasuryPda,
   getTreasuryLockPda,
   getDeepPoolAccounts,
-  getAllLoanPositions,
-  getAllShortPositions,
-  buildLiquidateTransaction,
+  getAllPositions,
+  buildLiquidateLongTransaction,
   buildLiquidateShortTransaction,
-  type LoanPositionWithKey,
-  type ShortPositionWithKey,
+  type PositionWithKey,
 } from 'torchsdk'
 import { PriceChart, VerifiedBadgeInline } from '@/components'
 import type { PricePoint } from '@/lib/trades'
@@ -128,8 +126,8 @@ export function ChartTabs({
   // Liquidatable positions state
   const wallet = useWallet()
   const sendTransaction = useMwaSendTransaction()
-  const [liquidatableLoans, setLiquidatableLoans] = useState<LoanPositionWithKey[]>([])
-  const [liquidatableShorts, setLiquidatableShorts] = useState<ShortPositionWithKey[]>([])
+  const [liquidatableLoans, setLiquidatableLoans] = useState<PositionWithKey[]>([])
+  const [liquidatableShorts, setLiquidatableShorts] = useState<PositionWithKey[]>([])
   const [liqLoading, setLiqLoading] = useState(false)
   const [liqError, setLiqError] = useState<string | null>(null)
   // Per-row liquidating state, keyed by borrower pubkey.
@@ -220,10 +218,10 @@ export function ChartTabs({
     setLiqLoading(true)
     setLiqError(null)
     try {
-      const opts = effectiveIndexerUrl ? { indexer: effectiveIndexerUrl } : undefined
+      const opts = effectiveIndexerUrl ? { indexer: effectiveIndexerUrl } : {}
       const [loans, shorts] = await Promise.all([
-        getAllLoanPositions(connection, mint.toString(), opts),
-        getAllShortPositions(connection, mint.toString(), opts),
+        getAllPositions(connection, mint.toString(), { ...opts, side: 'long' }),
+        getAllPositions(connection, mint.toString(), { ...opts, side: 'short' }),
       ])
       setLiquidatableLoans(loans.positions.filter((p) => p.health === 'liquidatable'))
       setLiquidatableShorts(shorts.positions.filter((p) => p.health === 'liquidatable'))
@@ -249,7 +247,7 @@ export function ChartTabs({
       setLiqActionError(null)
       setLiquidating((s) => new Set(s).add(borrower))
       try {
-        const build = kind === 'long' ? buildLiquidateTransaction : buildLiquidateShortTransaction
+        const build = kind === 'long' ? buildLiquidateLongTransaction : buildLiquidateShortTransaction
         const { transaction } = await build(connection, {
           mint: mint.toString(),
           liquidator: wallet.publicKey.toString(),
@@ -478,8 +476,8 @@ function LiquidationsView({
   onLiquidate,
   walletConnected,
 }: {
-  loans: LoanPositionWithKey[]
-  shorts: ShortPositionWithKey[]
+  loans: PositionWithKey[]
+  shorts: PositionWithKey[]
   loading: boolean
   error: string | null
   actionError: string | null
@@ -523,28 +521,28 @@ function LiquidationsView({
       )}
       {loans.map((p) => (
         <LiquidatableRow
-          key={`loan-${p.borrower}`}
+          key={`loan-${p.owner}`}
           kind="long"
-          borrower={p.borrower}
+          borrower={p.owner}
           ltvBps={p.current_ltv_bps}
           collatLabel={formatTokens(BigInt(Math.floor(p.collateral_amount)))}
           debtLabel={`${formatSol(p.total_owed)} SOL`}
-          liquidating={liquidating.has(p.borrower)}
+          liquidating={liquidating.has(p.owner)}
           walletConnected={walletConnected}
-          onLiquidate={() => onLiquidate('long', p.borrower)}
+          onLiquidate={() => onLiquidate('long', p.owner)}
         />
       ))}
       {shorts.map((p) => (
         <LiquidatableRow
-          key={`short-${p.shorter}`}
+          key={`short-${p.owner}`}
           kind="short"
-          borrower={p.shorter}
+          borrower={p.owner}
           ltvBps={p.current_ltv_bps}
-          collatLabel={`${formatSol(p.sol_collateral)} SOL`}
-          debtLabel={formatTokens(BigInt(Math.floor(p.total_owed_tokens)))}
-          liquidating={liquidating.has(p.shorter)}
+          collatLabel={`${formatSol(p.collateral_amount)} SOL`}
+          debtLabel={formatTokens(BigInt(Math.floor(p.total_owed)))}
+          liquidating={liquidating.has(p.owner)}
           walletConnected={walletConnected}
-          onLiquidate={() => onLiquidate('short', p.shorter)}
+          onLiquidate={() => onLiquidate('short', p.owner)}
         />
       ))}
     </div>

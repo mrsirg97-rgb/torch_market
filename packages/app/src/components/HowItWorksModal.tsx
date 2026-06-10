@@ -62,7 +62,7 @@ export function HowItWorksModal({ isOpen, onClose }: HowItWorksModalProps) {
                 { step: '2', title: 'Bond', desc: 'Buyers swap SOL for the asset on the bonding curve. 17.5%→2.5% of incoming SOL routes to the treasury (decays as bonding fills). 2% max wallet.' },
                 { step: '3', title: 'Migrate', desc: 'Anyone triggers migration. A Raydium pool is created, LP burned forever, mint/freeze authority revoked permanently.' },
                 { step: '4', title: 'Trade', desc: 'The market trades on Raydium. A 0.07% transfer fee on every movement harvests to the treasury as SOL — the treasury grows perpetually.' },
-                { step: '5', title: 'Margin', desc: 'Borrow SOL against your position as collateral. Short by posting SOL and borrowing from the 300M reserve. Max LTV adapts to pool depth (25–50%).' },
+                { step: '5', title: 'Margin', desc: 'Borrow SOL against your position as collateral. Short by posting SOL and borrowing from the 300M reserve. Max LTV scales with pool depth (30–60%), and a per-position size cap holds any position to 25% of pool depth.' },
               ].map(({ step, title, desc }) => (
                 <div key={step} className="flex gap-3">
                   <div
@@ -87,13 +87,14 @@ export function HowItWorksModal({ isOpen, onClose }: HowItWorksModalProps) {
             </h3>
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs" style={{ color: 'var(--muted)' }}>
               {[
-                ['Max LTV', '50%'],
+                ['Max LTV', '30–60% (depth-scaled)'],
+                ['Size Cap', '25% of pool depth'],
                 ['Liquidation', '65%'],
-                ['Interest', '2% / epoch (~7 days)'],
-                ['Liq Bonus', '10%'],
+                ['Interest', '1.5% / epoch (~7 days)'],
+                ['Liq Bonus', '32.5% (depth-derived)'],
                 ['Utilization Cap', '80%'],
-                ['Per-User Cap', '5× collateral share'],
-                ['Pricing', 'Raydium pool (no oracle)'],
+                ['Per-User Cap', '23× share, 20% max'],
+                ['Pricing', 'DeepPool TWAP (no external oracle)'],
                 ['Positions', 'Isolated per user per market'],
               ].map(([label, value]) => (
                 <div key={label} className="flex justify-between py-0.5">

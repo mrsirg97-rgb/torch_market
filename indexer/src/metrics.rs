@@ -148,6 +148,8 @@ pub fn event_labels(event: &crate::contracts::AnyEvent) -> (&'static str, &'stat
                 TorchEvent::OpenLong(_) => "open_long",
                 TorchEvent::CloseLong(_) => "close_long",
                 TorchEvent::LiquidateLong(_) => "liquidate_long",
+                TorchEvent::BondingCompleted(_) => "bonding_completed",
+                TorchEvent::TokenReclaimed(_) => "token_reclaimed",
                 TorchEvent::RevivalContribution(_) => "revival_contribution",
                 TorchEvent::TokenRevived(_) => "token_revived",
             },

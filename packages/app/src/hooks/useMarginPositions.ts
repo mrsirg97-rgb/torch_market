@@ -2,15 +2,15 @@
 
 import { useEffect, useState } from 'react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
-import { getLoanPosition, getShortPosition } from 'torchsdk'
-import type { LoanPositionInfo, ShortPositionInfo } from 'torchsdk'
+import { getPosition } from 'torchsdk'
+import type { PositionInfo } from 'torchsdk'
 
 const isDev = process.env.NODE_ENV === 'development'
 
 export interface MarginPositionEntry {
   mint: string
-  loan: LoanPositionInfo | null
-  short: ShortPositionInfo | null
+  loan: PositionInfo | null
+  short: PositionInfo | null
 }
 
 /**
@@ -43,11 +43,12 @@ export function useMarginPositions(heldMints: string[]): {
         const results = await Promise.all(
           heldMints.map(async (mint) => {
             const [loan, short] = await Promise.all([
-              getLoanPosition(connection, mint, wallet).catch(() => null),
-              getShortPosition(connection, mint, wallet).catch(() => null),
+              getPosition(connection, mint, wallet, 'long').catch(() => null),
+              getPosition(connection, mint, wallet, 'short').catch(() => null),
             ])
-            const hasLoan = loan && loan.borrowed_amount > 0
-            const hasShort = short && short.sol_collateral > 0
+            // [V21] unified PositionInfo: long debt is SOL, short collateral is SOL.
+            const hasLoan = loan && loan.debt_amount > 0
+            const hasShort = short && short.collateral_amount > 0
             if (!hasLoan && !hasShort) return null
             return {
               mint,

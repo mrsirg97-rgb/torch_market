@@ -85,7 +85,6 @@ export interface Treasury {
   liquidation_threshold_bps: number
   liquidation_bonus_bps: number
   liquidation_close_bps: number
-  lending_utilization_cap_bps: number
 }
 
 export interface TorchVault {
@@ -148,6 +147,7 @@ export interface ProtocolTreasury {
   total_volume_current_epoch: BN
   total_volume_previous_epoch: BN
   distributable_amount: BN
+  epoch_distributable_snapshot: BN
   bump: number
 }
 
@@ -224,6 +224,18 @@ export const getPositionPda = (
       Buffer.from([side === 'short' ? POSITION_SIDE_SHORT : POSITION_SIDE_LONG]),
       u32le(positionIndex),
     ],
+    PROGRAM_ID,
+  )
+
+// [F-1] Per-(owner, mint) aggregate leverage exposure (UserRisk). Owner is the
+// wallet (direct) or the TorchVault PDA (via_vault) — the per-user caps pool
+// across all of an owner's position_index values through this account.
+export const getUserRiskPda = (
+  owner: PublicKey,
+  mint: PublicKey,
+): [PublicKey, number] =>
+  PublicKey.findProgramAddressSync(
+    [Buffer.from('user_risk'), owner.toBuffer(), mint.toBuffer()],
     PROGRAM_ID,
   )
 

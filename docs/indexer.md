@@ -47,7 +47,7 @@ Single Rust crate, two program ingestion streams, one DB:
 
 **Stream side** (`stream/`): Yellowstone → per-program decoder → writer. Decoders are isolated by program — torch events never touch deep_pool tables and vice versa, except via the migration FK linking `markets.deep_pool_pubkey` → `pools.pubkey`.
 
-**Subscription gotcha**: Use `SubscribeRequestFilterTransactions`, not `SubscribeRequestFilterBlocks`, for "subscribe to all activity touching program X". The blocks filter delivers block shells with transactions filtered inside, but program-touching txs don't reliably surface in the delivered block's `transactions` field. The transactions filter is Helius's documented canonical pattern and delivers each matching tx as its own `UpdateOneof::Transaction`. See `stream/grpc.rs::subscribe_once`. Symptom of getting this wrong: `blocks_written_total` rises at network rate (the writer commits empty batches) but `events_total` stays at zero forever — looks alive, sees nothing.
+**Subscription note (2026-06-09: the code subscribes to BLOCK updates and iterates `block.transactions` in chain order — `stream/grpc.rs` is the source of truth; the note below describes an earlier mid-migration state):** Use `SubscribeRequestFilterTransactions`, not `SubscribeRequestFilterBlocks`, for "subscribe to all activity touching program X". The blocks filter delivers block shells with transactions filtered inside, but program-touching txs don't reliably surface in the delivered block's `transactions` field. The transactions filter is Helius's documented canonical pattern and delivers each matching tx as its own `UpdateOneof::Transaction`. See `stream/grpc.rs::subscribe_once`. Symptom of getting this wrong: `blocks_written_total` rises at network rate (the writer commits empty batches) but `events_total` stays at zero forever — looks alive, sees nothing.
 
 **API side** (`api.rs` + `services/` + `domain/`): axum, per-request `REPEATABLE READ` transaction, lazy-loaded service composition. Direct copy of the deep_pool pattern.
 
@@ -60,8 +60,8 @@ All event tables carry `(signature, inner_ix_idx) UNIQUE` so backfill can replay
 ```
 markets
   mint (PK), name, symbol, metadata_uri, image_url, creator,
-  status (RS | RD | ASN | MIGRATED | RECLAIMED),
-  tier (spark | flame | torch), sol_target,
+  status (BONDING | COMPLETE | MIGRATED | RECLAIMED),
+  tier (flame | torch), sol_target,   -- spark (50 SOL) removed from the program
   virtual_sol, virtual_token, real_sol, real_token,
   bonding_complete_slot, migrated_slot, last_activity_slot,
   deep_pool_pubkey (nullable, FK → pools.pubkey post-migration),
@@ -116,7 +116,7 @@ metadata_fetch_log
 
 ## V21 Leverage Migration
 
-**Status:** design (this section); implementation pending. **Supersedes** the V20 `loans`/`shorts` tables and the `Loan*`/`Short*` decoders in the Schema section above — those are stale and will be replaced.
+**Status:** IMPLEMENTED (2026-06-09) — decoders, positions/position_events tables, writer reconcile, API. This section is the design record. **Supersedes** the V20 `loans`/`shorts` tables and the `Loan*`/`Short*` decoders in the Schema section above — those are stale and will be replaced.
 
 ### Why
 
@@ -316,3 +316,50 @@ The `indexer` URL threads through `NetworkContext` so the frontend passes it onc
 - **Holder-distribution analytics** beyond count + top-N.
 - **Cross-mint correlations / leaderboards.**
 - **User-stats indexing** — current on-chain `UserStats` is bonding-only; the indexer's own `trades` and `swaps` aggregations will eventually supersede it, but for v1 we don't write a `user_stats` table.
+
+## Addenda (2026-06-09 correctness pass)
+
+- **Chain ordering [I-1]:** the writer sorts each block by `(tx_idx, inner_ix_idx)`
+  (Yellowstone block position live; per-slot signature-walk ordinal on backfill).
+  Serial ids are therefore intra-slot chain order; read queries tiebreak on id,
+  never signature.
+- **Lifecycle [I-4]:** every status transition rides a program event —
+  `BondingCompleted` → COMPLETE, `MigratedToDex` → MIGRATED, `TokenReclaimed` →
+  RECLAIMED, `TokenRevived` → BONDING. The indexer never derives state the
+  program didn't announce. ASN removed (dead); RS/RD relabeled BONDING/COMPLETE.
+- **Position reconcile [I-2]:** mirrors the on-chain Position exactly —
+  `debt −= principal_paid`; `collateral_amount` static (audit);
+  `vault_balance −= event deltas`; `accrued_interest_stored = prior +
+  calc_interest(prior_debt, 150 bps, Δslots) − interest_paid`. Liquidations
+  split interest-first like the program.
+- **Backfill ≡ live [I-5]:** backfill seeds `lp_supply` from the DB (an empty
+  cache wrote `lp_supply = 0` reserve snapshots).
+- **Known accepted gaps:** `ts()` falls back to ingest time when `block_time`
+  is absent (backfilled candles may shift; slot is the durable ordering);
+  commitment is CONFIRMED — rows from a dropped fork are never deleted
+  (idempotent keys make re-ingest safe; optimistic confirmation makes drops a
+  slashing-grade event, near-zero probability). Decoder is
+  STRICT (rejects trailing bytes): program event-layout changes deploy in
+  lockstep with the indexer, by policy.
+- **Test debt (deferred):** backfill-vs-live equivalence replay; donation-resync
+  replay (deep_pool P-2); LiquidityRemoved decode roundtrip; reorg overlap
+  re-ingest.
+
+### Follow-up design: finalized-watermark janitor (revisit post-mainnet)
+
+Ingest stays at CONFIRMED (no lag); truth repairs at FINALIZED (no trust).
+The asymmetry that justifies it: a phantom row in an append log is a bounded
+ghost; a phantom in a current-state table (e.g. a fork-dropped close) diverges
+FOREVER. Design:
+
+1. Track a finalized watermark alongside last_processed_slot.
+2. Janitor pass over rows whose slot has crossed the watermark: batched
+   getSignatureStatuses (256/call) on distinct signatures; signatures absent
+   on-chain are fork phantoms → DELETE their rows across all tables.
+3. Rebuild affected state from surviving events — position_events is an
+   append-only WAL, so positions re-fold per (mint, owner, side, index);
+   statuses re-derive from surviving lifecycle events. (The reorg-buffer
+   resume already heals MISSED events; the janitor heals PHANTOM ones —
+   together complete.)
+4. Optionally expose the watermark via the API so consumers can distinguish
+   settled from provisional rows.

@@ -43,7 +43,6 @@ interface MarketViewPanelProps {
   onCopyMint: () => void
   onCopyCreator: () => void
   copiedDev: boolean
-  onStarClick: () => void
   walletConnected: boolean
   isOwnToken: boolean
   crankMsg: string | null
@@ -61,7 +60,6 @@ export function MarketViewPanel({
   onCopyMint,
   onCopyCreator,
   copiedDev,
-  onStarClick,
   walletConnected,
   isOwnToken,
   crankMsg,
@@ -180,43 +178,6 @@ export function MarketViewPanel({
               <span>{shortenAddress(token.creator)}</span>
               <VerifiedBadge wallet={token.creator} />
               <CopyIcon copied={copiedDev} />
-            </button>
-
-            {/* Stars */}
-            <button
-              onClick={onStarClick}
-              disabled={!walletConnected || isOwnToken || token.starLoading}
-              className="flex items-center gap-1 text-white/60 hover:text-white cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-              title={
-                !walletConnected
-                  ? 'Connect wallet to star'
-                  : isOwnToken
-                    ? "Can't star your own token"
-                    : token.hasStarred
-                      ? 'Already starred'
-                      : 'Star this token (0.02 SOL)'
-              }
-            >
-              {token.starLoading ? (
-                <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
-                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeOpacity="0.25" strokeWidth="4" fill="none" />
-                  <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-              ) : (
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill={token.hasStarred ? 'currentColor' : 'none'}
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-                </svg>
-              )}
-              <span>{token.stars}</span>
             </button>
 
             {/* Socials */}
@@ -426,12 +387,14 @@ export function MarketViewPanel({
 
           {/* SOL distribution bar (migrated only) */}
           {token.isMigrated && token.treasurySolBalance > 0 && (() => {
-            const total = token.treasurySolBalance
+            // [F-2] Principal pool = physical float + lent (the float is
+            // already net of lent SOL). Available = the physical float —
+            // fully lendable, first-come-first-serve.
+            const lent = token.totalSolLent
+            const available = token.treasurySolBalance
+            const total = available + lent
             const reservePct = token.reserveRatioBps / 100
             const reserve = (total * reservePct) / 100
-            const maxLendable = (total * token.utilizationCapBps) / 10000
-            const lent = token.totalSolLent
-            const available = Math.max(0, maxLendable - lent)
 
             const lentPct = total > 0 ? (lent / total) * 100 : 0
             const availPct = total > 0 ? (available / total) * 100 : 0
