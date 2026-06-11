@@ -285,7 +285,7 @@ const indexerRowToTokenSummary = (
     price_sol: priceInSol,
     market_cap_sol: marketCapSol,
     // Pass sol_target so progress is correct for non-default tiers
-    // (spark uses 10 SOL, flame 30, torch 100; default fallback is 200).
+    // (flame 100 SOL, torch 200; default fallback is 200).
     progress_percent: calculateBondingProgress(realSol, solTarget),
     holders: null,
     created_at: Math.floor(new Date(row.created_at).getTime() / 1000),
@@ -1565,9 +1565,10 @@ export const getVault = async (
 
   const [vaultPda] = getTorchVaultPda(creator)
   const [vaultSolPda] = getVaultSolPda(creator)
-  const [accountInfo, vaultSolInfo] = await Promise.all([
+  const [accountInfo, vaultSolInfo, rentExempt0] = await Promise.all([
     connection.getAccountInfo(vaultPda),
     connection.getAccountInfo(vaultSolPda),
+    connection.getMinimumBalanceForRentExemption(0),
   ])
 
   if (!accountInfo) return null
@@ -1578,8 +1579,11 @@ export const getVault = async (
     address: vaultPda.toString(),
     creator: vault.creator.toString(),
     authority: vault.authority.toString(),
-    // [V21] Vault SOL lives in the System-owned torch_vault_sol PDA (lamports).
-    sol_balance: (vaultSolInfo?.lamports ?? 0) / LAMPORTS_PER_SOL,
+    // [V21] Vault SOL lives in the System-owned torch_vault_sol PDA. Report the
+    // program's OWN derived balance (lamports − rent floor, vault.rs
+    // vault_physical_sol) — raw lamports made the UI's Max overshoot by the
+    // rent-exempt minimum and every full withdrawal failed.
+    sol_balance: Math.max(0, (vaultSolInfo?.lamports ?? 0) - rentExempt0) / LAMPORTS_PER_SOL,
     total_deposited: Number(vault.total_deposited.toString()) / LAMPORTS_PER_SOL,
     total_withdrawn: Number(vault.total_withdrawn.toString()) / LAMPORTS_PER_SOL,
     total_spent: Number(vault.total_spent.toString()) / LAMPORTS_PER_SOL,

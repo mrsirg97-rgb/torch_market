@@ -551,12 +551,18 @@ export function MarginPanel({
     )
   }
 
-  // [V21] LendingInfo no longer exposes the unlock fields — reconstruct the gate
-  // from the lending flag, the live treasury vault balance, and the network's
-  // gate threshold (MIN_TREASURY_SOL_FOR_LENDING via useNetwork).
-  const gateAvailableSol = (lendingInfo?.treasury_sol_vault_lamports ?? 0) / LAMPORTS_PER_SOL
+  // [V21] Sticky gate vs FCFS float — two DIFFERENT numbers (lending-unlock.md):
+  //   gate     = physical + lent ≥ threshold  (earnings milestone; borrow/repay
+  //              can't re-lock it — only a bad-debt write-off can)
+  //   capacity = physical float only          (what's actually borrowable now)
+  // Conflating them showed "Borrowing locked 1/100" when 99 SOL was lent out —
+  // the opposite of the truth (lending live, capacity in use).
+  const floatSol = (lendingInfo?.treasury_sol_vault_lamports ?? 0) / LAMPORTS_PER_SOL
+  const lentSol = (lendingInfo?.total_sol_lent_to_longs ?? 0) / LAMPORTS_PER_SOL
+  const gateAssetsSol = floatSol + lentSol
   const gateThresholdSol = lendingGateLamports / LAMPORTS_PER_SOL
-  const lendingUnlocked = (lendingInfo?.lending_enabled ?? false) && gateAvailableSol >= gateThresholdSol
+  const lendingUnlocked = (lendingInfo?.lending_enabled ?? false) && gateAssetsSol >= gateThresholdSol
+  const floatExhausted = lendingUnlocked && floatSol < 0.01
 
   // ─── Render ─────────────────────────────────────────────────────────
   return (
@@ -585,26 +591,42 @@ export function MarginPanel({
         </button>
       </div>
 
-      {/* Lock gate banner — Borrow only, when locked */}
+      {/* Lock gate banner — Borrow only, when the earnings milestone isn't met */}
       {mode === 'borrow' && !lendingUnlocked && lendingInfo && (
         <div className="rounded-lg bg-white/[0.03] p-3 space-y-1.5">
           <div className="flex justify-between items-baseline">
             <span className="text-white/70 text-xs font-medium">Borrowing locked</span>
             <span className="text-white/50 text-[10px] font-mono">
-              {gateAvailableSol.toFixed(2)} / {gateThresholdSol.toFixed(0)} SOL
+              {gateAssetsSol.toFixed(2)} / {gateThresholdSol.toFixed(0)} SOL
             </span>
           </div>
           <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
             <div
               className="h-full bg-accent transition-all"
               style={{
-                width: `${Math.min(100, gateAvailableSol / Math.max(gateThresholdSol, 0.0001) * 100)}%`,
+                width: `${Math.min(100, gateAssetsSol / Math.max(gateThresholdSol, 0.0001) * 100)}%`,
               }}
             />
           </div>
           <p className="text-white/40 text-[10px]">
-            Unlocks once treasury accumulates {gateThresholdSol.toFixed(0)} SOL of earned fees.
-            Every short cycle + trade adds fees to the pool.
+            Unlocks once this token earns {gateThresholdSol.toFixed(0)} SOL of fees.
+            Every short cycle + trade adds fees to the pool — once earned, it stays unlocked.
+          </p>
+        </div>
+      )}
+
+      {/* Capacity banner — unlocked but the float is fully lent out */}
+      {mode === 'borrow' && floatExhausted && (
+        <div className="rounded-lg bg-white/[0.03] p-3 space-y-1">
+          <div className="flex justify-between items-baseline">
+            <span className="text-white/70 text-xs font-medium">All capacity in use</span>
+            <span className="text-white/50 text-[10px] font-mono">
+              {lentSol.toFixed(2)} SOL lent out
+            </span>
+          </div>
+          <p className="text-white/40 text-[10px]">
+            Lending is live — the float is fully borrowed. Repayments, liquidations,
+            and new fees refill it. First come, first serve.
           </p>
         </div>
       )}

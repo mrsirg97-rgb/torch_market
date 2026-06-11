@@ -1,5 +1,5 @@
 {
-  "address": "E5b4rBqtS5jRvjHcYZ3ZSNo2sdSPJtauQKkEacKmmjqG",
+  "address": "FghCwWojts9MbU3Pmog5peacaKrEYM5n1T68KWHy7TAh",
   "metadata": {
     "name": "torch_market",
     "version": "21.0.0",
@@ -5269,7 +5269,7 @@
         },
         {
           "name": "torch_config",
-          "address": "8w8XD2e3My2R86wE7WEkSypaMwjrAHuDh9SApfC4drvX"
+          "address": "5AHM1Htm14hMAcTMnbN4BR7KBL5hvaqAbyjPbFupj2Td"
         },
         {
           "name": "deep_pool",

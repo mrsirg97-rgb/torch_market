@@ -44,7 +44,7 @@ export interface TokenSummary {
   image?: string
   creator?: string
   bonding_target?: number
-  tier?: 'spark' | 'flame' | 'torch'
+  tier?: 'flame' | 'torch'
 }
 
 export interface TokenDetail {

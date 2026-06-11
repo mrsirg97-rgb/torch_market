@@ -15,7 +15,7 @@ mod kani_proofs;
 
 use contexts::*;
 
-declare_id!("E5b4rBqtS5jRvjHcYZ3ZSNo2sdSPJtauQKkEacKmmjqG");
+declare_id!("FghCwWojts9MbU3Pmog5peacaKrEYM5n1T68KWHy7TAh");
 
 #[program]
 pub mod torch_market {

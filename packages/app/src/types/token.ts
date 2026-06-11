@@ -9,26 +9,25 @@ import type { TokenSummary as SdkTokenSummary } from 'torchsdk'
 import { LEGACY_MINTS } from 'torchsdk'
 
 /** Token tier based on bonding curve SOL target */
-export type TokenTier = 'spark' | 'flame' | 'torch'
+export type TokenTier = 'flame' | 'torch'
 
 /** Tier display metadata */
 export const TIER_CONFIG: Record<TokenTier, { label: string; solTarget: number; color: string; description: string }> = {
-  spark: { label: 'Spark', solTarget: 50, color: '#EAB308', description: '13.44x · 50 SOL' },
   flame: { label: 'Flame', solTarget: 100, color: '#EF4444', description: '13.44x · 100 SOL' },
   torch: { label: 'Torch', solTarget: 200, color: '#F97316', description: '13.44x · 200 SOL' },
 }
 
 /** SOL target in lamports for each tier */
 export const SOL_TARGET_MAP: Record<TokenTier, number> = {
-  spark: 50_000_000_000,
   flame: 100_000_000_000,
   torch: 200_000_000_000,
 }
 
 /** Derive tier from bonding target in lamports. 0 = pre-v3.3.0, default to torch (200 SOL). */
 export function getTierFromTarget(bondingTarget: number): TokenTier {
+  // Spark (50 SOL) removed from the program — legacy 50-SOL devnet tokens
+  // render as flame (≤ 100 SOL bucket), matching the indexer's bucketing.
   if (!bondingTarget || bondingTarget <= 0) return 'torch'
-  if (bondingTarget <= 50_000_000_000) return 'spark'
   if (bondingTarget <= 100_000_000_000) return 'flame'
   return 'torch'
 }

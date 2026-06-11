@@ -23,7 +23,7 @@
 // ============================================================================
 
 export type IndexerMarketStatus = 'RS' | 'RD' | 'ASN' | 'MIGRATED' | 'RECLAIMED'
-export type IndexerMarketTier = 'spark' | 'flame' | 'torch'
+export type IndexerMarketTier = 'flame' | 'torch' // spark removed from the program
 export type IndexerPositionHealth = 'healthy' | 'at_risk' | 'liquidatable' | 'none'
 
 export interface IndexerMarketRow {

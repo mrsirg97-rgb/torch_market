@@ -7,13 +7,13 @@ resolution = true
 skip-lint = false
 
 [programs.devnet]
-torch_market = "E5b4rBqtS5jRvjHcYZ3ZSNo2sdSPJtauQKkEacKmmjqG"
+torch_market = "FghCwWojts9MbU3Pmog5peacaKrEYM5n1T68KWHy7TAh"
 
 [programs.localnet]
-torch_market = "E5b4rBqtS5jRvjHcYZ3ZSNo2sdSPJtauQKkEacKmmjqG"
+torch_market = "FghCwWojts9MbU3Pmog5peacaKrEYM5n1T68KWHy7TAh"
 
 [programs.mainnet]
-torch_market = "E5b4rBqtS5jRvjHcYZ3ZSNo2sdSPJtauQKkEacKmmjqG"
+torch_market = "FghCwWojts9MbU3Pmog5peacaKrEYM5n1T68KWHy7TAh"
 
 [registry]
 url = "https://api.apr.dev"

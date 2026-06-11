@@ -1,7 +1,7 @@
 import { PublicKey } from '@solana/web3.js'
 
 // program ID - Mainnet/Devnet (deployed program)
-export const PROGRAM_ID = new PublicKey('E5b4rBqtS5jRvjHcYZ3ZSNo2sdSPJtauQKkEacKmmjqG')
+export const PROGRAM_ID = new PublicKey('FghCwWojts9MbU3Pmog5peacaKrEYM5n1T68KWHy7TAh')
 // DeepPool Program ID (same on all networks) — replaces Raydium as the post-migration DEX
 export const DEEP_POOL_PROGRAM_ID = new PublicKey('CcwF61GW14AcxCS4E2zedHXdFXy8x8GQPvfxZrs2x2eT')
 export const DEEP_POOL_POOL_SEED = 'deep_pool'

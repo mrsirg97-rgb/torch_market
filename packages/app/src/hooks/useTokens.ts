@@ -408,7 +408,7 @@ export function useTokens(options?: { enabled?: boolean }): UseTokensResult {
 
   // Group tokens by tier
   const tokensByTier = useMemo(() => {
-    const groups: Record<TokenTier, TokenData[]> = { spark: [], flame: [], torch: [] }
+    const groups: Record<TokenTier, TokenData[]> = { flame: [], torch: [] }
     for (const t of tokens) {
       const tier = t.tier || 'torch' // Default to torch for pre-v3.3.0 tokens
       groups[tier].push(t)
@@ -418,7 +418,6 @@ export function useTokens(options?: { enabled?: boolean }): UseTokensResult {
 
   const tierCounts = useMemo(
     () => ({
-      spark: tokensByTier.spark.length,
       flame: tokensByTier.flame.length,
       torch: tokensByTier.torch.length,
     }),
