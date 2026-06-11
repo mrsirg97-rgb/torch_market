@@ -5,7 +5,7 @@
 // trail); never DELETE. `owner` may be a wallet or a TorchVault PDA
 // (owner_is_vault). Companion append-only log lives in the `event` submodule.
 
-use sqlx::{Postgres, QueryBuilder, Transaction};
+use sqlx::{Postgres, Transaction};
 
 use crate::contracts::{
     NewPositionRow, PositionEventKind, PositionHealth, PositionRow, PositionSide,
@@ -20,6 +20,7 @@ pub struct PositionFilter {
     pub is_active: Option<bool>,
     pub limit: Option<i64>,
 }
+// Atomic-write internal (reconcile/cache) — duplicated in /api for queries.
 
 pub async fn get(
     tx: &mut Transaction<'_, Postgres>,
@@ -38,33 +39,6 @@ pub async fn get(
     .bind(position_index)
     .fetch_optional(&mut **tx)
     .await
-}
-
-pub async fn list(
-    tx: &mut Transaction<'_, Postgres>,
-    filter: PositionFilter,
-) -> sqlx::Result<Vec<PositionRow>> {
-    let mut qb = QueryBuilder::<Postgres>::new("SELECT * FROM positions WHERE 1=1");
-    if let Some(mint) = filter.mint {
-        qb.push(" AND mint = ").push_bind(mint);
-    }
-    if let Some(owner) = filter.owner {
-        qb.push(" AND owner = ").push_bind(owner);
-    }
-    if let Some(side) = filter.side {
-        qb.push(" AND side = ").push_bind(side);
-    }
-    if let Some(health) = filter.health {
-        qb.push(" AND health = ").push_bind(health);
-    }
-    if let Some(is_active) = filter.is_active {
-        qb.push(" AND is_active = ").push_bind(is_active);
-    }
-    qb.push(" ORDER BY updated_at DESC");
-    if let Some(limit) = filter.limit {
-        qb.push(" LIMIT ").push_bind(limit);
-    }
-    qb.build_query_as::<PositionRow>().fetch_all(&mut **tx).await
 }
 
 // UPSERT on (mint, owner, side, position_index). On conflict every mutable
@@ -129,31 +103,6 @@ pub mod event {
         pub limit: Option<i64>,
     }
 
-    pub async fn list(
-        tx: &mut Transaction<'_, Postgres>,
-        filter: PositionEventFilter,
-    ) -> sqlx::Result<Vec<PositionEventRow>> {
-        let mut qb = QueryBuilder::<Postgres>::new("SELECT * FROM position_events WHERE 1=1");
-        if let Some(mint) = filter.mint {
-            qb.push(" AND mint = ").push_bind(mint);
-        }
-        if let Some(owner) = filter.owner {
-            qb.push(" AND owner = ").push_bind(owner);
-        }
-        if let Some(side) = filter.side {
-            qb.push(" AND side = ").push_bind(side);
-        }
-        if let Some(kind) = filter.kind {
-            qb.push(" AND kind = ").push_bind(kind);
-        }
-        qb.push(" ORDER BY slot DESC, event_id DESC");
-        if let Some(limit) = filter.limit {
-            qb.push(" LIMIT ").push_bind(limit);
-        }
-        qb.build_query_as::<PositionEventRow>()
-            .fetch_all(&mut **tx)
-            .await
-    }
 
     pub async fn insert(
         tx: &mut Transaction<'_, Postgres>,

@@ -24,7 +24,6 @@ use std::sync::Arc;
 
 use axum::{
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query, State,
     },
     http::StatusCode,
@@ -33,14 +32,11 @@ use axum::{
     Json, Router,
 };
 use chrono::{DateTime, Utc};
-use futures::{sink::SinkExt, stream::StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast::error::RecvError;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing::{debug, warn};
 
 use crate::contracts::{
-    AppState, LiquidityRow, MarketRow, MarketStatus, MarketTier, MessageRow, MigrationRow,
+    LiquidityRow, MarketRow, MarketStatus, MarketTier, MessageRow, MigrationRow,
     PoolRow, PositionEventKind, PositionEventRow, PositionHealth, PositionRow, PositionSide,
     ReservesRow, SwapRow, TradeRow,
 };
@@ -49,6 +45,7 @@ use crate::domain::{
     PositionFilter, SwapFilter, TradeFilter,
 };
 use crate::services::RequestCtx;
+use crate::state::AppState;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -70,7 +67,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/swaps", get(list_swaps))
         .route("/api/liquidity", get(list_liquidity))
         // WS firehose
-        .route("/events", get(ws_handler))
+        .route("/events", get(crate::ws::ws_handler))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -84,7 +81,7 @@ async fn healthz() -> impl IntoResponse {
 // `Content-Type` header so Prometheus parses inline rather than falling
 // back to OpenMetrics auto-detection.
 async fn metrics() -> impl IntoResponse {
-    let body = crate::metrics::METRICS.encode();
+    let body = crate::metrics::render();
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
@@ -587,48 +584,6 @@ async fn list_liquidity(
 }
 
 // ---------- WS /events ----------
-
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
-    ws.on_upgrade(move |socket| ws_session(socket, state))
-}
-
-async fn ws_session(socket: WebSocket, state: AppState) {
-    let (mut sender, mut receiver) = socket.split();
-    let mut rx = state.broadcaster.subscribe();
-    debug!(
-        subscribers = state.broadcaster.subscriber_count(),
-        "ws client connected"
-    );
-
-    loop {
-        tokio::select! {
-            biased;
-
-            msg = receiver.next() => {
-                match msg {
-                    None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
-                    _ => {}
-                }
-            }
-
-            frame = rx.recv() => {
-                match frame {
-                    Ok(f) => {
-                        let json = serde_json::to_string(&f).unwrap_or_default();
-                        if sender.send(Message::Text(json.into())).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(RecvError::Lagged(n)) => {
-                        warn!(skipped = n, "ws subscriber lagged");
-                    }
-                    Err(RecvError::Closed) => break,
-                }
-            }
-        }
-    }
-    debug!("ws client disconnected");
-}
 
 // ---------- helpers ----------
 

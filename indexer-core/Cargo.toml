@@ -1,0 +1,25 @@
+[package]
+name = "torch-indexer-core"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone (same pattern as /indexer) — shared types between the ingest
+# writer and the read API. Deliberately thin: contracts (rows/events/enums),
+# db pool init, errors, constants. NO domain logic — reads live in /api,
+# writes in /indexer (prompt-003 separation).
+[workspace]
+
+[lib]
+name = "torch_indexer_core"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1.40", features = ["sync"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+borsh = { version = "1", features = ["derive"] }
+bs58 = "0.5"
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+thiserror = "2"

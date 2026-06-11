@@ -15,11 +15,11 @@ use common::{fixtures::*, TestDb};
 
 use sqlx::Row;
 
-use torch_indexer::contracts::{
+use torch_api::contracts::{
     AnyEvent, BlockBatch, BondingCurveTrade, CloseShortEvent, DecodedEvent, MarketStatus,
     PositionHealth, PositionSide, TorchEvent,
 };
-use torch_indexer::domain::{
+use torch_api::domain::{
     market, message, migration, pool, position, trade, MessageFilter, PositionEventFilter,
     TradeFilter,
 };
@@ -130,7 +130,7 @@ async fn writer_pool_swap_writes_swap_and_reserves_snapshot() {
     let mut tx = db.pool.begin().await.unwrap();
     let pools = pool::list(
         &mut tx,
-        torch_indexer::domain::PoolFilter {
+        torch_api::domain::PoolFilter {
             pubkeys: Some(vec![pk58(50)]),
             ..Default::default()
         },
@@ -516,7 +516,7 @@ async fn writer_short_opened_then_liquidated_in_full() {
         &mut tx,
         PositionEventFilter {
             mint: Some(mint.clone()),
-            kind: Some(torch_indexer::contracts::PositionEventKind::Liquidate),
+            kind: Some(torch_api::contracts::PositionEventKind::Liquidate),
             ..Default::default()
         },
     )
@@ -537,7 +537,7 @@ fn _silence_unused(_: BondingCurveTrade, _: BlockBatch) {}
 
 #[tokio::test]
 async fn writer_long_open_close_partial_then_full() {
-    use torch_indexer::contracts::{CloseLongEvent, OpenLongEvent};
+    use torch_api::contracts::{CloseLongEvent, OpenLongEvent};
     let db = TestDb::new().await;
     let mint = pk58(1);
     let owner = pk58(4);
@@ -628,7 +628,7 @@ async fn writer_long_open_close_partial_then_full() {
 
 #[tokio::test]
 async fn writer_long_liquidation_splits_interest_first() {
-    use torch_indexer::contracts::{LiquidateLongEvent, OpenLongEvent};
+    use torch_api::contracts::{LiquidateLongEvent, OpenLongEvent};
     let db = TestDb::new().await;
     let mint = pk58(1);
     let owner = pk58(4);
@@ -695,7 +695,7 @@ async fn writer_applies_same_block_open_then_close_in_chain_order() {
     // chosen so a signature sort would apply the CLOSE first (pre-fix: the
     // reconcile found no prior row, skipped, and the position showed open
     // forever). Chain order (tx_idx) must win.
-    use torch_indexer::contracts::CloseShortEvent;
+    use torch_api::contracts::CloseShortEvent;
     let db = TestDb::new().await;
     let net = 999_300_000u64;
 
@@ -745,7 +745,7 @@ async fn writer_applies_same_block_open_then_close_in_chain_order() {
 
 #[tokio::test]
 async fn writer_lifecycle_status_transitions() {
-    use torch_indexer::contracts::{BondingCompleted, MarketStatus, TokenReclaimed, TokenRevived};
+    use torch_api::contracts::{BondingCompleted, MarketStatus, TokenReclaimed, TokenRevived};
     let db = TestDb::new().await;
     let mint = pk58(1);
 

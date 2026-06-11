@@ -1,10 +1,7 @@
-pub mod api;
 pub mod config;
-pub mod constants;
-pub mod contracts;
-pub mod db;
 pub mod domain;
-pub mod error;
 pub mod metrics;
-pub mod services;
 pub mod stream;
+
+// Shared types live in torch-indexer-core (prompt-003 split).
+pub use torch_indexer_core::{constants, contracts, db, error};

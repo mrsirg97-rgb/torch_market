@@ -16,16 +16,7 @@ pub struct PoolFilter {
     pub creators: Option<Vec<String>>,
     pub limit: Option<i64>,
 }
-
-pub async fn get(
-    tx: &mut Transaction<'_, Postgres>,
-    pool_id: i32,
-) -> sqlx::Result<Option<PoolRow>> {
-    sqlx::query_as::<_, PoolRow>("SELECT * FROM pools WHERE pool_id = $1")
-        .bind(pool_id)
-        .fetch_optional(&mut **tx)
-        .await
-}
+// Atomic-write internal (reconcile/cache) — duplicated in /api for queries.
 
 pub async fn list(
     tx: &mut Transaction<'_, Postgres>,

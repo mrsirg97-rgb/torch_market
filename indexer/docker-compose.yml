@@ -9,6 +9,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-torch}
       # Consumed by db/02-indexer-role.sh to create the least-privilege role.
       INDEXER_DB_PASSWORD: ${INDEXER_DB_PASSWORD:?INDEXER_DB_PASSWORD must be set in .env}
+      API_DB_PASSWORD: ${API_DB_PASSWORD:?API_DB_PASSWORD must be set in .env}
     ports:
       # Loopback only. Ops access via:
       #   docker exec -it torch-indexer-pg psql -U ${POSTGRES_USER:-torch}

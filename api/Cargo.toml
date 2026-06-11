@@ -1,0 +1,45 @@
+[package]
+name = "torch-api"
+version = "0.1.0"
+edition = "2021"
+
+# Read-level API service (prompt-003 split). Domain READS + services + axum
+# routes + WS rooms + Postgres LISTEN. Connects with the SELECT-only
+# `torch_api` role — this service CANNOT mutate the projection, by grant.
+[workspace]
+
+[lib]
+name = "torch_api"
+path = "src/lib.rs"
+
+[[bin]]
+name = "torch-api"
+path = "src/main.rs"
+
+[dependencies]
+torch-indexer-core = { path = "../indexer-core" }
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+futures = "0.3"
+tokio-stream = { version = "0.1", features = ["sync"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "macros"] }
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dashmap = "6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+prometheus = { version = "0.13", default-features = false }
+once_cell = "1"
+anyhow = "1"
+thiserror = "2"
+dotenvy = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
+bs58 = "0.5"
+
+[dev-dependencies]
+# Ingest crate seeds test DBs through the real writer path.
+torch-indexer = { path = "../indexer" }
+uuid = { version = "1", features = ["v4"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

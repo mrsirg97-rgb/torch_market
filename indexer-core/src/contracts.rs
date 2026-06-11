@@ -6,15 +6,11 @@
 //   3. AppState + Broadcaster wiring shared by the writer (publish) and
 //      the WS handler (subscribe).
 
-use std::sync::Arc;
 
 use borsh::BorshDeserialize;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
-use tokio::sync::broadcast;
 
-use crate::constants::BROADCAST_CAPACITY;
 
 // ============================================================================
 // On-chain event Borsh shapes — deep_pool
@@ -778,66 +774,7 @@ pub struct NewMigrationRow {
 
 // ============================================================================
 // Broadcast (post-COMMIT WS frames)
-// ============================================================================
-//
-// The WS firehose carries the same wire format documented in
-// docs/indexer.md §"WS firehose": one frame per persisted event, typed by
-// kind. Clients filter client-side.
+// AppState / Broadcaster / BroadcastFrame moved to /api (prompt-003):
+// the writer no longer broadcasts in-process — pg_notify in the write txn
+// is the cross-service signal; /api owns rooms + WS fan-out.
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum BroadcastFrame {
-    // Deep_pool
-    Pool(Arc<PoolRow>),
-    Swap(Arc<SwapRow>),
-    Liquidity(Arc<LiquidityRow>),
-    Reserves(Arc<ReservesRow>),
-    // Torch
-    Market(Arc<MarketRow>),
-    Trade(Arc<TradeRow>),
-    Message(Arc<MessageRow>),
-    Position(Arc<PositionRow>),
-    PositionEvent(Arc<PositionEventRow>),
-    Migration(Arc<MigrationRow>),
-}
-
-// ============================================================================
-// Runtime state shared between writer and API
-// ============================================================================
-
-#[derive(Clone)]
-pub struct AppState {
-    pub pool: PgPool,
-    pub broadcaster: Broadcaster,
-}
-
-#[derive(Clone, Debug)]
-pub struct Broadcaster {
-    sender: broadcast::Sender<BroadcastFrame>,
-}
-
-impl Broadcaster {
-    pub fn new() -> Self {
-        let (sender, _) = broadcast::channel(BROADCAST_CAPACITY);
-        Self { sender }
-    }
-
-    pub fn subscribe(&self) -> broadcast::Receiver<BroadcastFrame> {
-        self.sender.subscribe()
-    }
-
-    pub fn publish(&self, frame: BroadcastFrame) {
-        // send returns Err only when there are zero subscribers — that's fine.
-        let _ = self.sender.send(frame);
-    }
-
-    pub fn subscriber_count(&self) -> usize {
-        self.sender.receiver_count()
-    }
-}
-
-impl Default for Broadcaster {
-    fn default() -> Self {
-        Self::new()
-    }
-}

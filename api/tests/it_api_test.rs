@@ -15,14 +15,15 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
 
-use torch_indexer::api;
-use torch_indexer::contracts::{AppState, Broadcaster};
+use torch_api::http as api;
+use torch_api::state::AppState;
+use torch_api::ws::Rooms;
 use torch_indexer::stream::writer::write_events_no_checkpoint;
 
 async fn build_app(db: &TestDb) -> axum::Router {
     let state = AppState {
         pool: db.pool.clone(),
-        broadcaster: Broadcaster::new(),
+        rooms: Rooms::new(),
     };
     api::router(state)
 }
@@ -76,45 +77,16 @@ async fn metrics_endpoint_renders_prometheus_text() {
     let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
     let text = std::str::from_utf8(&body).expect("metrics body is utf-8");
 
-    // Non-labeled metrics emit a default 0 sample even when untouched, so
-    // they're always present in the exposition.
+    // [prompt-003] This service exposes API-side metrics only — writer
+    // metrics (blocks_written, events_total) moved to the ingest service.
     for name in [
-        "indexer_blocks_written_total",
-        "indexer_block_write_errors_total",
-        "indexer_last_processed_slot",
-        "indexer_broadcast_subscribers",
+        "api_ws_connections",
+        "api_rooms_active",
+        "api_notifies_received_total",
+        "api_listen_resyncs_total",
     ] {
         assert!(text.contains(name), "metrics body missing `{name}`:\n{text}");
     }
-
-    // IntCounterVec (labeled) metrics only appear in the exposition once at
-    // least one (program, kind) tuple has been observed. The seeded
-    // MarketCreated event must have ticked
-    // events_total{program=torch, kind=market_created}.
-    assert!(
-        text.contains("# TYPE indexer_events_total counter"),
-        "expected events_total preamble in:\n{text}"
-    );
-    let market_created_line = text
-        .lines()
-        .find(|l| l.starts_with("indexer_events_total{") && l.contains("market_created"))
-        .unwrap_or_else(|| panic!("no events_total line for market_created:\n{text}"));
-    let value: u64 = market_created_line
-        .split_whitespace()
-        .last()
-        .unwrap()
-        .parse()
-        .unwrap();
-    assert!(value >= 1, "events_total{{market_created}} = {value}, expected >= 1");
-
-    // `blocks_written_total` is bumped in write_block_inner — both live
-    // and backfill paths increment it.
-    let blocks_line = text
-        .lines()
-        .find(|l| l.starts_with("indexer_blocks_written_total "))
-        .unwrap();
-    let blocks: u64 = blocks_line.split_whitespace().last().unwrap().parse().unwrap();
-    assert!(blocks >= 1, "blocks_written_total = {blocks}, expected >= 1");
 }
 
 // ─── /api/markets ────────────────────────────────────────────────────────

@@ -17,6 +17,7 @@ name = "torch-indexer"
 path = "src/main.rs"
 
 [dependencies]
+torch-indexer-core = { path = "../indexer-core" }
 # Runtime
 tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
 tokio-stream = "0.1"

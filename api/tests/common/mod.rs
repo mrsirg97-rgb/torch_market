@@ -29,11 +29,21 @@ const TEST_DB_URL_VAR: &str = "TEST_DATABASE_URL";
 
 pub struct TestDb {
     pub pool: PgPool,
+    pub name: String,
     db_name: String,
     admin_url: String,
 }
 
 impl TestDb {
+    // Connection URL for a specific role against THIS test database.
+    pub fn url_for_user(&self, user: &str, pw: &str) -> String {
+        // admin_url shape: postgres://user:pass@host:port/db
+        let after_scheme = self.admin_url.split("://").nth(1).unwrap();
+        let host_part = after_scheme.split('@').nth(1).unwrap();
+        let host = host_part.split('/').next().unwrap();
+        format!("postgres://{user}:{pw}@{host}/{}", self.db_name)
+    }
+
     pub async fn new() -> Self {
         let admin_url = std::env::var(TEST_DB_URL_VAR).unwrap_or_else(|_| {
             panic!(
@@ -65,7 +75,7 @@ impl TestDb {
             .await
             .expect("connect to test DB");
 
-        let schema = include_str!("../../db/01-schema.sql");
+        let schema = include_str!("../../../indexer/db/01-schema.sql");
         sqlx::raw_sql(schema)
             .execute(&pool)
             .await
@@ -73,6 +83,7 @@ impl TestDb {
 
         Self {
             pool,
+            name: db_name.clone(),
             db_name,
             admin_url,
         }
@@ -112,5 +123,5 @@ impl Drop for TestDb {
 // files can call this without re-reading the file. Same content as
 // TestDb::new()'s apply step.
 pub fn schema_sql() -> &'static str {
-    include_str!("../../db/01-schema.sql")
+    include_str!("../../../indexer/db/01-schema.sql")
 }

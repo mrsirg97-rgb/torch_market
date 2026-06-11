@@ -8,11 +8,12 @@ mod common;
 
 use common::{fixtures::*, TestDb};
 
-use torch_indexer::contracts::{MarketStatus, MarketTier, PositionEventKind, PositionSide};
-use torch_indexer::domain::{
-    market, message, migration, pool, position, swap, trade, MarketFilter, PoolFilter,
+use torch_api::contracts::{MarketStatus, MarketTier, PositionEventKind, PositionSide};
+use torch_api::domain::{
+    market, pool, position, trade, MarketFilter, PoolFilter,
     PositionFilter, TradeFilter,
 };
+use torch_indexer::domain as ingest_domain;
 
 // ─── markets ─────────────────────────────────────────────────────────────
 
@@ -24,7 +25,7 @@ async fn market_set_then_get_by_mint() {
     let mint = pk58(1);
     let creator = pk58(2);
     let row = new_market_row(&mint, &creator);
-    let inserted = market::set(&mut tx, &row).await.unwrap();
+    let inserted = ingest_domain::market::set(&mut tx, &row).await.unwrap();
     assert!(inserted.is_some());
     let inserted = inserted.unwrap();
     assert_eq!(inserted.mint, mint);
@@ -47,10 +48,10 @@ async fn market_set_idempotent_on_conflict() {
     let mint = pk58(1);
     let creator = pk58(2);
     let row = new_market_row(&mint, &creator);
-    let first = market::set(&mut tx, &row).await.unwrap();
+    let first = ingest_domain::market::set(&mut tx, &row).await.unwrap();
     assert!(first.is_some());
 
-    let second = market::set(&mut tx, &row).await.unwrap();
+    let second = ingest_domain::market::set(&mut tx, &row).await.unwrap();
     assert!(second.is_none(), "second insert must be a no-op");
     tx.commit().await.unwrap();
 }
@@ -60,11 +61,11 @@ async fn market_apply_trade_updates_reserves() {
     let db = TestDb::new().await;
     let mut tx = db.pool.begin().await.unwrap();
     let mint = pk58(1);
-    market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
+    ingest_domain::market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
         .await
         .unwrap();
 
-    market::apply_trade(
+    ingest_domain::market::apply_trade(
         &mut tx,
         &mint,
         31_000_000_000, // virtual_sol
@@ -90,15 +91,15 @@ async fn market_apply_migration_sets_status_and_fk() {
     let mut tx = db.pool.begin().await.unwrap();
     let mint = pk58(1);
     let pool_pk = pk58(50);
-    market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
+    ingest_domain::market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
         .await
         .unwrap();
     // The pool row must exist first — markets.deep_pool_pubkey FKs to pools.pubkey.
-    pool::set(&mut tx, &[new_pool_row(&pool_pk, &mint, &pk58(2))])
+    ingest_domain::pool::set(&mut tx, &[new_pool_row(&pool_pk, &mint, &pk58(2))])
         .await
         .unwrap();
 
-    market::apply_migration(&mut tx, &mint, &pool_pk, 500, fixed_ts())
+    ingest_domain::market::apply_migration(&mut tx, &mint, &pool_pk, 500, fixed_ts())
         .await
         .unwrap();
 
@@ -116,17 +117,17 @@ async fn market_list_filters_by_status() {
 
     let mint_a = pk58(1);
     let mint_b = pk58(2);
-    market::set(&mut tx, &new_market_row(&mint_a, &pk58(10)))
+    ingest_domain::market::set(&mut tx, &new_market_row(&mint_a, &pk58(10)))
         .await
         .unwrap();
-    market::set(&mut tx, &new_market_row(&mint_b, &pk58(11)))
+    ingest_domain::market::set(&mut tx, &new_market_row(&mint_b, &pk58(11)))
         .await
         .unwrap();
     // Migrate B
-    pool::set(&mut tx, &[new_pool_row(&pk58(50), &mint_b, &pk58(11))])
+    ingest_domain::pool::set(&mut tx, &[new_pool_row(&pk58(50), &mint_b, &pk58(11))])
         .await
         .unwrap();
-    market::apply_migration(&mut tx, &mint_b, &pk58(50), 200, fixed_ts())
+    ingest_domain::market::apply_migration(&mut tx, &mint_b, &pk58(50), 200, fixed_ts())
         .await
         .unwrap();
 
@@ -166,7 +167,7 @@ async fn pool_set_returns_inserted_rows() {
     let mint = pk58(11);
     let creator = pk58(12);
 
-    let inserted = pool::set(&mut tx, &[new_pool_row(&pool_pk, &mint, &creator)])
+    let inserted = ingest_domain::pool::set(&mut tx, &[new_pool_row(&pool_pk, &mint, &creator)])
         .await
         .unwrap();
     assert_eq!(inserted.len(), 1);
@@ -174,7 +175,7 @@ async fn pool_set_returns_inserted_rows() {
     assert!(inserted[0].pool_id > 0);
 
     // Replay → no new rows (ON CONFLICT DO NOTHING).
-    let replay = pool::set(&mut tx, &[new_pool_row(&pool_pk, &mint, &creator)])
+    let replay = ingest_domain::pool::set(&mut tx, &[new_pool_row(&pool_pk, &mint, &creator)])
         .await
         .unwrap();
     assert!(replay.is_empty());
@@ -186,7 +187,7 @@ async fn pool_list_by_token_mint() {
     let db = TestDb::new().await;
     let mut tx = db.pool.begin().await.unwrap();
     let mint = pk58(11);
-    pool::set(&mut tx, &[new_pool_row(&pk58(10), &mint, &pk58(12))])
+    ingest_domain::pool::set(&mut tx, &[new_pool_row(&pk58(10), &mint, &pk58(12))])
         .await
         .unwrap();
 
@@ -214,7 +215,7 @@ async fn trade_set_requires_market_fk() {
 
     // No markets row → trade insert FAILS (FK violation).
     let row = new_trade_row(&mint, &pk58(2), 100, 0);
-    let result = trade::set(&mut tx, &[row]).await;
+    let result = ingest_domain::trade::set(&mut tx, &[row]).await;
     assert!(result.is_err(), "trade without market FK should fail");
     tx.rollback().await.unwrap();
 }
@@ -224,14 +225,14 @@ async fn trade_set_idempotent_on_replay() {
     let db = TestDb::new().await;
     let mut tx = db.pool.begin().await.unwrap();
     let mint = pk58(1);
-    market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
+    ingest_domain::market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
         .await
         .unwrap();
 
     let row = new_trade_row(&mint, &pk58(3), 100, 0);
-    let first = trade::set(&mut tx, &[row.clone()]).await.unwrap();
+    let first = ingest_domain::trade::set(&mut tx, &[row.clone()]).await.unwrap();
     assert_eq!(first.len(), 1);
-    let second = trade::set(&mut tx, &[row]).await.unwrap();
+    let second = ingest_domain::trade::set(&mut tx, &[row]).await.unwrap();
     assert!(second.is_empty(), "replay of same (sig, inner) is no-op");
     tx.commit().await.unwrap();
 }
@@ -241,12 +242,12 @@ async fn trade_list_orders_newest_first() {
     let db = TestDb::new().await;
     let mut tx = db.pool.begin().await.unwrap();
     let mint = pk58(1);
-    market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
+    ingest_domain::market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
         .await
         .unwrap();
 
     let trader = pk58(3);
-    trade::set(
+    ingest_domain::trade::set(
         &mut tx,
         &[
             new_trade_row(&mint, &trader, 100, 0),
@@ -281,13 +282,13 @@ async fn position_upsert_overwrites_existing() {
     let db = TestDb::new().await;
     let mut tx = db.pool.begin().await.unwrap();
     let mint = pk58(1);
-    market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
+    ingest_domain::market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
         .await
         .unwrap();
     let owner = pk58(3);
 
     let mut row = new_position_row(&mint, &owner, PositionSide::Short, 0, 100);
-    let first = position::upsert(&mut tx, &row).await.unwrap();
+    let first = ingest_domain::position::upsert(&mut tx, &row).await.unwrap();
     assert_eq!(first.debt_amount, 999_300_000);
     assert!(first.is_active);
 
@@ -296,7 +297,7 @@ async fn position_upsert_overwrites_existing() {
     row.collateral_amount = 0;
     row.is_active = false;
     row.last_update_slot = 200;
-    let second = position::upsert(&mut tx, &row).await.unwrap();
+    let second = ingest_domain::position::upsert(&mut tx, &row).await.unwrap();
     assert_eq!(second.debt_amount, 0);
     assert!(!second.is_active);
     assert_eq!(second.last_update_slot, 200);
@@ -309,19 +310,19 @@ async fn position_same_owner_different_side_and_index_coexist() {
     let db = TestDb::new().await;
     let mut tx = db.pool.begin().await.unwrap();
     let mint = pk58(1);
-    market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
+    ingest_domain::market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
         .await
         .unwrap();
     let owner = pk58(3);
 
     // Same (mint, owner) but distinct (side, position_index) are separate rows.
-    position::upsert(&mut tx, &new_position_row(&mint, &owner, PositionSide::Short, 0, 100))
+    ingest_domain::position::upsert(&mut tx, &new_position_row(&mint, &owner, PositionSide::Short, 0, 100))
         .await
         .unwrap();
-    position::upsert(&mut tx, &new_position_row(&mint, &owner, PositionSide::Long, 0, 100))
+    ingest_domain::position::upsert(&mut tx, &new_position_row(&mint, &owner, PositionSide::Long, 0, 100))
         .await
         .unwrap();
-    position::upsert(&mut tx, &new_position_row(&mint, &owner, PositionSide::Short, 1, 100))
+    ingest_domain::position::upsert(&mut tx, &new_position_row(&mint, &owner, PositionSide::Short, 1, 100))
         .await
         .unwrap();
 
@@ -340,7 +341,7 @@ async fn position_list_filters_by_side_and_active() {
     let db = TestDb::new().await;
     let mut tx = db.pool.begin().await.unwrap();
     let mint = pk58(1);
-    market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
+    ingest_domain::market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
         .await
         .unwrap();
 
@@ -348,9 +349,9 @@ async fn position_list_filters_by_side_and_active() {
     let mut closed = new_position_row(&mint, &pk58(11), PositionSide::Short, 0, 100);
     closed.is_active = false;
     let long = new_position_row(&mint, &pk58(12), PositionSide::Long, 0, 100);
-    position::upsert(&mut tx, &active).await.unwrap();
-    position::upsert(&mut tx, &closed).await.unwrap();
-    position::upsert(&mut tx, &long).await.unwrap();
+    ingest_domain::position::upsert(&mut tx, &active).await.unwrap();
+    ingest_domain::position::upsert(&mut tx, &closed).await.unwrap();
+    ingest_domain::position::upsert(&mut tx, &long).await.unwrap();
 
     let active_shorts = position::list(
         &mut tx,
@@ -384,15 +385,15 @@ async fn position_event_log_insert_is_idempotent() {
     let db = TestDb::new().await;
     let mut tx = db.pool.begin().await.unwrap();
     let mint = pk58(1);
-    market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
+    ingest_domain::market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
         .await
         .unwrap();
 
     let row = new_position_event_row(&mint, &pk58(3), PositionSide::Short, PositionEventKind::Open, 100, 0);
-    let first = position::event::insert(&mut tx, &row).await.unwrap();
+    let first = ingest_domain::position::event::insert(&mut tx, &row).await.unwrap();
     assert!(first.is_some());
     // Same (signature, inner_ix_idx) → ON CONFLICT DO NOTHING → None.
-    let dup = position::event::insert(&mut tx, &row).await.unwrap();
+    let dup = ingest_domain::position::event::insert(&mut tx, &row).await.unwrap();
     assert!(dup.is_none(), "replay must not duplicate the event");
     tx.commit().await.unwrap();
 }
@@ -404,11 +405,11 @@ async fn message_set_with_action_kind() {
     let db = TestDb::new().await;
     let mut tx = db.pool.begin().await.unwrap();
     let mint = pk58(1);
-    market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
+    ingest_domain::market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
         .await
         .unwrap();
 
-    let row = torch_indexer::contracts::NewMessageRow {
+    let row = torch_api::contracts::NewMessageRow {
         mint: mint.clone(),
         sender: pk58(3),
         memo_text: "gm".to_string(),
@@ -418,7 +419,7 @@ async fn message_set_with_action_kind() {
         inner_ix_idx: 0,
         created_at: fixed_ts(),
     };
-    let inserted = message::set(&mut tx, &[row]).await.unwrap();
+    let inserted = ingest_domain::message::set(&mut tx, &[row]).await.unwrap();
     assert_eq!(inserted.len(), 1);
     assert_eq!(inserted[0].memo_text, "gm");
     assert_eq!(inserted[0].action_kind, Some("buy".to_string()));
@@ -433,14 +434,14 @@ async fn migration_set_one_per_mint() {
     let mut tx = db.pool.begin().await.unwrap();
     let mint = pk58(1);
     let pool_pk = pk58(10);
-    market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
+    ingest_domain::market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
         .await
         .unwrap();
-    pool::set(&mut tx, &[new_pool_row(&pool_pk, &mint, &pk58(2))])
+    ingest_domain::pool::set(&mut tx, &[new_pool_row(&pool_pk, &mint, &pk58(2))])
         .await
         .unwrap();
 
-    let row = torch_indexer::contracts::NewMigrationRow {
+    let row = torch_api::contracts::NewMigrationRow {
         mint: mint.clone(),
         deep_pool_pubkey: pool_pk.clone(),
         sol_seeded: 30_000_000_000,
@@ -450,11 +451,11 @@ async fn migration_set_one_per_mint() {
         signature: "sig_mig".to_string(),
         created_at: fixed_ts(),
     };
-    let first = migration::set(&mut tx, &row).await.unwrap();
+    let first = ingest_domain::migration::set(&mut tx, &row).await.unwrap();
     assert!(first.is_some());
 
     // ON CONFLICT (mint) DO NOTHING — second insert is a no-op.
-    let second = migration::set(&mut tx, &row).await.unwrap();
+    let second = ingest_domain::migration::set(&mut tx, &row).await.unwrap();
     assert!(second.is_none());
     tx.commit().await.unwrap();
 }
@@ -466,7 +467,7 @@ async fn swap_set_requires_pool_fk() {
     let db = TestDb::new().await;
     let mut tx = db.pool.begin().await.unwrap();
     // No pools row → swap insert FAILS (FK violation).
-    let row = torch_indexer::contracts::NewSwapRow {
+    let row = torch_api::contracts::NewSwapRow {
         pool_id: 9999,
         user_pk: pk58(1),
         sol_source: pk58(1),
@@ -483,7 +484,7 @@ async fn swap_set_requires_pool_fk() {
         inner_ix_idx: 0,
         created_at: fixed_ts(),
     };
-    let result = swap::set(&mut tx, &[row]).await;
+    let result = ingest_domain::swap::set(&mut tx, &[row]).await;
     assert!(result.is_err());
     tx.rollback().await.unwrap();
 }

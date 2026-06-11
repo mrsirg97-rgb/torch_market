@@ -7,7 +7,7 @@
 
 use chrono::{DateTime, Utc};
 
-use torch_indexer::contracts::{
+use torch_api::contracts::{
     AnyEvent, BondingCurveTrade, CloseShortEvent, DecodedEvent, DeepPoolEvent, LiquidateShortEvent,
     MarketCreated, MarketStatus, MarketTier, MigratedToDex, NewMarketRow, NewPoolRow,
     NewPositionEventRow, NewPositionRow, NewTradeRow, OpenLongEvent, OpenShortEvent, PoolCreated,

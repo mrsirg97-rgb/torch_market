@@ -4,9 +4,7 @@
 
 use anyhow::Context;
 use torch_indexer::constants::BLOCK_CHANNEL_CAPACITY;
-use torch_indexer::{
-    api, config, contracts, db, stream::backfill, stream::grpc, stream::writer,
-};
+use torch_indexer::{config, contracts, db, stream::backfill, stream::grpc, stream::writer};
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -87,15 +85,15 @@ async fn run_live(cfg: config::Config) -> anyhow::Result<()> {
         "resuming subscription"
     );
 
-    let broadcaster = contracts::Broadcaster::new();
     let (tx, rx) = mpsc::channel::<contracts::BlockBatch>(BLOCK_CHANNEL_CAPACITY);
 
-    // Writer task: drains the channel, writes per-block, post-COMMIT broadcast.
+    // Writer task: drains the channel, writes per-block. Broadcast left this
+    // service (prompt-003): pg_notify fires INSIDE each write txn — Postgres
+    // delivers on COMMIT to every listening /api instance.
     let writer_handle = {
         let pool = pool.clone();
-        let bc = broadcaster.clone();
         tokio::spawn(async move {
-            if let Err(e) = writer::run_writer(pool, bc, rx).await {
+            if let Err(e) = writer::run_writer(pool, rx).await {
                 tracing::error!(error = %e, "writer task exited with error");
             }
         })
@@ -125,22 +123,7 @@ async fn run_live(cfg: config::Config) -> anyhow::Result<()> {
         })
     };
 
-    // HTTP + WS server.
-    let state = contracts::AppState {
-        pool: pool.clone(),
-        broadcaster: broadcaster.clone(),
-    };
-    let app = api::router(state);
-    let listener = tokio::net::TcpListener::bind(&cfg.api_bind)
-        .await
-        .with_context(|| format!("bind {}", cfg.api_bind))?;
-    info!(bind = %cfg.api_bind, "api server listening");
-
-    let server_handle = tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
-            tracing::error!(error = %e, "api server exited");
-        }
-    });
+    // No HTTP/WS here — reads + fan-out live in /api (prompt-003 split).
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
@@ -148,7 +131,6 @@ async fn run_live(cfg: config::Config) -> anyhow::Result<()> {
         }
         _ = writer_handle => {}
         _ = subscriber_handle => {}
-        _ = server_handle => {}
     }
 
     info!("shutting down");

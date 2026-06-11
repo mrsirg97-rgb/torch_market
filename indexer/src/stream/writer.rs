@@ -15,7 +15,6 @@
 //   Phase 3: everything else, in (signature, inner_ix_idx) order.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -23,7 +22,7 @@ use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 use crate::contracts::{
-    AnyEvent, BlockBatch, BroadcastFrame, Broadcaster, DecodedEvent, DeepPoolEvent, LiquidityRow,
+    AnyEvent, BlockBatch, DecodedEvent, DeepPoolEvent, LiquidityRow,
     MarketRow, MarketStatus, MessageRow, MigrationRow, NewMarketRow, NewMessageRow, NewPositionRow,
     PoolRow, PositionEventRow, PositionHealth, PositionRow, PositionSide, ReservesRow, SwapRow,
     TorchEvent, TradeRow,
@@ -31,11 +30,7 @@ use crate::contracts::{
 use crate::domain::{liquidity, market, message, migration, pool, position, reserves, swap};
 use crate::stream::translate;
 
-pub async fn run_writer(
-    db: PgPool,
-    broadcaster: Broadcaster,
-    mut rx: mpsc::Receiver<BlockBatch>,
-) -> anyhow::Result<()> {
+pub async fn run_writer(db: PgPool, mut rx: mpsc::Receiver<BlockBatch>) -> anyhow::Result<()> {
     info!("writer task started");
 
     let mut pool_cache = load_pool_cache(&db).await?;
@@ -56,14 +51,10 @@ pub async fn run_writer(
                 crate::metrics::METRICS
                     .last_processed_slot
                     .set(slot as i64);
-                crate::metrics::METRICS
-                    .broadcast_subscribers
-                    .set(broadcaster.subscriber_count() as i64);
                 let n = written.total_count();
                 if n > 0 {
                     info!(slot, inserted = n, "wrote block");
                 }
-                written.broadcast(&broadcaster);
             }
             Err(e) => {
                 crate::metrics::METRICS.block_write_errors_total.inc();
@@ -105,37 +96,63 @@ impl WrittenBlock {
             + self.migrations.len()
     }
 
-    fn broadcast(self, bc: &Broadcaster) {
-        for r in self.pools {
-            bc.publish(BroadcastFrame::Pool(Arc::new(r)));
+    // [prompt-003] Queue one thin pg_notify per inserted row INSIDE the write
+    // transaction — Postgres delivers on COMMIT (never for rollbacks, in
+    // commit order). Payload is always thin: {"t": table, "k": key}; the /api
+    // listener fetches the row and assembles the client frame. Backfill does
+    // NOT notify (live path only) — catch-up replays would storm listeners,
+    // and clients resync by refetch anyway.
+    async fn queue_notifies(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+    ) -> sqlx::Result<()> {
+        async fn notify(
+            tx: &mut Transaction<'_, Postgres>,
+            table: &str,
+            key: String,
+        ) -> sqlx::Result<()> {
+            sqlx::query("SELECT pg_notify('torch_events', $1)")
+                .bind(format!("{{\"t\":\"{table}\",\"k\":\"{key}\"}}"))
+                .execute(&mut **tx)
+                .await?;
+            Ok(())
         }
-        for r in self.reserves {
-            bc.publish(BroadcastFrame::Reserves(Arc::new(r)));
+        for r in &self.pools {
+            notify(tx, "pools", r.pool_id.to_string()).await?;
         }
-        for r in self.swaps {
-            bc.publish(BroadcastFrame::Swap(Arc::new(r)));
+        for r in &self.reserves {
+            notify(tx, "reserves", r.reserve_id.to_string()).await?;
         }
-        for r in self.liquidity {
-            bc.publish(BroadcastFrame::Liquidity(Arc::new(r)));
+        for r in &self.swaps {
+            notify(tx, "swaps", r.swap_id.to_string()).await?;
         }
-        for r in self.markets {
-            bc.publish(BroadcastFrame::Market(Arc::new(r)));
+        for r in &self.liquidity {
+            notify(tx, "liquidity_events", r.liquidity_id.to_string()).await?;
         }
-        for r in self.trades {
-            bc.publish(BroadcastFrame::Trade(Arc::new(r)));
+        for r in &self.markets {
+            notify(tx, "markets", r.mint.clone()).await?;
         }
-        for r in self.messages {
-            bc.publish(BroadcastFrame::Message(Arc::new(r)));
+        for r in &self.trades {
+            notify(tx, "trades", r.trade_id.to_string()).await?;
         }
-        for r in self.positions {
-            bc.publish(BroadcastFrame::Position(Arc::new(r)));
+        for r in &self.messages {
+            notify(tx, "messages", r.message_id.to_string()).await?;
         }
-        for r in self.position_events {
-            bc.publish(BroadcastFrame::PositionEvent(Arc::new(r)));
+        for r in &self.positions {
+            notify(
+                tx,
+                "positions",
+                format!("{}|{}|{:?}|{}", r.mint, r.owner, r.side, r.position_index),
+            )
+            .await?;
         }
-        for r in self.migrations {
-            bc.publish(BroadcastFrame::Migration(Arc::new(r)));
+        for r in &self.position_events {
+            notify(tx, "position_events", r.event_id.to_string()).await?;
         }
+        for r in &self.migrations {
+            notify(tx, "migrations", r.mint.clone()).await?;
+        }
+        Ok(())
     }
 }
 
@@ -279,6 +296,8 @@ async fn write_block_inner(
     }
 
     if update_checkpoint {
+        // Live path: notify on commit. (Backfill skips both checkpoint + notify.)
+        out.queue_notifies(&mut tx).await?;
         sqlx::query(
             "INSERT INTO indexer_state (id, last_processed_slot) VALUES (1, $1)
              ON CONFLICT (id) DO UPDATE SET last_processed_slot = EXCLUDED.last_processed_slot",
