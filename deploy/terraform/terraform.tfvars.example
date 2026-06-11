@@ -1,0 +1,6 @@
+project_id           = "torch-market-preview"
+region               = "us-central1"
+domain               = "torchmarket.dev"
+laserstream_token    = "<HELIUS_API_KEY>"
+rpc_url_helius       = "https://devnet.helius-rpc.com/?api-key=<HELIUS_API_KEY>"
+# image_tag          = "init"  # first apply; then the git SHA from build-and-push.sh

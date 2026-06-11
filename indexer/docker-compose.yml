@@ -32,7 +32,9 @@ services:
   indexer:
     profiles: ["full"]
     build:
-      context: .
+      # Repo root: the crate path-depends on ../indexer-core (prompt-003).
+      context: ..
+      dockerfile: indexer/Dockerfile
     container_name: torch-indexer
     env_file:
       # Holds LASERSTREAM_URL, LASERSTREAM_TOKEN, TORCH_PROGRAM_ID,

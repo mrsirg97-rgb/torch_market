@@ -165,3 +165,11 @@ pub fn event_labels(event: &crate::contracts::AnyEvent) -> (&'static str, &'stat
         ),
     }
 }
+
+// Prometheus text exposition for the ops listener.
+pub fn render() -> String {
+    use prometheus::Encoder;
+    let mut buf = Vec::new();
+    let _ = prometheus::TextEncoder::new().encode(&METRICS.registry.gather(), &mut buf);
+    String::from_utf8(buf).unwrap_or_default()
+}

@@ -123,7 +123,32 @@ async fn run_live(cfg: config::Config) -> anyhow::Result<()> {
         })
     };
 
-    // No HTTP/WS here — reads + fan-out live in /api (prompt-003 split).
+    // Minimal ops listener: /healthz + /metrics ONLY (reads + WS live in
+    // /api). Exists because Cloud Run requires a listening port, and the
+    // events_total-vs-rows canary belongs on prod dashboards anyway.
+    let ops = {
+        let bind = cfg.api_bind.clone();
+        tokio::spawn(async move {
+            let app = axum::Router::new()
+                .route("/healthz", axum::routing::get(|| async { "ok" }))
+                .route("/health", axum::routing::get(|| async { "ok" }))
+                .route(
+                    "/metrics",
+                    axum::routing::get(|| async {
+                        torch_indexer::metrics::render()
+                    }),
+                );
+            match tokio::net::TcpListener::bind(&bind).await {
+                Ok(l) => {
+                    info!(bind = %bind, "ops listener up (healthz/metrics)");
+                    if let Err(e) = axum::serve(l, app).await {
+                        tracing::error!(error = %e, "ops listener exited");
+                    }
+                }
+                Err(e) => tracing::error!(error = %e, %bind, "ops bind failed"),
+            }
+        })
+    };
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
@@ -131,6 +156,7 @@ async fn run_live(cfg: config::Config) -> anyhow::Result<()> {
         }
         _ = writer_handle => {}
         _ = subscriber_handle => {}
+        _ = ops => {}
     }
 
     info!("shutting down");

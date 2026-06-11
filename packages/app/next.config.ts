@@ -24,6 +24,8 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  // Standalone server bundle for the Docker image (deploy/).
+  output: "standalone",
   // Allow Android emulator to access dev server
   allowedDevOrigins: ["10.0.2.2"],
   // Forward TORCH_NETWORK to browser bundle so torchsdk uses correct Raydium addresses

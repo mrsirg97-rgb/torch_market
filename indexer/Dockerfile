@@ -1,9 +1,8 @@
 # syntax=docker/dockerfile:1.6
 #
-# Build context: ./indexer  (the standalone crate, kept out of the Anchor
-# program workspace so cargo doesn't pull yellowstone/sqlx/axum into program
-# builds).
-# Build command:  docker compose --profile full build indexer
+# Build context: REPO ROOT (the crate path-depends on ../indexer-core after
+# the prompt-003 split).
+# Build command:  docker build -f indexer/Dockerfile -t torch-ingest .
 #
 # Two stages:
 #   1. builder — compiles torch-indexer
@@ -28,16 +27,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
-# Standalone crate — bring in just the manifest, lockfile, and source.
-# BuildKit cache mounts on the cargo registry + target dir keep incremental
-# builds fast; on a clean build the mounts are empty (cold compile).
-COPY Cargo.toml Cargo.lock ./
-COPY src ./src
+# Root-context copies: the ingest crate + its path dep.
+COPY indexer-core ./indexer-core
+COPY indexer/Cargo.toml indexer/Cargo.lock ./indexer/
+COPY indexer/src ./indexer/src
+WORKDIR /build/indexer
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/build/target,sharing=locked \
-    cargo build --release --locked && \
-    cp /build/target/release/torch-indexer /usr/local/bin/torch-indexer
+    --mount=type=cache,target=/build/indexer/target,sharing=locked \
+    cargo build --release --locked --bin torch-indexer --bin loadseed && \
+    cp /build/indexer/target/release/torch-indexer /usr/local/bin/torch-indexer
 
 # --------------------------------------------------------------------
 # Stage 2: runtime

@@ -1,0 +1,13 @@
+# NEVER commit state: random_password results (all three DB roles) and
+# secret-version payloads (Helius key) live in state IN PLAINTEXT.
+terraform.tfstate
+terraform.tfstate.*
+*.tfstate.backup
+
+# Credentials live here (helius key, keyed RPC URL).
+terraform.tfvars
+
+# Provider binaries / cache.
+.terraform/
+
+# .terraform.lock.hcl is deliberately COMMITTED (dependency pinning).

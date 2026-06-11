@@ -49,7 +49,10 @@ use crate::state::AppState;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        // GFE shadows the literal /healthz path on run.app (Google-internal
+        // convention) — /health is the reachable alias; both stay registered.
         .route("/healthz", get(healthz))
+        .route("/health", get(healthz))
         .route("/metrics", get(metrics))
         // Torch endpoints
         .route("/api/markets", get(list_markets))

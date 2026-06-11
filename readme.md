@@ -34,3 +34,5 @@ python3 sim/torch_sim.py
 ```
 
 Brightside Solutions, 2026
+
+gcloud services enable compute.googleapis.com run.googleapis.com sqladmin.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com dns.googleapis.com

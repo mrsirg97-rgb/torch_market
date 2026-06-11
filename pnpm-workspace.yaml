@@ -2,3 +2,21 @@ packages:
   - 'packages/*'
   # exclude packages that are inside test directories
   - '!**/test/**'
+
+# pnpm v10 blocks dependency build scripts by default; these are the
+# legitimate native builds in the stack (solana crypto, ws accelerators,
+# next/sharp). Without this allowlist the Docker image's (newer) pnpm
+# exits 1 on install while older local pnpm sails through.
+onlyBuiltDependencies:
+  - '@stellar/stellar-sdk'
+  - bigint-buffer
+  - blake-hash
+  - bufferutil
+  - keccak
+  - protobufjs
+  - secp256k1
+  - sharp
+  - tiny-secp256k1
+  - unrs-resolver
+  - usb
+  - utf-8-validate
