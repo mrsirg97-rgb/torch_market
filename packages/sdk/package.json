@@ -11,7 +11,8 @@
     "build": "tsc",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run clean && npm run build",
-    "format": "prettier --write src/ tests/"
+    "format": "prettier --write src/ tests/",
+    "test:unit": "npx tsx tests/test_feed.ts && npx tsx tests/test_contracts.ts"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",

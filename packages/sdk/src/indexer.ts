@@ -16,13 +16,13 @@
 //
 // Wire types in this file mirror indexer/src/contracts.rs row shapes exactly
 // (serde uses snake_case for fields and `rename_all` for enum variants —
-// e.g. MarketStatus::Rs → "RS").
+// e.g. MarketStatus::Bonding → "BONDING"). Relabeled 2026-06-10 (RS/RD/ASN dead).
 
 // ============================================================================
 // Indexer wire types — direct mirror of contracts.rs
 // ============================================================================
 
-export type IndexerMarketStatus = 'RS' | 'RD' | 'ASN' | 'MIGRATED' | 'RECLAIMED'
+export type IndexerMarketStatus = 'BONDING' | 'COMPLETE' | 'MIGRATED' | 'RECLAIMED'
 export type IndexerMarketTier = 'flame' | 'torch' // spark removed from the program
 export type IndexerPositionHealth = 'healthy' | 'at_risk' | 'liquidatable' | 'none'
 

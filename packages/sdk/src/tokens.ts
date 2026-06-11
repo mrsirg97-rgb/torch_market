@@ -255,7 +255,7 @@ const indexerRowToTokenSummary = (
   const priceInSol = (price * TOKEN_MULTIPLIER) / LAMPORTS_PER_SOL
   const marketCapSol = (priceInSol * Number(TOTAL_SUPPLY)) / TOKEN_MULTIPLIER
 
-  // Indexer status (RS/RD/ASN/MIGRATED/RECLAIMED) → SDK status enum.
+  // Indexer status (BONDING/COMPLETE/MIGRATED/RECLAIMED) → SDK status enum.
   // RD and ASN both mean "bonding complete, awaiting migration" from the
   // consumer's perspective — collapsed into 'complete' to match the
   // frontend's 4-state TokenStatus model.
@@ -267,11 +267,10 @@ const indexerRowToTokenSummary = (
     case 'RECLAIMED':
       status = 'reclaimed'
       break
-    case 'RD':
-    case 'ASN':
+    case 'COMPLETE':
       status = 'complete'
       break
-    case 'RS':
+    case 'BONDING':
     default:
       status = 'bonding'
       break
@@ -496,16 +495,14 @@ export const getTokens = async (
 
 // Map the SDK's TokenStatusFilter to the indexer's MarketStatus filter,
 // or null for "no status filter" (indexer returns all statuses).
-const sdkStatusToIndexer = (s: TokenListParams['status']): IndexerMarketStatus | null => {
+export const sdkStatusToIndexer = (s: TokenListParams['status']): IndexerMarketStatus | null => {
   switch (s) {
     case 'bonding':
-      return 'RS'
+      return 'BONDING'
     case 'complete':
-      // 'complete' maps to RD on the indexer side (RD = bonding-complete,
-      // pre-migration). ASN gets collapsed into 'complete' on read; we
-      // don't filter on ASN here because no current writer code path
-      // produces it.
-      return 'RD'
+      // COMPLETE = bonding-complete, pre-migration (permissionless crank
+      // pending).
+      return 'COMPLETE'
     case 'migrated':
       return 'MIGRATED'
     case 'reclaimed':

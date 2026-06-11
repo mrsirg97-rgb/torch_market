@@ -15,11 +15,11 @@
  */
 'use client'
 
-import { useMemo } from 'react'
+import { useState, useMemo } from 'react'
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { useWallet } from '@solana/wallet-adapter-react'
-import { Header } from '@/components'
+import { Header, HowItWorksModal, TreasuryModal } from '@/components'
 import { useTokens } from '@/hooks/useTokens'
 import { useUserPnl } from '@/hooks/useUserPnl'
 import { shortenAddress } from '@/lib/constants'
@@ -53,6 +53,8 @@ function fmtTokens(raw: number): string {
 }
 
 export default function ProfilePage() {
+  const [showHowItWorks, setShowHowItWorks] = useState(false)
+  const [showTreasuryModal, setShowTreasuryModal] = useState(false)
   const { publicKey } = useWallet()
   const { pnl, loading: pnlLoading } = useUserPnl()
   const { tokens } = useTokens({ enabled: !!publicKey })
@@ -95,7 +97,12 @@ export default function ProfilePage() {
 
   return (
     <div className="min-h-mobile-screen" style={{ background: 'var(--background)' }}>
-      <Header />
+      <Header
+        onHowItWorksClick={() => setShowHowItWorks(true)}
+        onTreasuryClick={() => setShowTreasuryModal(true)}
+      />
+      <HowItWorksModal isOpen={showHowItWorks} onClose={() => setShowHowItWorks(false)} />
+      <TreasuryModal isOpen={showTreasuryModal} onClose={() => setShowTreasuryModal(false)} />
       <main className="px-4 sm:px-6 lg:px-8 pb-16">
         <div className="max-w-5xl mx-auto">
           {!publicKey ? (

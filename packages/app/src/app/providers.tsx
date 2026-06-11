@@ -4,6 +4,7 @@ import { useMemo, useSyncExternalStore } from 'react'
 import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react'
 import { WalletModalProvider } from '@solana/wallet-adapter-react-ui'
 import { NetworkProvider, useNetwork } from '@/lib/NetworkContext'
+import { TorchFeedProvider } from '@/lib/TorchFeedContext'
 import { ThemeProvider } from '@/lib/ThemeContext'
 import {
   createDefaultAuthorizationCache,
@@ -107,7 +108,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <ThemeProvider>
       <NetworkProvider>
+        <TorchFeedProvider>
         <SolanaProviders>{children}</SolanaProviders>
+        </TorchFeedProvider>
       </NetworkProvider>
     </ThemeProvider>
   )

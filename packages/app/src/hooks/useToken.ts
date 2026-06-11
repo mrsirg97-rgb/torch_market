@@ -33,6 +33,7 @@ import {
   TOKEN_2022_PROGRAM_ID,
 } from '@/lib/constants'
 import { useNetwork } from '@/lib/NetworkContext'
+import { useTorchFeed } from '@/lib/TorchFeedContext'
 import { fetchCombinedPriceHistory, type PricePoint } from '@/lib/trades'
 
 const isDev = process.env.NODE_ENV === 'development'
@@ -682,6 +683,14 @@ export function useToken(mintAddress: string): UseTokenResult {
       cancelled = true
     }
   }, [isValidMint, connection, mintAddress, tokenDetail, isDevnet, effectiveIndexerUrl])
+
+  // Live message updates via the market room (prompt-003); the 60s poll
+  // below stays as the fallback when the feed is down.
+  useTorchFeed(isValidMint ? { market: mintAddress } : null, (frame) => {
+    if (frame.kind === 'message' || frame.kind === 'resync') {
+      fetchMessages()
+    }
+  })
 
   // Fetch and refresh messages (deferred to avoid competing with initial data load)
   useEffect(() => {

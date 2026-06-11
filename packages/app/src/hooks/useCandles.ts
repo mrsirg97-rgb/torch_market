@@ -12,6 +12,7 @@
 import { useEffect, useState } from 'react'
 import { getCandles, type IndexerCandle } from 'torchsdk'
 import { useNetwork } from '@/lib/NetworkContext'
+import { useTorchFeed } from '@/lib/TorchFeedContext'
 
 export type CandleInterval = '1s' | '15s' | '30s' | '1m' | '5m' | '15m' | '1h' | '4h'
 
@@ -45,42 +46,19 @@ export function useCandles(
   // live without a page refresh.
   const [refetchTrigger, setRefetchTrigger] = useState(0)
 
-  // WS subscription: refetch candles when relevant events land in the
-  // indexer's broadcast firehose.
-  useEffect(() => {
-    if (!effectiveIndexerUrl || !mint) return
-
-    const wsUrl = effectiveIndexerUrl.replace(/^http/, 'ws') + '/events'
-    const ws = new WebSocket(wsUrl)
-
-    ws.onmessage = (e: MessageEvent) => {
-      try {
-        const frame = JSON.parse(e.data as string) as {
-          kind?: string
-          mint?: string
-        }
-        // Frames we care about for chart freshness:
-        //   - `trade`: bonding-curve buy/sell carrying mint directly
-        //   - `migration`: triggers DEX-price extension into the candle set
-        //   - `swap`: post-migration DEX trade; pool_id rather than mint, so
-        //     we refetch on any swap. Over-refetches at scale, but candle
-        //     fetch is cheap (one HTTP + SQL window query).
-        const relevant =
-          (frame.kind === 'trade' && frame.mint === mint) ||
-          (frame.kind === 'migration' && frame.mint === mint) ||
-          frame.kind === 'swap'
-        if (relevant) {
-          setRefetchTrigger((n) => n + 1)
-        }
-      } catch {
-        /* malformed frame — ignore */
-      }
+  // Room subscription (prompt-003): the api pre-filters per market, so any
+  // frame in this room is chart-relevant. `resync` (incl. reconnects) also
+  // refetches — candles fetch is one cheap HTTP + SQL window query.
+  useTorchFeed(mint ? { market: mint } : null, (frame) => {
+    if (
+      frame.kind === 'trade' ||
+      frame.kind === 'swap' ||
+      frame.kind === 'migration' ||
+      frame.kind === 'resync'
+    ) {
+      setRefetchTrigger((n) => n + 1)
     }
-
-    return () => {
-      ws.close()
-    }
-  }, [effectiveIndexerUrl, mint])
+  })
 
   useEffect(() => {
     if (!effectiveIndexerUrl || !mint) {

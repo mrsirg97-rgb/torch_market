@@ -29,6 +29,8 @@ services:
   #   docker compose --profile full up --build
   # Default `docker compose up` starts just Postgres so the dev loop
   # (cargo run from host) stays fast.
+  # Single-writer ingest (prompt-003 split): stream → writer → pg_notify.
+  # Its port 8080 serves /health + /metrics only (ops listener).
   indexer:
     profiles: ["full"]
     build:
@@ -53,6 +55,24 @@ services:
         condition: service_healthy
     ports:
       - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+
+  # Read API (prompt-003 split): domain reads + WS rooms fed by LISTEN.
+  # Connects as the SELECT-only torch_api role — same grants as prod.
+  api:
+    profiles: ["full"]
+    build:
+      context: ..
+      dockerfile: api/Dockerfile
+    container_name: torch-api
+    environment:
+      DATABASE_URL: postgres://torch_api:${API_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-torch}
+      API_BIND: 0.0.0.0:8081
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8081:8081"
     restart: unless-stopped
 
 volumes:

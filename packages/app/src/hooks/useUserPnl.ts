@@ -12,6 +12,7 @@ import { useEffect, useState } from 'react'
 import { useWallet } from '@solana/wallet-adapter-react'
 import { getUserPnl, type UserPnlSummary } from 'torchsdk'
 import { useNetwork } from '@/lib/NetworkContext'
+import { useTorchFeed } from '@/lib/TorchFeedContext'
 
 interface UseUserPnlResult {
   pnl: UserPnlSummary | null
@@ -33,24 +34,13 @@ export function useUserPnl(): UseUserPnlResult {
   // by user because we don't know which mints the wallet has touched
   // without the PnL data itself; a refetch on any trade is acceptable
   // (cheap HTTP + SQL) and ensures we catch the user's own activity.
-  useEffect(() => {
-    if (!effectiveIndexerUrl || !wallet) return
-    const wsUrl = effectiveIndexerUrl.replace(/^http/, 'ws') + '/events'
-    const ws = new WebSocket(wsUrl)
-    ws.onmessage = (e: MessageEvent) => {
-      try {
-        const frame = JSON.parse(e.data as string) as { kind?: string }
-        if (frame.kind === 'trade' || frame.kind === 'swap') {
-          setRefetchTrigger((n) => n + 1)
-        }
-      } catch {
-        /* ignore */
-      }
+  // 'all' room carries trade + swap ticks for every market — enough to know
+  // when this wallet's PnL might have moved (refetch recomputes precisely).
+  useTorchFeed(wallet ? 'all' : null, (frame) => {
+    if (frame.kind === 'trade' || frame.kind === 'swap' || frame.kind === 'resync') {
+      setRefetchTrigger((n) => n + 1)
     }
-    return () => {
-      ws.close()
-    }
-  }, [effectiveIndexerUrl, wallet])
+  })
 
   useEffect(() => {
     if (!effectiveIndexerUrl || !wallet) {

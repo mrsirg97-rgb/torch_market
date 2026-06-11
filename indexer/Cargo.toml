@@ -2,6 +2,7 @@
 name = "torch-indexer"
 version = "0.1.0"
 edition = "2021"
+default-run = "torch-indexer"
 
 # Standalone — kept out of the program workspace at /Users/.../torch_market so
 # anchor builds don't pull in the indexer's heavy deps (yellowstone, axum,

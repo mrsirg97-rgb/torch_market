@@ -75,7 +75,7 @@ export default function MarketsPage() {
               className="text-lg sm:text-3xl font-bold tracking-tight"
               style={{ color: 'var(--foreground)' }}
             >
-              every market.
+              markets
             </h3>
             <p className="text-sm mt-1" style={{ color: 'var(--muted)' }}>
               browse, trade, lend, short. all on chain.

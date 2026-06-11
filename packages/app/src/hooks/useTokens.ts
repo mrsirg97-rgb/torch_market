@@ -20,6 +20,7 @@ import idl from 'torchsdk/dist/torch_market.json'
 import { PROGRAM_ID, SIMNET_PROGRAM_ID, LAMPORTS_PER_SOL, TOKEN_MULTIPLIER, TOTAL_SUPPLY } from '@/lib/constants'
 import { TokenData, TokenEnrichment, TokenFilter, TokenTier, matchesFilter, getTierFromTarget } from '@/types/token'
 import { useNetwork } from '@/lib/NetworkContext'
+import { useTorchFeed, useFeedHealthy } from '@/lib/TorchFeedContext'
 
 function isLikelyValidMetadataUri(uri: string): boolean {
   try {
@@ -62,6 +63,13 @@ export function useTokens(options?: { enabled?: boolean }): UseTokensResult {
   const { isSimnet, isMainnet, effectiveIndexerUrl } = useNetwork()
   const [loading, setLoading] = useState(true)
   const [rawTokens, setRawTokens] = useState<TokenData[]>([])
+  const feedHealthy = useFeedHealthy()
+  useTorchFeed('all', (frame) => {
+    if (frame.kind === 'market' || frame.kind === 'trade' || frame.kind === 'resync') {
+      fetchTokensRef.current?.(true)
+    }
+  })
+  const fetchTokensRef = useRef<((r: boolean) => void) | null>(null)
   const [currentSlot, setCurrentSlot] = useState<bigint>(BigInt(0))
   const initialLoadDone = useRef(false)
 
@@ -112,6 +120,10 @@ export function useTokens(options?: { enabled?: boolean }): UseTokensResult {
   )
 
   useEffect(() => {
+    fetchTokensRef.current = fetchTokens
+  }, [fetchTokens])
+
+  useEffect(() => {
     if (!enabled) {
       setLoading(false)
       return
@@ -128,7 +140,9 @@ export function useTokens(options?: { enabled?: boolean }): UseTokensResult {
     // Skip on simnet - surfpool doesn't support programSubscribe
     if (isSimnet) {
       // Poll instead on simnet (with isRefresh=true to avoid loading flicker)
-      const pollInterval = setInterval(() => fetchTokens(true), 10000)
+      // Poll is the FALLBACK: slow heartbeat while the live feed is open,
+      // full rate when it isn't (prompt-003 rooms; RPC path unchanged).
+      const pollInterval = setInterval(() => fetchTokens(true), feedHealthy ? 60000 : 10000)
       return () => clearInterval(pollInterval)
     }
 

@@ -41,3 +41,4 @@ yarn-error.log*
 next-env.d.ts
 test-ledger
 .env*.local
+test-results
