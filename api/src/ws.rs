@@ -145,12 +145,19 @@ async fn ws_session(socket: WebSocket, state: AppState) {
                 match msg {
                     None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
                     Some(Ok(Message::Text(text))) => {
-                        if let Ok(m) = serde_json::from_str::<ClientMsg>(&text) {
+                        match serde_json::from_str::<ClientMsg>(&text) {
+                            Err(e) => debug!(%text, error = %e, "unparseable client msg"),
+                            Ok(m) => {
+                        if true {
+                            let m = m;
                             match m {
                                 ClientMsg::Subscribe(t) => {
                                     if let Some(key) = target_key(&t) {
+                                        debug!(?key, "client subscribed");
                                         let rx = state.rooms.subscribe(key.clone());
                                         rooms.insert(key, BroadcastStream::new(rx));
+                                    } else {
+                                        debug!(?t, "subscribe target rejected");
                                     }
                                 }
                                 ClientMsg::Unsubscribe(t) => {
@@ -158,6 +165,8 @@ async fn ws_session(socket: WebSocket, state: AppState) {
                                         rooms.remove(&key);
                                     }
                                 }
+                            }
+                        }
                             }
                         }
                     }

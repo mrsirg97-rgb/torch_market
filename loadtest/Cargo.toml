@@ -1,0 +1,21 @@
+[package]
+name = "torch-loadtest"
+version = "0.1.0"
+edition = "2021"
+
+# Read-API load harness (scratchpad-003). Standalone so the api service's
+# dependency tree stays clean. HTTP scenarios + percentile report; WS room
+# fan-out behind --ws.
+[workspace]
+
+[[bin]]
+name = "loadtest"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "sync", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures = "0.3"
+serde_json = "1"
+anyhow = "1"

@@ -160,6 +160,23 @@ impl WrittenBlock {
 // write_block, but takes ownership of events directly (no BlockBatch
 // indirection) and DOES NOT touch indexer_state. Returns the count of newly
 // inserted rows. Each call is one Postgres transaction.
+// Like write_events_no_checkpoint but WITH pg_notify (live-path semantics,
+// minus the checkpoint). Used by load tooling to drive the NOTIFY → /api
+// rooms fan-out exactly as live ingest would.
+pub async fn write_events_notify(
+    db: &PgPool,
+    slot: u64,
+    events: Vec<DecodedEvent>,
+) -> anyhow::Result<usize> {
+    let mut pool_cache = HashMap::new();
+    let mut lp_supply_cache = load_lp_supply_cache(db).await?;
+    let batch = BlockBatch { slot, events };
+    let written =
+        write_block_inner(db, &mut pool_cache, &mut lp_supply_cache, &batch, false, true)
+            .await?;
+    Ok(written.total_count())
+}
+
 pub async fn write_events_no_checkpoint(
     db: &PgPool,
     slot: u64,
@@ -175,7 +192,8 @@ pub async fn write_events_no_checkpoint(
     let mut lp_supply_cache = load_lp_supply_cache(db).await?;
     let batch = BlockBatch { slot, events };
     let written =
-        write_block_inner(db, &mut pool_cache, &mut lp_supply_cache, &batch, false).await?;
+        write_block_inner(db, &mut pool_cache, &mut lp_supply_cache, &batch, false, false)
+            .await?;
     Ok(written.total_count())
 }
 
@@ -185,7 +203,7 @@ async fn write_block(
     lp_supply_cache: &mut HashMap<i32, i64>,
     batch: &BlockBatch,
 ) -> anyhow::Result<WrittenBlock> {
-    write_block_inner(db, pool_cache, lp_supply_cache, batch, true).await
+    write_block_inner(db, pool_cache, lp_supply_cache, batch, true, true).await
 }
 
 async fn write_block_inner(
@@ -194,6 +212,7 @@ async fn write_block_inner(
     lp_supply_cache: &mut HashMap<i32, i64>,
     batch: &BlockBatch,
     update_checkpoint: bool,
+    notify: bool,
 ) -> anyhow::Result<WrittenBlock> {
     let mut tx = db.begin().await?;
     let mut out = WrittenBlock::default();
@@ -295,9 +314,11 @@ async fn write_block_inner(
         }
     }
 
-    if update_checkpoint {
-        // Live path: notify on commit. (Backfill skips both checkpoint + notify.)
+    if notify {
+        // Live path (and load tooling): notify on commit. Backfill skips.
         out.queue_notifies(&mut tx).await?;
+    }
+    if update_checkpoint {
         sqlx::query(
             "INSERT INTO indexer_state (id, last_processed_slot) VALUES (1, $1)
              ON CONFLICT (id) DO UPDATE SET last_processed_slot = EXCLUDED.last_processed_slot",
