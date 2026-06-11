@@ -25,7 +25,6 @@ export default function MarketsPage() {
       bonding: tokens.filter((t) => matchesFilter(t, 'bonding')).length,
       complete: tokens.filter((t) => matchesFilter(t, 'complete')).length,
       reclaimed: tokens.filter((t) => matchesFilter(t, 'reclaimed')).length,
-      legacy: tokens.filter((t) => matchesFilter(t, 'legacy')).length,
     }),
     [tokens],
   )

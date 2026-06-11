@@ -7,6 +7,7 @@ pub mod domain;
 pub mod http;
 pub mod listen;
 pub mod metrics;
+pub mod rpc;
 pub mod services;
 pub mod state;
 pub mod ws;

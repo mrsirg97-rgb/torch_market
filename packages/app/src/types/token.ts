@@ -6,7 +6,6 @@
  */
 
 import type { TokenSummary as SdkTokenSummary } from 'torchsdk'
-import { LEGACY_MINTS } from 'torchsdk'
 
 /** Token tier based on bonding curve SOL target */
 export type TokenTier = 'flame' | 'torch'
@@ -53,32 +52,23 @@ export interface TokenEnrichment {
 export type TokenData = SdkTokenSummary & TokenEnrichment
 
 /** Filter options for token list */
-export type TokenFilter = 'bonding' | 'complete' | 'reclaimed' | 'legacy'
+// 'legacy' removed: no legacy markets exist on v21 (fresh program).
+export type TokenFilter = 'bonding' | 'complete' | 'reclaimed'
 
 /** Filter labels for display */
 export const FILTER_LABELS: Record<TokenFilter, string> = {
   bonding: 'Bonding',
   complete: 'Active',
   reclaimed: 'Reclaimed',
-  legacy: 'Legacy',
 }
 
 /** Token status derived from SDK status + progress */
-export type TokenStatus = 'new' | 'bonding' | 'complete' | 'migrated' | 'reclaimed' | 'legacy'
-
-/** Set of legacy mint addresses for O(1) lookup */
-const LEGACY_SET = new Set(LEGACY_MINTS)
-
-/** Check if a token mint is a legacy token */
-export function isLegacyMint(mint: string): boolean {
-  return LEGACY_SET.has(mint)
-}
+export type TokenStatus = 'new' | 'bonding' | 'complete' | 'migrated' | 'reclaimed'
 
 /**
  * Get the display status of a token from its SDK data
  */
 export function getTokenStatus(token: TokenData): TokenStatus {
-  if (isLegacyMint(token.mint)) return 'legacy'
   // SDK status is 'bonding' | 'complete' | 'migrated' | 'reclaimed'
   if (token.status === 'reclaimed') return 'reclaimed'
   if (token.status === 'migrated') return 'migrated'
@@ -94,9 +84,6 @@ export function getTokenStatus(token: TokenData): TokenStatus {
 export function matchesFilter(token: TokenData, filter: TokenFilter): boolean {
   const status = getTokenStatus(token)
 
-  // Legacy tokens only appear in the legacy tab
-  if (status === 'legacy') return filter === 'legacy'
-
   switch (filter) {
     case 'bonding':
       return status === 'new' || status === 'bonding'
@@ -104,8 +91,6 @@ export function matchesFilter(token: TokenData, filter: TokenFilter): boolean {
       return token.status === 'complete' || token.status === 'migrated'
     case 'reclaimed':
       return token.status === 'reclaimed'
-    case 'legacy':
-      return false // handled above
     default:
       return false
   }

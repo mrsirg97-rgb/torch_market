@@ -10,7 +10,7 @@ interface FilterDropdownProps {
   size?: 'sm' | 'md'
 }
 
-const FILTER_OPTIONS: TokenFilter[] = ['bonding', 'complete', 'reclaimed', 'legacy']
+const FILTER_OPTIONS: TokenFilter[] = ['bonding', 'complete', 'reclaimed']
 
 /**
  * Dropdown component for filtering tokens by status

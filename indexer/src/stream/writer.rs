@@ -206,6 +206,20 @@ async fn write_block(
     write_block_inner(db, pool_cache, lp_supply_cache, batch, true, true).await
 }
 
+// [prompt-006] Expected pool namespace: torch_config PDA derived from
+// TORCH_PROGRAM_ID at first use. None (env unset, e.g. unit tests) = no
+// filtering. Era-proof: a torch redeploy re-derives, orphaning old pools.
+fn expected_namespace() -> Option<&'static str> {
+    use std::sync::OnceLock;
+    static NS: OnceLock<Option<String>> = OnceLock::new();
+    NS.get_or_init(|| {
+        std::env::var("TORCH_PROGRAM_ID")
+            .ok()
+            .and_then(|id| crate::stream::translate::derive_torch_config_pda(&id))
+    })
+    .as_deref()
+}
+
 async fn write_block_inner(
     db: &PgPool,
     pool_cache: &mut HashMap<String, i32>,
@@ -257,6 +271,16 @@ async fn write_block_inner(
         .iter()
         .filter_map(|de| match &de.event {
             AnyEvent::DeepPool(DeepPoolEvent::PoolCreated(p)) => {
+                // [prompt-006] Foreign-namespace pools (prior torch eras,
+                // other protocols) never enter the projection; their
+                // downstream events drop via the unknown-pool path.
+                if let Some(ns) = expected_namespace() {
+                    if !translate::pool_in_namespace(p, ns) {
+                        crate::metrics::METRICS.pools_foreign_skipped_total.inc();
+                        warn!(pool = %translate::b58(&p.pool), "foreign-namespace pool skipped");
+                        return None;
+                    }
+                }
                 Some(translate::new_pool(p, de))
             }
             _ => None,

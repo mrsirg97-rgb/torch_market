@@ -23,6 +23,11 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         pool: pool.clone(),
         rooms: Rooms::new(),
+        rpc_upstream: cfg.rpc_url.clone(),
+        http: reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .expect("http client"),
     };
 
     // LISTEN bridge: pg_notify → rooms.

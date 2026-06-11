@@ -40,6 +40,12 @@ resource "google_secret_manager_secret_iam_member" "ingest_rpc_access" {
   member    = "serviceAccount:${google_service_account.ingest.email}"
 }
 
+resource "google_secret_manager_secret_iam_member" "api_rpc_url_access" {
+  secret_id = google_secret_manager_secret.rpc_url.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.api.email}"
+}
+
 resource "google_secret_manager_secret_iam_member" "api_db_url_access" {
   secret_id = google_secret_manager_secret.api_db_url.id
   role      = "roles/secretmanager.secretAccessor"
@@ -236,6 +242,17 @@ resource "google_cloud_run_v2_service" "api" {
           }
         }
       }
+      env {
+        # RPC proxy upstream (prompt-005): Helius URL with key inline. The
+        # browser's RPC path now transits OUR edge — worker deprecated.
+        name = "RPC_URL"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.rpc_url.secret_id
+            version = "latest"
+          }
+        }
+      }
 
       volume_mounts {
         name       = "cloudsql"
@@ -252,6 +269,7 @@ resource "google_cloud_run_v2_service" "api" {
   depends_on = [
     google_secret_manager_secret_version.api_db_url,
     google_secret_manager_secret_iam_member.api_db_url_access,
+    google_secret_manager_secret_iam_member.api_rpc_url_access,
     google_project_iam_member.api_cloudsql,
     google_artifact_registry_repository.torch,
   ]

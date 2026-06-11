@@ -75,7 +75,7 @@ resource "google_compute_url_map" "torch" {
       strip_query            = true
     }
     path_rule {
-      paths   = ["/api/*", "/events", "/health", "/healthz"]
+      paths   = ["/api/*", "/events", "/health", "/healthz", "/rpc", "/rpc-ws"]
       service = google_compute_backend_service.api.id
     }
   }

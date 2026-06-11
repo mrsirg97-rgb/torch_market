@@ -504,3 +504,21 @@ pub fn new_message(
 // rather than as a standalone translate function. The position_events log rows
 // above ARE pure and built here; only the `positions` current-state reconcile
 // for close/liquidate lives in stream/writer.rs.
+
+// ── Namespace filter (prompt-006) ────────────────────────────────────────
+// deep_pool's program id is stable across torch redeploys, so its history
+// spans ERAS. Torch's projection must only contain pools created under the
+// CURRENT torch program's namespace: config = PDA([b"torch_config"], torch).
+
+pub fn derive_torch_config_pda(torch_program_id: &str) -> Option<String> {
+    let pid = solana_pubkey::Pubkey::try_from(
+        bs58::decode(torch_program_id).into_vec().ok()?.as_slice(),
+    )
+    .ok()?;
+    let (pda, _bump) = solana_pubkey::Pubkey::find_program_address(&[b"torch_config"], &pid);
+    Some(pda.to_string())
+}
+
+pub fn pool_in_namespace(p: &PoolCreated, expected_config_b58: &str) -> bool {
+    b58(&p.config) == expected_config_b58
+}

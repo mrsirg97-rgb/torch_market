@@ -19,9 +19,14 @@ export interface NetworkConfig {
   indexerUrl?: string
 }
 
-// Cloudflare Worker proxy for Helius RPC (keeps API key server-side)
-const HELIUS_PROXY_URL = 'https://torch-market-rpc.mrsirg97.workers.dev'
-const HELIUS_WS_URL = 'wss://torch-market-rpc.mrsirg97.workers.dev'
+// [prompt-005] RPC rides OUR api tier (/rpc + /rpc-ws): key in Secret
+// Manager, traffic behind Cloud Armor, no Cloudflare dependency. The proxy
+// is single-cluster per deployment (the api's RPC_URL secret picks it), so
+// the preview serves devnet and torch.market will serve mainnet.
+// Cloudflare worker kept ONLY for the mainnet preset until that deployment
+// exists.
+const LEGACY_WORKER_URL = 'https://torch-market-rpc.mrsirg97.workers.dev'
+const LEGACY_WORKER_WS = 'wss://torch-market-rpc.mrsirg97.workers.dev'
 
 // Global indexer override. When set, applies to every network in NETWORKS
 // below. For per-network indexers, edit the per-config entry instead.
@@ -43,8 +48,8 @@ const NETWORKS: Record<NetworkId, NetworkConfig> = {
   devnet: {
     id: 'devnet',
     name: 'Devnet',
-    rpcUrl: `${HELIUS_PROXY_URL}/devnet`,
-    wsUrl: `${HELIUS_WS_URL}/devnet`,
+    rpcUrl: `${ENV_INDEXER_URL || 'https://api.torchmarket.dev'}/rpc`,
+    wsUrl: `${(ENV_INDEXER_URL || 'https://api.torchmarket.dev').replace(/^http/, 'ws')}/rpc-ws`,
     explorerUrl: 'https://explorer.solana.com',
     jupiterEnabled: false,
     indexerUrl: ENV_INDEXER_URL || undefined,
@@ -52,8 +57,8 @@ const NETWORKS: Record<NetworkId, NetworkConfig> = {
   mainnet: {
     id: 'mainnet',
     name: 'Mainnet',
-    rpcUrl: HELIUS_PROXY_URL,
-    wsUrl: HELIUS_WS_URL,
+    rpcUrl: LEGACY_WORKER_URL,
+    wsUrl: LEGACY_WORKER_WS,
     explorerUrl: 'https://explorer.solana.com',
     jupiterEnabled: false,
     indexerUrl: ENV_INDEXER_URL || undefined,

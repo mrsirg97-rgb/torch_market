@@ -5,18 +5,14 @@ import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useTheme } from '@/lib/ThemeContext'
-import { useNetwork, type NetworkId } from '@/lib/NetworkContext'
+import { useNetwork } from '@/lib/NetworkContext'
+import { NetworkDropdown } from '@/components/NetworkDropdown'
 
 const WalletMultiButton = dynamic(
   () => import('@solana/wallet-adapter-react-ui').then((mod) => mod.WalletMultiButton),
   { ssr: false },
 )
 
-const NETWORK_OPTIONS: { id: NetworkId; label: string }[] = [
-  { id: 'simnet', label: 'sim' },
-  { id: 'devnet', label: 'dev' },
-  { id: 'mainnet', label: 'main' },
-]
 
 interface HeaderProps {
   onHowItWorksClick?: () => void
@@ -218,19 +214,7 @@ export function Header({ onHowItWorksClick, onTreasuryClick }: HeaderProps) {
           </div>
 
           {/* Always-visible: network, theme, wallet */}
-          <select
-            value={networkId}
-            onChange={(e) => setNetworkId(e.target.value as NetworkId)}
-            className="h-7 text-sm cursor-pointer focus:outline-none appearance-none bg-transparent pr-1"
-            style={{ color: 'var(--muted)' }}
-            title="Network"
-          >
-            {NETWORK_OPTIONS.map((n) => (
-              <option key={n.id} value={n.id} style={{ background: 'var(--background)' }}>
-                {n.label}
-              </option>
-            ))}
-          </select>
+          <NetworkDropdown />
 
           <button
             onClick={toggleTheme}

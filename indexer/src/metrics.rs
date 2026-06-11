@@ -38,6 +38,7 @@ pub struct Metrics {
     /// gRPC subscriber will replay on reconnect. High rate here means the DB
     /// is sick or a schema/code mismatch is rejecting writes.
     pub block_write_errors_total: IntCounter,
+    pub pools_foreign_skipped_total: IntCounter,
 
     /// Last slot successfully committed. Compare against `solana slots
     /// --url <rpc>` for lag; a healthy indexer trails by <100 slots.
@@ -76,6 +77,11 @@ impl Metrics {
             "Per-block writer commit failures",
         )
         .expect("build block_write_errors_total");
+        let pools_foreign_skipped_total = IntCounter::new(
+            "indexer_pools_foreign_skipped_total",
+            "deep_pool PoolCreated events outside torch's namespace (prompt-006)",
+        )
+        .expect("build pools_foreign_skipped_total");
         let last_processed_slot = IntGauge::new(
             "indexer_last_processed_slot",
             "Last slot successfully committed",
@@ -97,6 +103,9 @@ impl Metrics {
             .register(Box::new(blocks_written_total.clone()))
             .expect("register blocks_written_total");
         registry
+            .register(Box::new(pools_foreign_skipped_total.clone()))
+            .expect("register pools_foreign_skipped_total");
+        registry
             .register(Box::new(block_write_errors_total.clone()))
             .expect("register block_write_errors_total");
         registry
@@ -112,6 +121,7 @@ impl Metrics {
             decode_errors_total,
             blocks_written_total,
             block_write_errors_total,
+            pools_foreign_skipped_total,
             last_processed_slot,
             broadcast_subscribers,
         }

@@ -6,7 +6,7 @@ import Image from 'next/image'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { useMwaSendTransaction } from '@/hooks/useMwaSendTransaction'
 import { buildReclaimFailedTokenTransaction } from 'torchsdk'
-import { TokenData, getTokenStatus, TIER_CONFIG, isLegacyMint } from '@/types/token'
+import { TokenData, getTokenStatus, TIER_CONFIG } from '@/types/token'
 import { shortenAddress, formatSlotAge, INACTIVITY_PERIOD_SLOTS } from '@/lib/constants'
 import { VerifiedBadge } from './VerifiedBadge'
 
@@ -36,7 +36,7 @@ export function TokenCard({ token, currentSlot, onClick }: TokenCardProps) {
   const status = getTokenStatus(token)
 
   // Reclaim eligibility: bonding (not complete/migrated/reclaimed), inactive 7+ days
-  const isReclaimEligible = status !== 'reclaimed' && status !== 'migrated' && status !== 'complete' && status !== 'legacy'
+  const isReclaimEligible = status !== 'reclaimed' && status !== 'migrated' && status !== 'complete'
     && currentSlot && token.last_activity_at
     && (currentSlot - BigInt(token.last_activity_at)) >= INACTIVITY_PERIOD_SLOTS
 
@@ -71,12 +71,10 @@ export function TokenCard({ token, currentSlot, onClick }: TokenCardProps) {
     complete: { class: 'badge-complete', text: 'Complete' },
     migrated: { class: 'badge-migrated', text: 'Migrated' },
     reclaimed: { class: 'badge-reclaimed', text: 'Reclaimed' },
-    legacy: { class: 'badge-reclaimed', text: 'Legacy' },
   }[status]
 
   const isReclaimed = status === 'reclaimed'
-  const isLegacy = status === 'legacy'
-  const isInactive = isReclaimed || isLegacy
+  const isInactive = isReclaimed
 
   // Format price for display
   const priceDisplay =

@@ -24,6 +24,9 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "macros"] }
 axum = { version = "0.7", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
+# RPC proxy upstreams (prompt-005): HTTP passthrough + WS bridge to Helius.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dashmap = "6"

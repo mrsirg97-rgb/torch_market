@@ -65,6 +65,10 @@ services:
       context: ..
       dockerfile: api/Dockerfile
     container_name: torch-api
+    env_file:
+      # RPC_URL enables the /rpc proxy locally (prompt-005).
+      - path: ./.env
+        required: false
     environment:
       DATABASE_URL: postgres://torch_api:${API_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-torch}
       API_BIND: 0.0.0.0:8081

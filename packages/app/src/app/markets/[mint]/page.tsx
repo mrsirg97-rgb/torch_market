@@ -17,7 +17,6 @@ import {
   type SwapPreview,
 } from '@/components/token'
 import { useToken } from '@/hooks/useToken'
-import { isLegacyMint } from '@/types/token'
 import { formatSol, formatTokens } from '@/lib/constants'
 
 const isDev = process.env.NODE_ENV === 'development'
@@ -312,7 +311,7 @@ export default function TokenPage({ params }: { params: Promise<{ mint: string }
                       isMigrated={token.isMigrated}
                       isComplete={token.isComplete}
                       isVoting={token.isVoting}
-                      isLegacy={isLegacyMint(token.mintAddress)}
+                      isLegacy={false}
                       onTradeComplete={handleTradeComplete}
                       onPreviewChange={setSwapPreview}
                     />

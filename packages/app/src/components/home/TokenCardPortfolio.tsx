@@ -66,12 +66,10 @@ export function TokenCardPortfolio({
     complete: { class: 'badge-complete', text: 'Complete' },
     migrated: { class: 'badge-migrated', text: 'Migrated' },
     reclaimed: { class: 'badge-reclaimed', text: 'Reclaimed' },
-    legacy: { class: 'badge-reclaimed', text: 'Legacy' },
   }[status]
 
   const isReclaimed = status === 'reclaimed'
-  const isLegacy = status === 'legacy'
-  const isInactive = isReclaimed || isLegacy
+  const isInactive = isReclaimed 
 
   return (
     <Link

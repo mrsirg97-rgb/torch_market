@@ -71,6 +71,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/liquidity", get(list_liquidity))
         // WS firehose
         .route("/events", get(crate::ws::ws_handler))
+        // RPC proxy (prompt-005) — POST passthrough + WS bridge.
+        .route("/rpc", axum::routing::post(crate::rpc::rpc_http))
+        .route("/rpc-ws", get(crate::rpc::rpc_ws))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)

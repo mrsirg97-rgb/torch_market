@@ -50,6 +50,8 @@ bs58 = "0.5"
 
 # Cryptography (for computing event discriminators at startup)
 sha2 = "0.10"
+# PDA derivation for the namespace filter (prompt-006) — standalone pubkey crate.
+solana-pubkey = { version = "2", features = ["curve25519"] }
 
 # Observability
 tracing = "0.1"

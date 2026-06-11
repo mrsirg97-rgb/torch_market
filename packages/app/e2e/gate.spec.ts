@@ -54,6 +54,12 @@ test('api surface answers through the public edge', async ({ request, baseURL })
     const res = await request.get(api + path)
     expect(res.status(), path).toBe(200)
   }
+  // RPC proxy answers through the edge (prompt-005).
+  const rpc = await request.post(api + '/rpc', {
+    data: { jsonrpc: '2.0', id: 1, method: 'getHealth' },
+  })
+  expect(rpc.status(), '/rpc proxies').toBe(200)
+
   // /metrics must NOT be publicly reachable (edge allowlist).
   const metrics = await request.get(api + '/metrics', { maxRedirects: 0 })
   expect(metrics.status(), '/metrics hidden at edge').not.toBe(200)

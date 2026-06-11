@@ -24,6 +24,8 @@ async fn build_app(db: &TestDb) -> axum::Router {
     let state = AppState {
         pool: db.pool.clone(),
         rooms: Rooms::new(),
+        rpc_upstream: None, // proxy disabled in tests
+        http: reqwest::Client::new(),
     };
     api::router(state)
 }

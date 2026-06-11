@@ -16,7 +16,7 @@ export function TokenRow({ token, currentSlot }: TokenRowProps) {
   const [copied, setCopied] = useState(false)
 
   const status = getTokenStatus(token)
-  const isInactive = status === 'reclaimed' || status === 'legacy'
+  const isInactive = status === 'reclaimed'
 
   const priceDisplay =
     token.price_sol < 0.000001
@@ -36,7 +36,6 @@ export function TokenRow({ token, currentSlot }: TokenRowProps) {
     complete: { label: 'Complete', className: 'badge badge-complete' },
     migrated: { label: 'Active', className: 'badge badge-migrated' },
     reclaimed: { label: 'Reclaimed', className: 'badge badge-reclaimed' },
-    legacy: { label: 'Legacy', className: 'badge badge-reclaimed' },
   }
 
   const { label: statusLabel, className: statusClass } = statusConfig[status] || statusConfig.bonding

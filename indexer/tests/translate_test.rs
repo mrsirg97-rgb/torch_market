@@ -385,3 +385,47 @@ fn new_position_records_net_tokens_borrowed_unchanged() {
     assert!(row.is_active);
     assert!(!row.owner_is_vault);
 }
+
+// ── [prompt-006] namespace filter ────────────────────────────────────────
+
+#[test]
+fn torch_config_pda_derivation_matches_web3() {
+    // Pinned against @solana/web3.js findProgramAddressSync — the same
+    // derivation the program (pool_validation::derive_torch_config) and the
+    // frontend use. Era-proof: changes iff the program id changes.
+    let pda = torch_indexer::stream::translate::derive_torch_config_pda(
+        "FghCwWojts9MbU3Pmog5peacaKrEYM5n1T68KWHy7TAh",
+    )
+    .expect("derivation");
+    assert_eq!(pda, "5AHM1Htm14hMAcTMnbN4BR7KBL5hvaqAbyjPbFupj2Td");
+}
+
+#[test]
+fn pool_namespace_check_discriminates() {
+    use torch_indexer::stream::translate::pool_in_namespace;
+    let ns = torch_indexer::stream::translate::derive_torch_config_pda(
+        "FghCwWojts9MbU3Pmog5peacaKrEYM5n1T68KWHy7TAh",
+    )
+    .unwrap();
+    let mut p = torch_indexer::contracts::PoolCreated {
+        pool: [1; 32],
+        config: [9; 32], // foreign
+        token_mint: [2; 32],
+        lp_mint: [3; 32],
+        creator: [4; 32],
+        sol_in_gross: 0,
+        sol_in_net: 0,
+        tokens_in_gross: 0,
+        tokens_in_net: 0,
+        sol_reserve_after: 0,
+        token_reserve_after: 0,
+        lp_supply_after: 0,
+        lp_to_creator: 0,
+        lp_locked: 0,
+    };
+    // foreign config (fixture default) → rejected
+    assert!(!pool_in_namespace(&p, &ns));
+    // our namespace → accepted
+    p.config = bs58::decode(&ns).into_vec().unwrap().try_into().unwrap();
+    assert!(pool_in_namespace(&p, &ns));
+}

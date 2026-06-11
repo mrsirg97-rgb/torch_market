@@ -7,4 +7,8 @@ use crate::ws::Rooms;
 pub struct AppState {
     pub pool: PgPool,
     pub rooms: Rooms,
+    // RPC proxy (prompt-005): upstream JSON-RPC URL with key inline (from
+    // Secret Manager in prod). None disables /rpc + /rpc-ws.
+    pub rpc_upstream: Option<String>,
+    pub http: reqwest::Client,
 }
