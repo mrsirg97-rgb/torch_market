@@ -80,10 +80,13 @@ pub async fn run(
     let torch_discs = TorchDiscriminators::compute();
     let deep_pool_discs = DeepPoolDiscriminators::compute();
 
+    // NB: rpc_url carries the API key inline — log only the HOST. The full
+    // URL leaked to Cloud Logging once (2026-06-12); key rotated after.
+    let rpc_host = rpc_url.split('?').next().unwrap_or("<unparseable>");
     info!(
         %torch_program_id,
         %deep_pool_program_id,
-        %rpc_url,
+        rpc_host,
         throttle_ms,
         start_slot = ?start_slot,
         "starting backfill"

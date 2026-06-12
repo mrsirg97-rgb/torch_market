@@ -4,8 +4,8 @@
 # local compose stack gets for free: 01-schema.sql + the TWO least-privilege
 # roles (torch_ingest INSERT/UPDATE, torch_api SELECT-only).
 #
-# Idempotent-ish: re-running fails on existing roles; that's a feature
-# (roles changing should be deliberate).
+# Idempotent: safe to re-run after a projection reset (roles survive DB
+# drops; grants are re-applied).
 #
 # Prereqs: cloud-sql-proxy + psql; terraform applied (reads outputs).
 
@@ -31,7 +31,14 @@ ${PSQL} -f ../../indexer/db/01-schema.sql
 
 echo "creating torch_ingest (INSERT/UPDATE)…"
 ${PSQL} <<EOSQL
-    CREATE ROLE torch_ingest LOGIN PASSWORD '${INGEST_PW}';
+    -- Idempotent: roles are INSTANCE-level and survive database drops, but
+    -- their table grants die with the tables — re-running after a projection
+    -- reset must re-grant without aborting on the existing role.
+    DO \$\$ BEGIN
+        CREATE ROLE torch_ingest LOGIN PASSWORD '${INGEST_PW}';
+    EXCEPTION WHEN duplicate_object THEN
+        RAISE NOTICE 'torch_ingest exists; re-granting';
+    END \$\$;
     GRANT CONNECT ON DATABASE torch TO torch_ingest;
     GRANT USAGE ON SCHEMA public TO torch_ingest;
     GRANT SELECT, INSERT, UPDATE ON pools, reserves, swaps, liquidity_events TO torch_ingest;
@@ -43,7 +50,11 @@ EOSQL
 
 echo "creating torch_api (SELECT only)…"
 ${PSQL} <<EOSQL
-    CREATE ROLE torch_api LOGIN PASSWORD '${API_PW}';
+    DO \$\$ BEGIN
+        CREATE ROLE torch_api LOGIN PASSWORD '${API_PW}';
+    EXCEPTION WHEN duplicate_object THEN
+        RAISE NOTICE 'torch_api exists; re-granting';
+    END \$\$;
     GRANT CONNECT ON DATABASE torch TO torch_api;
     GRANT USAGE ON SCHEMA public TO torch_api;
     GRANT SELECT ON pools, reserves, swaps, liquidity_events TO torch_api;

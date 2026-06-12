@@ -6,9 +6,9 @@ We used [Kani](https://model-checking.github.io/kani/), a formal verification to
 
 This is **not** a security audit. It proves the arithmetic is correct, but does not cover access control, account validation, or economic attacks. See [What Is NOT Verified](#what-is-not-verified) for full scope limitations.
 
-**72 proof harnesses. All passing. Zero failures.**
+**94 proof harnesses. All passing. Zero failures.**
 
-Complemented by 33 [proptest properties](./properties.md) × 5,000 cases each — ~165,000 random-input checks per test run — covering the same math surface with broad empirical coverage.
+Complemented by 55 [proptest properties](./properties.md) × 5,000 cases each — ~275,000 random-input checks per test run — covering the same math surface with broad empirical coverage.
 
 ---
 
@@ -18,7 +18,7 @@ torch_market's core arithmetic has been formally verified using [Kani](https://m
 
 **Tool:** Kani Rust Verifier 0.67.0 / CBMC 6.8.0
 **Target:** `torch_market` v20.0.0 (torch_next)
-**Harnesses:** 72 proof harnesses, all passing
+**Harnesses:** 94 proof harnesses, all passing
 **Source:** `programs/torch_market/src/kani_proofs.rs`
 **Companion:** [properties.md](./properties.md) — proptest fuzz properties for broader random coverage
 
@@ -89,7 +89,6 @@ These harnesses verify the V26 permissionless migration: SOL wrapping conservati
 | Harness | Property | Input Range |
 |---------|----------|-------------|
 | `verify_sol_wrapping_conservation` | [V26] `bc_debited == wsol_credited`, total lamports conserved (bonding curve SOL → payer WSOL) | 0 to 200 SOL reserves, rent up to 10M lamports |
-| `verify_price_matched_pool_spark` | [V31] Pool ratio matches curve ratio (truncation error < 1 unit) — legacy, SPARK removed from creation in V4.0 | Spark tier (50 SOL), 3 representative token values |
 | `verify_price_matched_pool_flame` | [V31] Pool ratio matches curve ratio (truncation error < 1 unit) | Flame tier (100 SOL), 3 representative token values |
 | `verify_price_matched_pool_torch` | [V31] Pool ratio matches curve ratio (truncation error < 1 unit) | Torch tier (200 SOL), 3 representative token values |
 | `verify_excess_token_burn_conservation` | [V31] `pool_tokens + burned_tokens == vault_total` (no tokens created or lost) — legacy SPARK tier | Spark tier, vault up to CURVE_SUPPLY |
@@ -100,11 +99,9 @@ These harnesses verify the V31 token distribution model where IVS = 3*bonding_ta
 
 | Harness | Property | Input Range |
 |---------|----------|-------------|
-| `verify_v31_full_supply_conservation_spark` | [V36] `wallets + pool + burned + treasury_lock == TOTAL_SUPPLY` (vote vault removed) — legacy SPARK | Spark tier (50 SOL), exact graduation state |
 | `verify_v31_full_supply_conservation_flame` | Same conservation for Flame tier | Flame tier (100 SOL), exact graduation state |
 | `verify_v31_full_supply_conservation_torch` | Same conservation for Torch tier | Torch tier (200 SOL), exact graduation state |
 | `verify_v31_pool_tokens_positive_and_bounded` | Pool tokens > 0 and <= real_token_reserves at graduation | All tiers, exact graduation state |
-| `verify_v31_zero_excess_burn_spark` | `excess_burned == 0` at graduation (zero-burn migration) — legacy SPARK | Spark tier, exact graduation state |
 | `verify_v31_zero_excess_burn_flame` | `excess_burned == 0` at graduation (zero-burn migration) | Flame tier, exact graduation state |
 | `verify_v31_zero_excess_burn_torch` | `excess_burned == 0` at graduation (zero-burn migration) | Torch tier, exact graduation state |
 
@@ -226,7 +223,7 @@ Companion proptests in [properties.md](./properties.md) (`apply_interest_accrual
 
 ### DeepPool Integration (Harnesses 69, 72, 73) — V20
 
-V20 replaced Raydium CPMM with the in-house DeepPool program as the post-migration DEX. These harnesses verify the arithmetic on torch_market's side of the CPI boundary — pool reserve reads, migration cost reimbursement, and vault swap accounting. DeepPool's own swap math is verified separately by its 16 Kani proofs; these harnesses cover what torch_market *does* with DeepPool's values, not DeepPool itself.
+V20 replaced Raydium CPMM with the in-house DeepPool program as the post-migration DEX. These harnesses verify the arithmetic on torch_market's side of the CPI boundary — pool reserve reads, migration cost reimbursement, and vault swap accounting. DeepPool's own swap math is verified separately by its 25 Kani proofs; these harnesses cover what torch_market *does* with DeepPool's values, not DeepPool itself.
 
 | Harness | Property | Input Range |
 |---------|----------|-------------|
@@ -265,7 +262,7 @@ The concrete values are chosen to represent realistic protocol conditions: post-
 
 ### Dropped Harnesses (Design Rationale)
 
-Eight harnesses were dropped during verification because they prove structurally guaranteed properties or were superseded:
+Eleven harnesses were dropped during verification because they prove structurally guaranteed properties or were superseded:
 
 | Dropped Harness | Reason |
 |-----------------|--------|
@@ -273,8 +270,9 @@ Eight harnesses were dropped during verification because they prove structurally
 | `verify_no_round_trip_fresh/half/full` | Round-trip loss (`buy then sell <= original`) is inherent in AMM constant-product formulas with integer truncation. Floor division always rounds down. |
 | `verify_ltv_100_percent` | `(v * 10000) / v == 10000` is a mathematical tautology. SAT solvers cannot efficiently prove symbolic u128 division cancellation. |
 | `verify_buyback_respects_reserve` | Buyback reserve/amount constraints are enforced by handler-level checks, not arithmetic. Property is structural given the config validation. |
+| `verify_*_spark` (×3) | Spark tier (50 SOL) removed from the program (2026-06); the constant rename made these exact duplicates of their `_flame` siblings. Deleted rather than kept as redundant proofs. |
 
-These properties remain true by construction. The remaining 73 harnesses cover every non-tautological safety property.
+These properties remain true by construction. The 94 harnesses in the file cover every non-tautological safety property.
 
 ## What Is NOT Verified
 
@@ -302,7 +300,7 @@ The arithmetic layer is formally verified. Audit effort should focus on:
 
 ### Composition with DeepPool
 
-torch_market v20 CPIs into the [DeepPool](https://github.com/mrsirg97-rgb/deep_pool) CPMM for all post-migration swaps. DeepPool's own arithmetic (constant-product swap math, LP mint/burn proportionality, fee conservation, K non-decreasing, LP lock rates) is verified separately by its own **16 Kani proof harnesses**. The three V20 harnesses in this file (69, 72, 73) cover *torch_market's side* of the CPI — pool reserve reads, migration cost reimbursement, and vault swap accounting — not DeepPool's internals. Auditors evaluating v20 should review both proof suites together.
+torch_market v20 CPIs into the [DeepPool](https://github.com/mrsirg97-rgb/deep_pool) CPMM for all post-migration swaps. DeepPool's own arithmetic (constant-product swap math, LP mint/burn proportionality, fee conservation, K non-decreasing, LP lock rates) is verified separately by its own **25 Kani proof harnesses** (plus 31 proptests and 32 litesvm tests). The three V20 harnesses in this file (69, 72, 73) cover *torch_market's side* of the CPI — pool reserve reads, migration cost reimbursement, and vault swap accounting — not DeepPool's internals. Auditors evaluating v20 should review both proof suites together.
 
 ## Running the Proofs
 
@@ -319,7 +317,7 @@ cargo kani
 cargo kani --harness verify_buy_fee_conservation
 ```
 
-All 73 harnesses pass. Most complete in under 1 second; the slowest (`verify_transfer_fee_bounds`, `verify_treasury_rate_monotonic`) take 30-55 seconds due to larger SAT formula complexity.
+All 94 harnesses pass. Most complete in under 1 second; the slowest (`verify_transfer_fee_bounds`, `verify_treasury_rate_monotonic`) take 30-55 seconds due to larger SAT formula complexity.
 
 ## Constants Reference
 

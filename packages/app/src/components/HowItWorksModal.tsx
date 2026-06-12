@@ -178,7 +178,7 @@ export function HowItWorksModal({ isOpen, onClose }: HowItWorksModalProps) {
           <span className="mx-2">|</span>
           <a href="/tokenproposal" className="hover:underline" style={{ color: 'var(--accent)' }}>$torch</a>
           <span className="mx-2">|</span>
-          <span>71 Kani proofs · All passing</span>
+          <span>94 Kani proofs · All passing</span>
         </div>
       </div>
     </div>

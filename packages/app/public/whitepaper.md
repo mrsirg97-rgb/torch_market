@@ -22,13 +22,13 @@ This is not a launchpad. This is a protocol that turns every token into a self-c
 
 - **Shorts are real, not synthetic.** Short sellers borrow real tokens from the treasury lock, sell them on the real market, and buy them back to close. This is not a perpetual contract. There is no funding rate. No mark price. Shorts contribute to price discovery because they ARE market participants.
 
-- **All parameters are immutable.** 25-50% max LTV (adaptive, based on pool depth). 65% liquidation threshold. 2% interest per epoch. 10% liquidation bonus. 80% utilization cap. Set at deployment. No admin key can change them. You can read every parameter, calculate every outcome, and know the rules won't change after you open a position.
+- **All parameters are immutable.** 30-60% max LTV (depth-adaptive, concave curve). TWAP-LTV liquidation trigger. 1.5% interest per epoch. 32.5% liquidation bonus (distress-ramped). Set at deployment. No admin key can change them. You can read every parameter, calculate every outcome, and know the rules won't change after you open a position.
 
-- **One user cannot collapse the pool.** Per-user borrow caps (23x collateral share of supply), utilization caps (20% of treasury always reserved), and isolated positions (one loan per user per token) mean the system stays available for everyone regardless of what any single actor does.
+- **One user cannot collapse the pool.** Per-user borrow caps (aggregate across all of a user's positions: 23x collateral share of supply plus an absolute 20%-of-float ceiling) and fully isolated positions (each in its own vault) mean the system stays available for everyone regardless of what any single actor does.
 
-- **Depth-based risk bands replace static circuit breakers.** Maximum LTV adapts to pool depth: 25% for thin pools (<50 SOL), scaling to 50% for deep pools (500+ SOL). Deeper pools are harder to manipulate, so higher leverage is permitted. Pools below 5 SOL block new positions entirely. Combined with per-user borrow caps, the effective LTV for long positions is typically <5% — making liquidation require a >90% price crash. No off-chain keepers, no oracles, no stored baseline — the pool itself is the sole source of truth.
+- **Depth-based risk bands replace static circuit breakers.** Maximum LTV adapts to pool depth on a continuous concave curve: 30% at the 100-SOL floor rising toward a 60% asymptote. Deeper pools are harder to manipulate, so higher leverage is permitted. Pools below 100 SOL block new positions entirely. Combined with per-user borrow caps, the effective LTV for long positions is typically <5% — making liquidation require a >90% price crash. No off-chain keepers, no oracles, no stored baseline — the pool itself is the sole source of truth.
 
-- **No rug pull is structurally possible.** Mint and freeze authority are revoked permanently at creation. LP tokens are burned. Liquidity is locked forever. Not by promise — by code.
+- **No rug pull is structurally possible.** Mint and freeze authority are revoked permanently at creation. DeepPool liquidity is protocol-owned and immutable — there are no LP tokens to extract. Not by promise — by code.
 
 - **Creator economics are immutable.** Creators choose at launch: community token (100% of fees to treasury, zero extraction) or creator token (85/15 split). The default is community. The choice is permanent.
 
@@ -88,11 +88,11 @@ Bonding completes at 100 SOL (Flame) or 200 SOL (Torch). Every wallet is capped 
 
 When bonding completes, anyone can trigger migration. No creator, no admin, no single party can block it.
 
-The protocol creates a Raydium CPMM pool with the curve's SOL and remaining tokens, **burns all LP tokens** (liquidity locked forever), activates the 0.07% transfer fee, and **revokes mint and freeze authority permanently**.
+The protocol creates a DeepPool with the curve's SOL and remaining tokens, activates the 0.07% transfer fee, and **revokes mint and freeze authority permanently**. DeepPool is torch.market's own CPMM — no external AMM dependency. Swap fees auto-compound into pool reserves, growing liquidity from volume alone.
 
 ### Phase 3: Trading
 
-Post-migration, the token trades on Raydium. The 0.07% transfer fee collects on every transfer — wallet to wallet, DEX swaps, everything. Anyone can harvest these fees and swap them to SOL, growing the treasury.
+Post-migration, the token trades on DeepPool. The 0.07% transfer fee collects on every transfer — wallet to wallet, DEX swaps, everything. Anyone can harvest these fees and swap them to SOL, growing the treasury. Meanwhile, DeepPool's 0.25% swap fee auto-compounds into pool reserves — the pool grows deeper with every trade.
 
 The harvest cycle:
 
@@ -126,7 +126,6 @@ Both sides use the same parameters. Both are overcollateralized. Both are isolat
 | Liquidation threshold | 65% |
 | Interest rate | 2% per epoch (~7 days) |
 | Liquidation bonus | 10% |
-| Utilization cap | 80% |
 | Per-user cap | 23x collateral share of supply |
 | Liquidation close | 50% per call |
 | Min pool liquidity | 5 SOL (blocks all margin ops below this) |
@@ -150,7 +149,7 @@ On torch:
 |-----------|--------|
 | Lending pool | Token treasury — funded by its own fees |
 | Short pool | Treasury lock — 300M tokens locked at creation |
-| Price feed | Raydium pool reserves — created at migration |
+| Price feed | DeepPool reserves — created at migration, auto-compounding |
 | Liquidation | Permissionless — anyone can call |
 | Recapitalization | 0.07% transfer fee — perpetual |
 
@@ -164,7 +163,7 @@ On torch, shorts borrow real tokens and sell them on the real market. That sell 
 
 There is no oracle to manipulate. There is no funding rate to spike. There is no LP pool praying it stays solvent. The counterparty is 300M tokens that were locked at creation for exactly this purpose.
 
-Most perps protocols have a single point of failure: the off-chain price feed. If the keeper stops cranking, the oracle goes stale, and either liquidations halt (bad debt accumulates) or positions get liquidated against a stale price (users get robbed). Torch has zero off-chain dependencies — the program reads Raydium pool state directly. Depth-based risk bands adapt LTV to pool manipulation resistance: thin pools get conservative limits, deep pools get full LTV. No stored baseline that can go stale, no oracle that can be manipulated, no keeper that can go offline.
+Most perps protocols have a single point of failure: the off-chain price feed. If the keeper stops cranking, the oracle goes stale, and either liquidations halt (bad debt accumulates) or positions get liquidated against a stale price (users get robbed). Torch has zero off-chain dependencies — the program reads DeepPool state directly. Depth-based risk bands adapt LTV to pool manipulation resistance: thin pools get conservative limits, deep pools get full LTV. No stored baseline that can go stale, no oracle that can be manipulated, no keeper that can go offline.
 
 ---
 
@@ -194,11 +193,11 @@ Every parameter is readable on-chain. Every outcome is calculable before executi
 
 ## Verification
 
-71 Kani proof harnesses. 55 end-to-end tests. All passing. Cross-validated by independent audit (OpenAI o3).
+94 Kani proof harnesses. 55 proptest properties. 112 litesvm integration tests. 23-scenario economic backtest (cascade liquidations, death spiral, 100% utilization). All passing. Cross-validated by independent audit (Claude Opus 4.7) and a fresh-eyes correctness review (2026-06).
 
-Core arithmetic is formally verified with [Kani](https://model-checking.github.io/kani/) covering every possible input in constrained ranges: fee calculations, bonding curve pricing, lending formulas, liquidation lifecycle, short selling, bad debt accounting, depth-based risk band boundaries, circuit breaker band math, reward distribution, migration conservation, token distribution. No SOL created from nothing. No tokens minted from thin air. No fees exceeding stated rates.
+Core arithmetic is formally verified with [Kani](https://model-checking.github.io/kani/) covering every possible input in constrained ranges: fee calculations, bonding curve pricing, lending formulas, liquidation lifecycle, short selling, bad debt accounting, depth-based risk band boundaries, reward distribution, migration conservation, token distribution, and DeepPool integration. Kani proves exact correctness at representative values; proptest sweeps the full u64 input space with thousands of randomly-drawn cases per property. No SOL created from nothing. No tokens minted from thin air. No fees exceeding stated rates.
 
-See [verification.md](https://torch.market/verification.md).
+See [verification.md](./verification.md) for the Kani suite and [properties.md](./properties.md) for the proptest properties.
 
 ---
 
@@ -220,7 +219,6 @@ See [verification.md](https://torch.market/verification.md).
 | Liquidation threshold | 65% |
 | Interest rate | 2% per epoch (~7 days) |
 | Liquidation bonus | 10% |
-| Utilization cap | 80% |
 | Per-user borrow cap | 23x collateral share of supply |
 | Min pool liquidity | 5 SOL |
 | Min borrow | 0.1 SOL |

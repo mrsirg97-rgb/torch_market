@@ -588,17 +588,6 @@ fn assert_price_matched(real_sol: u64, virtual_tokens: u64, virtual_sol: u64) {
 
 // [V31] Price-matched proofs per tier
 
-// [V4.0] Legacy: SPARK tier removed from creation, but existing tokens still use these constants
-#[kani::proof]
-fn verify_price_matched_pool_spark() {
-    let (ivs, ivt) = initial_virtual_reserves(BONDING_TARGET_FLAME);
-    let real_sol: u64 = BONDING_TARGET_FLAME; // 50 SOL
-    let virtual_sol: u64 = ivs + BONDING_TARGET_FLAME; // 68.75 SOL
-
-    assert_price_matched(real_sol, 206_000_000_000_000, virtual_sol);
-    assert_price_matched(real_sol, 400_000_000_000_000, virtual_sol);
-    assert_price_matched(real_sol, ivt, virtual_sol);
-}
 
 #[kani::proof]
 fn verify_price_matched_pool_flame() {
@@ -689,11 +678,6 @@ fn assert_full_supply_conservation(bonding_target: u64) {
     assert!(curve_total + TREASURY_LOCK_TOKENS as u128 == TOTAL_SUPPLY as u128);
 }
 
-// [V4.0] Legacy: SPARK tier
-#[kani::proof]
-fn verify_v31_full_supply_conservation_spark() {
-    assert_full_supply_conservation(BONDING_TARGET_FLAME);
-}
 
 #[kani::proof]
 fn verify_v31_full_supply_conservation_flame() {
@@ -769,11 +753,6 @@ fn assert_zero_excess_burn(bonding_target: u64) {
     assert!(excess_burned == 0);
 }
 
-// [V4.0] Legacy: SPARK tier
-#[kani::proof]
-fn verify_v31_zero_excess_burn_spark() {
-    assert_zero_excess_burn(BONDING_TARGET_FLAME);
-}
 
 #[kani::proof]
 fn verify_v31_zero_excess_burn_flame() {

@@ -6,7 +6,9 @@ We used [Kani](https://model-checking.github.io/kani/), a formal verification to
 
 This is **not** a security audit. It proves the arithmetic is correct, but does not cover access control, account validation, or economic attacks. See [What Is NOT Verified](#what-is-not-verified) for full scope limitations.
 
-**71 proof harnesses. All passing. Zero failures.**
+**94 proof harnesses. All passing. Zero failures.**
+
+Complemented by 55 [proptest properties](./properties.md) × 5,000 cases each — ~275,000 random-input checks per test run — covering the same math surface with broad empirical coverage.
 
 ---
 
@@ -15,9 +17,10 @@ This is **not** a security audit. It proves the arithmetic is correct, but does 
 torch_market's core arithmetic has been formally verified using [Kani](https://model-checking.github.io/kani/), a Rust model checker backed by the CBMC bounded model checker. Kani exhaustively proves properties hold for **all** valid inputs within constrained ranges -- not just sampled test cases.
 
 **Tool:** Kani Rust Verifier 0.67.0 / CBMC 6.8.0
-**Target:** `torch_market` v10.2.6
-**Harnesses:** 71 proof harnesses, all passing
+**Target:** `torch_market` v20.0.0 (torch_next)
+**Harnesses:** 94 proof harnesses, all passing
 **Source:** `programs/torch_market/src/kani_proofs.rs`
+**Companion:** [properties.md](./properties.md) — proptest fuzz properties for broader random coverage
 
 ## What Is Formally Verified
 
@@ -86,7 +89,6 @@ These harnesses verify the V26 permissionless migration: SOL wrapping conservati
 | Harness | Property | Input Range |
 |---------|----------|-------------|
 | `verify_sol_wrapping_conservation` | [V26] `bc_debited == wsol_credited`, total lamports conserved (bonding curve SOL → payer WSOL) | 0 to 200 SOL reserves, rent up to 10M lamports |
-| `verify_price_matched_pool_spark` | [V31] Pool ratio matches curve ratio (truncation error < 1 unit) — legacy, SPARK removed from creation in V4.0 | Spark tier (50 SOL), 3 representative token values |
 | `verify_price_matched_pool_flame` | [V31] Pool ratio matches curve ratio (truncation error < 1 unit) | Flame tier (100 SOL), 3 representative token values |
 | `verify_price_matched_pool_torch` | [V31] Pool ratio matches curve ratio (truncation error < 1 unit) | Torch tier (200 SOL), 3 representative token values |
 | `verify_excess_token_burn_conservation` | [V31] `pool_tokens + burned_tokens == vault_total` (no tokens created or lost) — legacy SPARK tier | Spark tier, vault up to CURVE_SUPPLY |
@@ -97,11 +99,9 @@ These harnesses verify the V31 token distribution model where IVS = 3*bonding_ta
 
 | Harness | Property | Input Range |
 |---------|----------|-------------|
-| `verify_v31_full_supply_conservation_spark` | [V36] `wallets + pool + burned + treasury_lock == TOTAL_SUPPLY` (vote vault removed) — legacy SPARK | Spark tier (50 SOL), exact graduation state |
 | `verify_v31_full_supply_conservation_flame` | Same conservation for Flame tier | Flame tier (100 SOL), exact graduation state |
 | `verify_v31_full_supply_conservation_torch` | Same conservation for Torch tier | Torch tier (200 SOL), exact graduation state |
 | `verify_v31_pool_tokens_positive_and_bounded` | Pool tokens > 0 and <= real_token_reserves at graduation | All tiers, exact graduation state |
-| `verify_v31_zero_excess_burn_spark` | `excess_burned == 0` at graduation (zero-burn migration) — legacy SPARK | Spark tier, exact graduation state |
 | `verify_v31_zero_excess_burn_flame` | `excess_burned == 0` at graduation (zero-burn migration) | Flame tier, exact graduation state |
 | `verify_v31_zero_excess_burn_torch` | `excess_burned == 0` at graduation (zero-burn migration) | Torch tier, exact graduation state |
 
@@ -176,15 +176,12 @@ These harnesses verify that the `pool_sol > 0 && pool_tokens > 0` guards prevent
 | `verify_pool_reserve_guards_prevent_div_zero` | With both-side reserve guards: `calculate_collateral_value` and `calculate_ltv_bps` always succeed | Symbolic pool reserves (> 0), collateral up to MAX_WALLET_TOKENS |
 | `verify_short_pool_reserve_guards` | With both-side reserve guards: `calculate_debt_value` always succeeds for short positions | Symbolic pool reserves (> 0), token debt up to TOTAL_SUPPLY |
 
-### Circuit Breakers (Harnesses 59-62) — V6
+### Pool Liquidity Floor (Harness 62) — V6
 
-These harnesses verify the V6 pool health circuit breakers. Note: the baseline deviation band (`require_price_in_band`) is retained for `swap_fees_to_sol` ratio gating but is no longer used for margin operations (replaced by depth-based risk bands in V7).
+Verifies the minimum pool SOL floor used by margin operations. The V6 baseline-deviation band (`require_price_in_band`) was deleted in v20 — it was unused in handlers, and the depth-based risk bands (V7) replaced it for margin operations. `swap_fees_to_sol` uses its own inline asymmetric gate (`current >= baseline * 1.2`).
 
 | Harness | Property | Input Range |
 |---------|----------|-------------|
-| `verify_circuit_breaker_baseline_passes` | Baseline price always passes its own deviation band check | 100 SOL / 50T pool at baseline |
-| `verify_circuit_breaker_rejects_doubled_price` | 2x price (100% increase) rejected by 50% deviation band | 200 SOL pool vs 100 SOL baseline |
-| `verify_circuit_breaker_band_edges` | +/-49% passes, +/-51% fails (symmetric band correctness) | 100 SOL / 100T baseline, four edge cases |
 | `verify_min_pool_liquidity_threshold` | Pool SOL >= 5 SOL passes, below fails; exact threshold = 5 SOL | 0-10 SOL symbolic |
 
 ### Depth-Based Risk Bands (Harness 71) — V7
@@ -210,8 +207,29 @@ These harnesses verify the post-migration treasury sell mechanism: fee subtracti
 
 | Harness | Property | Input Range |
 |---------|----------|-------------|
-| `verify_ratio_gate_fee_subtraction_safe` | After subtracting Raydium fees from vault balances: ratio computation succeeds when `pool_tokens > 0`; fees never inflate balances | Up to 10K SOL vault, fees bounded by vault balance |
+| `verify_ratio_gate_fee_subtraction_safe` | After subtracting swap fees from vault balances: ratio computation succeeds when `pool_tokens > 0`; fees never inflate balances | Up to 10K SOL vault, fees bounded by vault balance |
 | `verify_treasury_sell_amount_bounded` | Sell amount never exceeds balance; 100% below 1M token threshold; exactly 15% above; non-zero for positive amounts | 0 to TOTAL_SUPPLY tokens |
+
+### Interest Accrual State Transition (Harnesses 74-75) — interest re-borrow fix
+
+Pure state-transition functions extracted from the long and short `accrue_interest` handlers. The lifecycle-relevant invariant: `last_update_slot` always advances to `current_slot` regardless of which branch was taken (zero-debt early return, zero-slots-elapsed early return, or normal interest accrual). Prevents the phantom-interest bug on positions that are fully repaid/closed and later re-borrowed/re-opened without closing the account.
+
+| Harness | Property | Input Range |
+|---|---|---|
+| `verify_interest_accrual_slot_advance` | `apply_interest_accrual(...)` returns `last_update_slot == current_slot` for ALL inputs (including `borrowed == 0`, the bug-fix path) | borrowed/accrued up to 1000 SOL, slot delta up to one epoch, rate up to default |
+| `verify_short_interest_accrual_slot_advance` | Same invariant for `apply_short_interest_accrual` (token-debt arithmetic via `calc_short_interest`) | tokens_borrowed up to TOTAL_SUPPLY, same slot/rate bounds |
+
+Companion proptests in [properties.md](./properties.md) (`apply_interest_accrual_re_borrow_no_phantom_interest`, `apply_short_interest_accrual_re_open_no_phantom_interest`) exercise the multi-call lifecycle (open → repay → wait → re-borrow → wait → accrue) across 5,000 random combinations — verifying that composed across calls, the final accrued interest depends only on the slot window since re-borrow, not on any earlier slot.
+
+### DeepPool Integration (Harnesses 69, 72, 73) — V20
+
+V20 replaced Raydium CPMM with the in-house DeepPool program as the post-migration DEX. These harnesses verify the arithmetic on torch_market's side of the CPI boundary — pool reserve reads, migration cost reimbursement, and vault swap accounting. DeepPool's own swap math is verified separately by its 25 Kani proofs; these harnesses cover what torch_market *does* with DeepPool's values, not DeepPool itself.
+
+| Harness | Property | Input Range |
+|---------|----------|-------------|
+| `verify_deep_pool_reserve_reading_safe` | Reading pool SOL as `lamports.saturating_sub(rent_exempt)` never underflows; thin pools (below rent-exempt) show 0 SOL, not a panic; `pool_sol <= pool_lamports` always | 0-10K SOL lamports, 0-0.01 SOL rent, 0-TOTAL_SUPPLY token vault |
+| `verify_migration_cost_reimbursement` | After `fund_migration_sol` transfers bonding-curve SOL to payer and migration reimburses rent, payer balance reflects the round-trip correctly; no lamports created or destroyed | 0 to BONDING_TARGET SOL, 0-0.05 SOL rent, 0-10K SOL payer |
+| `verify_vault_swap_sell_accounting` | After DeepPool swap CPI for a sell, vault lamports increase by exactly `sol_received`; no overflow, no drift | 0-10K SOL vault, 0-10K SOL received |
 
 ## Verification Methodology
 
@@ -244,7 +262,7 @@ The concrete values are chosen to represent realistic protocol conditions: post-
 
 ### Dropped Harnesses (Design Rationale)
 
-Eight harnesses were dropped during verification because they prove structurally guaranteed properties or were superseded:
+Eleven harnesses were dropped during verification because they prove structurally guaranteed properties or were superseded:
 
 | Dropped Harness | Reason |
 |-----------------|--------|
@@ -252,8 +270,9 @@ Eight harnesses were dropped during verification because they prove structurally
 | `verify_no_round_trip_fresh/half/full` | Round-trip loss (`buy then sell <= original`) is inherent in AMM constant-product formulas with integer truncation. Floor division always rounds down. |
 | `verify_ltv_100_percent` | `(v * 10000) / v == 10000` is a mathematical tautology. SAT solvers cannot efficiently prove symbolic u128 division cancellation. |
 | `verify_buyback_respects_reserve` | Buyback reserve/amount constraints are enforced by handler-level checks, not arithmetic. Property is structural given the config validation. |
+| `verify_*_spark` (×3) | Spark tier (50 SOL) removed from the program (2026-06); the constant rename made these exact duplicates of their `_flame` siblings. Deleted rather than kept as redundant proofs. |
 
-These properties remain true by construction. The remaining 70 harnesses cover every non-tautological safety property.
+These properties remain true by construction. The 94 harnesses in the file cover every non-tautological safety property.
 
 ## What Is NOT Verified
 
@@ -264,7 +283,7 @@ Kani proofs verify **isolated pure functions** extracted from the handlers. They
 | **Access control** | Who can call `migrate_to_dex`, `update_dev_wallet` | Enforced by Anchor `#[derive(Accounts)]` constraints, not arithmetic |
 | **Account validation** | Fake PDAs, wrong mints, account substitution | Requires on-chain runtime context |
 | **State machine transitions** | Can you sell before buying? Migrate before bonding completes? | Requires multi-instruction sequencing |
-| **CPI safety** | Reentrancy via Raydium CPIs, privilege escalation | Cross-program invocation is outside arithmetic scope |
+| **CPI safety** | Reentrancy via DeepPool CPIs, privilege escalation | Cross-program invocation is outside arithmetic scope |
 | **Economic attacks** | Sandwich attacks, oracle manipulation, flash loans | Require multi-transaction economic modeling |
 | **Anchor framework correctness** | `init-if-needed` edge cases, PDA derivation | Framework-level concerns |
 | **Concurrency** | Parallel transaction ordering, front-running | Solana runtime behavior |
@@ -275,9 +294,13 @@ The arithmetic layer is formally verified. Audit effort should focus on:
 
 1. **Access control and account validation** -- can unauthorized callers invoke privileged instructions?
 2. **State transition integrity** -- are there invalid state transitions (e.g., double migration, selling into an empty curve)?
-3. **CPI safety** -- can Raydium CPIs be exploited for reentrancy or privilege escalation?
+3. **CPI safety** -- can DeepPool CPIs be exploited for reentrancy or privilege escalation?
 4. **Economic attack surface** -- sandwich attacks on bonding curve buys, oracle-free lending price manipulation
 5. **Token-2022 edge cases** -- transfer fee interaction with Token-2022 extensions across CPIs
+
+### Composition with DeepPool
+
+torch_market v20 CPIs into the [DeepPool](https://github.com/mrsirg97-rgb/deep_pool) CPMM for all post-migration swaps. DeepPool's own arithmetic (constant-product swap math, LP mint/burn proportionality, fee conservation, K non-decreasing, LP lock rates) is verified separately by its own **25 Kani proof harnesses** (plus 31 proptests and 32 litesvm tests). The three V20 harnesses in this file (69, 72, 73) cover *torch_market's side* of the CPI — pool reserve reads, migration cost reimbursement, and vault swap accounting — not DeepPool's internals. Auditors evaluating v20 should review both proof suites together.
 
 ## Running the Proofs
 
@@ -294,7 +317,7 @@ cargo kani
 cargo kani --harness verify_buy_fee_conservation
 ```
 
-All 70 harnesses pass. Most complete in under 1 second; the slowest (`verify_transfer_fee_bounds`, `verify_treasury_rate_monotonic`) take 30-55 seconds due to larger SAT formula complexity.
+All 94 harnesses pass. Most complete in under 1 second; the slowest (`verify_transfer_fee_bounds`, `verify_treasury_rate_monotonic`) take 30-55 seconds due to larger SAT formula complexity.
 
 ## Constants Reference
 
@@ -335,7 +358,6 @@ All 70 harnesses pass. Most complete in under 1 second; the slowest (`verify_tra
 | `SHORT_ENABLED_SENTINEL` | u16::MAX | [V5] Sentinel in Treasury.buyback_percent_bps — short selling enabled |
 | `MIN_SHORT_TOKENS` | 1,000,000,000 | [V5] 1,000 tokens minimum short position (6 decimals) |
 | `MIN_POOL_SOL_LENDING` | 5,000,000,000 | [V6] 5 SOL minimum pool depth for lending/short operations |
-| `MAX_PRICE_DEVIATION_BPS` | 5,000 | [V6] 50% max price deviation from baseline for swap_fees_to_sol ratio gating |
 | `DEPTH_TIER_1` | 50,000,000,000 | [V7] 50 SOL — depth band tier 1 threshold |
 | `DEPTH_TIER_2` | 200,000,000,000 | [V7] 200 SOL — depth band tier 2 threshold |
 | `DEPTH_TIER_3` | 500,000,000,000 | [V7] 500 SOL — depth band tier 3 threshold |

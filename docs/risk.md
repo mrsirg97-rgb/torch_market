@@ -6,7 +6,7 @@
 
 ## Abstract
 
-We present a lending model for constant-product AMM pools built on three depth-scaled rails, each a pure function of pool liquidity depth evaluated once at position open. **Rail 1** sets the maximum loan-to-value ratio on a continuous, concave curve — 30% at the 100-SOL floor (the smallest pool we lever) rising toward a 60% asymptote. **Rail 2** caps a single position's debt value at 25% of pool depth, which makes the worst-case liquidation-unwind slippage *depth-invariant*. **Rail 3** derives a single flat liquidation bonus (32.5%) from that cap, so every position — on every pool — unwinds within one bonus, with no depth-varying schedule to defend. Combined with per-user borrow caps ($\mu = 23$) proportional to total token supply, an absolute 20%-of-lendable per-user ceiling, a global utilization ceiling, and a treasury-activity unlock gate keyed on the protocol's earned SOL, the system creates a graduated risk regime: pools below the floor get no leverage, thin pools lever conservatively, and deep pools graduate into functional margin markets — while the per-user cap can impose a stricter effective LTV still on a small treasury. Short positions do not share the longs' structural protection due to the asymmetric nature of upward price movement, and remain liquidatable by design. The 300M token short pool is preserved across cycles by Token-2022 gross-up accounting on every close. The liquidation mark is a keeperless TWAP computed from the pool's own swap-driven price cumulative — no external oracle, no keeper, no stored baseline. The pool itself is the sole source of truth. Economic simulation confirms the model under adversarial conditions including cascade liquidations.
+We present a lending model for constant-product AMM pools built on three depth-scaled rails, each a pure function of pool liquidity depth evaluated once at position open. **Rail 1** sets the maximum loan-to-value ratio on a continuous, concave curve — 30% at the 100-SOL floor (the smallest pool we lever) rising toward a 60% asymptote. **Rail 2** caps a single position's debt value at 25% of pool depth, which makes the worst-case liquidation-unwind slippage *depth-invariant*. **Rail 3** derives a single flat liquidation bonus (32.5%) from that cap, so every position — on every pool — unwinds within one bonus, with no depth-varying schedule to defend. Combined with per-user borrow caps ($\mu = 23$) proportional to total token supply, an absolute 20%-of-lendable per-user ceiling, and a sticky treasury-earnings unlock gate keyed on the protocol's earned SOL, the system creates a graduated risk regime: pools below the floor get no leverage, thin pools lever conservatively, and deep pools graduate into functional margin markets — while the per-user cap can impose a stricter effective LTV still on a small treasury. Short positions do not share the longs' structural protection due to the asymmetric nature of upward price movement, and remain liquidatable by design. The 300M token short pool is preserved across cycles by Token-2022 gross-up accounting on every close. The liquidation mark is a keeperless TWAP computed from the pool's own swap-driven price cumulative — no external oracle, no keeper, no stored baseline. The pool itself is the sole source of truth. Economic simulation confirms the model under adversarial conditions including cascade liquidations.
 
 ---
 
@@ -131,7 +131,7 @@ The per-user borrow cap is the minimum of two terms — a formula cap that scale
 $$B_{\max}(c) = \min\left( \frac{M \cdot c \cdot \mu}{S}, \; \frac{M \cdot \beta}{10000} \right)$$
 
 where:
-- $M$ = maximum lendable SOL (utilization cap applied to available treasury balance)
+- $M$ = maximum lendable SOL (the physical treasury float — first-come-first-serve, no utilization cap)
 - $c$ = user's collateral in base token units
 - $\mu = 23$ = borrow share multiplier (formula cap)
 - $\beta = 2000$ bps = `MAX_USER_BORROW_SHARE_BPS` (absolute cap, 20% of $M$)
@@ -169,13 +169,13 @@ Note that $c$ cancels. The cap-implied LTV depends only on the pool ratio and tr
 
 Post-migration pool: $x = 200$ SOL, $y = 145 \times 10^6$ tokens ($145 \times 10^{12}$ base units).
 
-**Fresh treasury (22 SOL).** Utilization cap 80%: $M = 17.6$ SOL.
+**Fresh treasury (22 SOL).** $M = 22$ SOL (the full float, FCFS).
 
-$$\text{LTV}_{\text{cap}} = \frac{17.6 \times 23 \times 145 \times 10^{12}}{10^{15} \times 200} = 0.029 = 3.0\%$$
+$$\text{LTV}_{\text{cap}} = \frac{22 \times 23 \times 145 \times 10^{12}}{10^{15} \times 200} = 0.037 = 3.7\%$$
 
 At 3% effective LTV, the token price would need to drop **95%** before the position reaches the 65% liquidation threshold. Structurally near-impossible.
 
-**Moderate treasury (150 SOL).** $M = 120$ SOL.
+**Moderate treasury (150 SOL).** $M = 150$ SOL (full float).
 
 $$\text{LTV}_{\text{cap}} = \frac{120 \times 23 \times 145 \times 10^{12}}{10^{15} \times 200} = 0.20 = 20\%$$
 
@@ -193,7 +193,7 @@ The protocol naturally graduates from "near-impossible to liquidate" to "real ma
 
 | Treasury | Max Lendable | Effective LTV | Drop to Liquidate | Regime |
 |----------|-------------|---------------|-------------------|--------|
-| 22 SOL | 17.6 SOL | 3% | 95% | Protected — fresh token |
+| 22 SOL | 22 SOL | 3.7% | ~94% | Protected — fresh token |
 | 150 SOL | 120 SOL | 20% | 69% | Active — real margin |
 | 300 SOL | 240 SOL | 41% | 37% | Mature — liquidation likely in crashes |
 | 500+ SOL | 400+ SOL | 45% (depth capped) | 31% | Deep — depth curve is the ceiling |
@@ -218,7 +218,7 @@ Total SOL lent across all positions is bounded by:
 
 $$\sum_i b_i \leq \frac{T_{\text{avail}} \cdot U}{10000}$$
 
-where $U = 8000$ bps (80%) and $b_i$ is user $i$'s borrowed amount.
+where $b_i$ is user $i$'s borrowed amount — the ceiling is the physical float itself (FCFS, no utilization haircut).
 
 ### 4.2.1 Treasury Solvency
 
@@ -472,7 +472,7 @@ In effect, the borrower funds the *entire* round-trip transfer-fee cost (~0.14%)
 
 ### 8.5 Dynamic Cap Base
 
-`check_short_caps` reads the *current* `treasury_lock_token_account.amount` as the cap base for the global short utilization (80% of lock balance). As the lock grows from interest, the short capacity grows with it — a self-reinforcing loop where successful protocol operation expands future capacity.
+`check_short_caps` reads the *current* `treasury_lock_token_account.amount` as the capacity base for shorts (the full lock balance — drainable by design; closes and liquidations only pay back in). As the lock grows from interest, the short capacity grows with it — a self-reinforcing loop where successful protocol operation expands future capacity.
 
 ---
 
@@ -490,7 +490,7 @@ The following properties hold at all times:
 
 **I5: Depth monotonicity.** $L(x_1) \leq L(x_2)$ for $x_1 \leq x_2$. Deeper pools always permit equal or higher LTV.
 
-**I6: Cap independence.** The per-user borrow cap $B_{\max}(c)$ is independent of other users' positions. One user's borrow does not affect another user's cap (only the global utilization ceiling creates interaction).
+**I6: Cap independence.** The per-user borrow cap $B_{\max}(c)$ is independent of other users' positions. One user's borrow does not affect another user's cap (only exhaustion of the shared physical float creates interaction — first-come-first-serve).
 
 **I7: Gate independence from short collateral.** The lending unlock gate compares $T_{\text{avail}} = T_{\text{sol}} - T_{\text{short}}$ against the threshold. Opening or closing any short position adds and removes equal amounts to both $T_{\text{sol}}$ and $T_{\text{short}}$, leaving $T_{\text{avail}}$ unchanged. The gate state depends only on protocol-earned float (Kani: `verify_lending_gate_excludes_short_collateral`).
 
@@ -520,7 +520,7 @@ Even at the 200-SOL pool's max-curve LTV (45%), the attacker can borrow at most 
 
 **Attack:** Use many wallets to circumvent per-user cap.
 
-**Defense:** Each wallet needs real token collateral. Total borrowing across all sybil wallets is still bounded by the global utilization cap ($0.8 \cdot T_{\text{avail}}$). The per-user cap prevents any single wallet from taking a disproportionate share, but the utilization cap is the hard ceiling regardless. The absolute 20%-of-lendable per-user clamp ($\beta = 2000$ bps) means even a whale must split across at least five wallets to monopolize lending, and each wallet pays its own gas + rent.
+**Defense:** Each wallet needs real token collateral. Total borrowing across all sybil wallets is still bounded by the physical float itself — lending can never exceed what the treasury has earned. The per-user cap prevents any single wallet from taking a disproportionate share. The absolute 20%-of-lendable per-user clamp ($\beta = 2000$ bps) means even a whale must split across at least five wallets to monopolize lending, and each wallet pays its own gas + rent.
 
 ### 10.4 Interest Accrual Liquidation
 
