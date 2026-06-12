@@ -10,7 +10,8 @@
 
 import { useRef, useEffect, useState } from 'react'
 import { useWallet } from '@solana/wallet-adapter-react'
-import { getUserPnl, type UserPnlSummary } from 'torchsdk'
+import { PublicKey } from '@solana/web3.js'
+import { getUserPnl, getTorchVaultPda, type UserPnlSummary } from 'torchsdk'
 import { useNetwork } from '@/lib/NetworkContext'
 import { useTorchFeed } from '@/lib/TorchFeedContext'
 
@@ -59,7 +60,10 @@ export function useUserPnl(): UseUserPnlResult {
     const isInitial = pnl === null
     if (isInitial) setLoading(true)
     setError(null)
-    getUserPnl(effectiveIndexerUrl, wallet)
+    // Wallet + its vault = one economic actor; vault-routed swaps attribute
+    // to the vault PDA, so derive it and merge (the realized-0 bug, 2026-06-12).
+    const vaultPda = getTorchVaultPda(new PublicKey(wallet))[0].toString()
+    getUserPnl(effectiveIndexerUrl, wallet, vaultPda)
       .then((summary) => {
         if (!cancelled) {
           setPnl(summary)

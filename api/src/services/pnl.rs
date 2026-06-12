@@ -63,7 +63,10 @@ impl<'a> PnlService<'a> {
     }
 
     /// Compute realized PnL for `wallet`, aggregated per mint.
-    pub async fn for_wallet(&mut self, wallet: &str) -> sqlx::Result<UserPnlSummary> {
+    /// `vault`: the wallet's torch_vault PDA (client-derived) — vault-routed
+    /// DEX swaps attribute to the vault pubkey; wallet + vault are one
+    /// economic actor. Pass the wallet itself when absent (harmless no-op).
+    pub async fn for_wallet(&mut self, wallet: &str, vault: &str) -> sqlx::Result<UserPnlSummary> {
         // Single query: union the wallet's bonding-curve trades + DEX swaps,
         // normalized into a (mint, is_buy, sol_amount, token_amount)
         // representation, ordered by mint then by time so we can FIFO each
@@ -77,7 +80,7 @@ impl<'a> PnlService<'a> {
                     (CASE WHEN t.is_buy THEN t.tokens_out ELSE t.tokens_in END)::bigint AS token_amount,
                     t.created_at
                 FROM trades t
-                WHERE t.trader = $1
+                WHERE t.trader IN ($1, $2)
                 UNION ALL
                 SELECT
                     p.token_mint AS mint,
@@ -87,13 +90,14 @@ impl<'a> PnlService<'a> {
                     s.created_at
                 FROM swaps s
                 JOIN pools p ON s.pool_id = p.pool_id
-                WHERE s.user_pk = $1
+                WHERE s.user_pk IN ($1, $2)
             )
             SELECT mint, is_buy, sol_amount, token_amount
             FROM user_events
             ORDER BY mint ASC, created_at ASC",
         )
         .bind(wallet)
+        .bind(vault)
         .fetch_all(&mut *self.ctx.tx)
         .await?;
 
@@ -151,10 +155,11 @@ impl<'a> PnlService<'a> {
                     COALESCE(residual, 0)::bigint AS residual,
                     COALESCE(fully_resolved, false) AS fully_resolved
              FROM position_events
-             WHERE owner = $1
+             WHERE owner IN ($1, $2)
              ORDER BY mint, side, position_index, event_id",
         )
         .bind(wallet)
+        .bind(vault)
         .fetch_all(&mut *self.ctx.tx)
         .await?;
 

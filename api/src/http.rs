@@ -341,12 +341,21 @@ async fn list_migrations(
 // server-side — clients should multiply `tokens_remaining` by the live
 // marginal price and subtract `cost_basis_remaining`.
 
+#[derive(serde::Deserialize)]
+struct PnlQuery {
+    // Wallet's torch_vault PDA (client-derived): vault-routed swaps attribute
+    // to the vault pubkey; wallet + vault = one economic actor.
+    vault: Option<String>,
+}
+
 async fn get_user_pnl(
     State(state): State<AppState>,
     axum::extract::Path(wallet): axum::extract::Path<String>,
+    Query(q): Query<PnlQuery>,
 ) -> Result<Json<crate::services::pnl::UserPnlSummary>, ApiError> {
     let mut ctx = RequestCtx::begin(&state.pool).await?;
-    let summary = ctx.pnl().for_wallet(&wallet).await?;
+    let vault = q.vault.unwrap_or_else(|| wallet.clone());
+    let summary = ctx.pnl().for_wallet(&wallet, &vault).await?;
     Ok(Json(summary))
 }
 

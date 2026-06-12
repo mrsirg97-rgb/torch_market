@@ -423,6 +423,13 @@ export async function getSwaps(query: SwapsQuery): Promise<IndexerSwapRow[]> {
  *
  * Indexer-only — no RPC equivalent.
  */
-export async function getUserPnl(indexer: string, wallet: string): Promise<UserPnlSummary> {
-  return indexerFetch<UserPnlSummary>(indexer, `/api/user-pnl/${wallet}`)
+export async function getUserPnl(
+  indexer: string,
+  wallet: string,
+  // The wallet's torch_vault PDA — vault-routed swaps attribute to it;
+  // wallet + vault are one economic actor (derive with getTorchVaultPda).
+  vault?: string,
+): Promise<UserPnlSummary> {
+  const q = vault ? `?vault=${vault}` : ''
+  return indexerFetch<UserPnlSummary>(indexer, `/api/user-pnl/${wallet}${q}`)
 }
