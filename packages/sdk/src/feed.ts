@@ -98,7 +98,20 @@ export class TorchFeedClient {
 
   close(): void {
     this.closedByUser = true
-    this.ws?.close()
+    const ws = this.ws
+    if (ws) {
+      if (ws.readyState === WebSocket.CONNECTING) {
+        // Closing a CONNECTING socket makes browsers log a warning (React
+        // StrictMode double-mounts hit this constantly in dev). Detach
+        // handlers and close once the handshake settles instead.
+        ws.onmessage = null
+        ws.onclose = null
+        ws.onerror = null
+        ws.onopen = () => ws.close()
+      } else {
+        ws.close()
+      }
+    }
     this.ws = null
   }
 

@@ -515,6 +515,33 @@ export function useToken(mintAddress: string): UseTokenResult {
   const initialLoadDone = useRef(false)
 
   // Main data fetch and subscriptions
+  // [prompt-007] Feed-first: the market room is the refresh trigger. The old
+  // chain-account subs fired 3-5 RPC reads PER notification (every trade →
+  // 2 notifications → ~10 reads); our own edge armor banned the founder on
+  // launch night. Frames collapse into ONE debounced refetch per burst.
+  const refetchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const feedStatus = useTorchFeed(isValidMint ? { market: mintAddress } : null, (frame) => {
+    if (frame.kind === 'message' || frame.kind === 'resync') {
+      fetchMessages()
+    }
+    if (
+      frame.kind === 'trade' ||
+      frame.kind === 'swap' ||
+      frame.kind === 'market' ||
+      frame.kind === 'reserves' ||
+      frame.kind === 'migration' ||
+      frame.kind === 'resync'
+    ) {
+      if (refetchDebounce.current) clearTimeout(refetchDebounce.current)
+      refetchDebounce.current = setTimeout(() => {
+        fetchToken()
+        fetchUserBalance()
+        fetchUserPosition()
+      }, 750)
+    }
+  })
+  const feedLive = feedStatus === 'open'
+
   useEffect(() => {
     if (!isValidMint || !mint || !bondingCurvePda || !tokenTreasuryPda) {
       setLoading(false)
@@ -550,27 +577,30 @@ export function useToken(mintAddress: string): UseTokenResult {
       return () => clearInterval(pollInterval)
     }
 
-    // Subscribe to bonding curve changes → trigger SDK refetch
-    const bcSub = connection.onAccountChange(
-      bondingCurvePda,
-      () => {
-        fetchToken()
-        fetchUserBalance()
-        fetchUserPosition()
-      },
-      { commitment: 'confirmed' },
-    )
-    subscriptions.push(bcSub)
+    // [prompt-007] Chain-account subs are the FALLBACK for consumers without
+    // an indexer feed. With the feed live, the market room triggers refetches
+    // (debounced) — these subs would only duplicate it with 5x the RPC cost.
+    if (!feedLive) {
+      const bcSub = connection.onAccountChange(
+        bondingCurvePda,
+        () => {
+          fetchToken()
+          fetchUserBalance()
+          fetchUserPosition()
+        },
+        { commitment: 'confirmed' },
+      )
+      subscriptions.push(bcSub)
 
-    // Subscribe to treasury changes → trigger SDK refetch
-    const treasurySub = connection.onAccountChange(
-      tokenTreasuryPda,
-      () => {
-        fetchToken()
-      },
-      { commitment: 'confirmed' },
-    )
-    subscriptions.push(treasurySub)
+      const treasurySub = connection.onAccountChange(
+        tokenTreasuryPda,
+        () => {
+          fetchToken()
+        },
+        { commitment: 'confirmed' },
+      )
+      subscriptions.push(treasurySub)
+    }
 
     // Subscribe to user token balance if wallet connected
     if (wallet.publicKey && mint) {
@@ -600,7 +630,7 @@ export function useToken(mintAddress: string): UseTokenResult {
     return () => {
       subscriptions.forEach((sub) => connection.removeAccountChangeListener(sub))
     }
-  }, [connection, wallet.publicKey, bondingCurvePda, tokenTreasuryPda, mint, isValidMint, isSimnet, fetchToken, fetchUserBalance, fetchStarRecord, fetchUserPosition])
+  }, [connection, wallet.publicKey, bondingCurvePda, tokenTreasuryPda, mint, isValidMint, isSimnet, feedLive, fetchToken, fetchUserBalance, fetchStarRecord, fetchUserPosition])
 
   // Fetch SOL price in USD
   useEffect(() => {
@@ -683,14 +713,6 @@ export function useToken(mintAddress: string): UseTokenResult {
       cancelled = true
     }
   }, [isValidMint, connection, mintAddress, tokenDetail, isDevnet, effectiveIndexerUrl])
-
-  // Live message updates via the market room (prompt-003); the 60s poll
-  // below stays as the fallback when the feed is down.
-  useTorchFeed(isValidMint ? { market: mintAddress } : null, (frame) => {
-    if (frame.kind === 'message' || frame.kind === 'resync') {
-      fetchMessages()
-    }
-  })
 
   // Fetch and refresh messages (deferred to avoid competing with initial data load)
   useEffect(() => {

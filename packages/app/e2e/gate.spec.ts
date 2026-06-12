@@ -64,3 +64,25 @@ test('api surface answers through the public edge', async ({ request, baseURL })
   const metrics = await request.get(api + '/metrics', { maxRedirects: 0 })
   expect(metrics.status(), '/metrics hidden at edge').not.toBe(200)
 })
+
+// [prompt-007] The RPC-budget pin: feed-first means an open market page makes
+// a bounded number of /rpc calls — hydration + wallet reads, NOT a per-trade
+// fan-out. If this fails, the fossil regrew (account-subs double-firing or a
+// missing debounce). Budget: 25 calls in 30s is generous for hydration;
+// the pre-fix storm was hundreds.
+test('market page rpc budget stays bounded', async ({ page }) => {
+  test.slow()
+  await page.goto('/markets')
+  await page.waitForLoadState('networkidle')
+  const firstCard = page.locator('a[href*="/markets/"]').first()
+  const count = await firstCard.count()
+  test.skip(count === 0, 'no markets yet — rerun after first market')
+
+  let rpcCalls = 0
+  page.on('request', (req) => {
+    if (req.url().includes('/rpc') && req.method() === 'POST') rpcCalls++
+  })
+  await firstCard.click()
+  await page.waitForTimeout(30_000)
+  expect(rpcCalls, `rpc calls in 30s: ${rpcCalls}`).toBeLessThan(25)
+})

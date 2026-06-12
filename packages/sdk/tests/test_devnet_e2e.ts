@@ -58,7 +58,10 @@ import * as os from 'os'
 // Config
 // ============================================================================
 
-const DEVNET_RPC = 'https://api.devnet.solana.com'
+// Env-first: the public endpoint throttles hard under the 700-wallet
+// funding burst (bit us 2026-06-12). Pass RPC_URL with a keyed Helius URL.
+// RPC_URL=$(grep '^RPC_URL=' ../../indexer/.env | cut -d= -f2-) npx tsx tests/test_devnet_e2e.ts
+const DEVNET_RPC = process.env.RPC_URL || 'https://api.devnet.solana.com'
 const WALLET_PATH = path.join(os.homedir(), '.config/solana/id.json')
 
 // Flame tier: 100 SOL target, 0.2 SOL per buy (smaller buys, more buyers)

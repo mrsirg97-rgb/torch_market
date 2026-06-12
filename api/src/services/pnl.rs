@@ -10,8 +10,12 @@
 //    shows as 100% profit (no cost basis to consume).
 //  - Tokens sent out via direct transfer (no sell event) → cost basis
 //    stays on the books, under-counts realized PnL.
-//  - Loans/shorts → tokens used as collateral or borrowed are NOT treated
-//    as buys or sells. They're tracked separately on the lending dashboard.
+//  - Margin positions: SOL-denominated outcomes ARE folded in (see the
+//    position_events pass below) — collateral in vs surplus/residual out,
+//    counted on RESOLUTION (open positions are the unrealized side, shown
+//    live elsewhere). Long token legs (token collateral out / vault tokens
+//    back) still bypass FIFO inventory — accepted drift, same class as
+//    direct transfers.
 //
 // Net effect: PnL is an approximation based on swap activity through the
 // protocol. Power users with significant off-protocol token movement will
@@ -33,6 +37,11 @@ pub struct UserPnlByMint {
     pub total_buy_volume: i64,     // total lamports spent buying
     pub total_sell_volume: i64,    // total lamports received from sells
     pub trade_count: i64,
+    // [2026-06-12] SOL realized from RESOLVED margin positions on this mint:
+    // Σ(close surplus + liquidation residual) − Σ(open SOL collateral).
+    // Included in realized_pnl; broken out for transparency.
+    pub position_pnl: i64,
+    pub position_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -132,6 +141,66 @@ impl<'a> PnlService<'a> {
             }
         }
 
+        // ── Margin position outcomes (the +2-SOL-realized-0 bug, 2026-06-12):
+        // closes pay out via position_events, invisible to trade-FIFO. Fold
+        // SOL flows per position; count only RESOLVED positions into realized.
+        let pos_rows = sqlx::query(
+            "SELECT mint, side::text AS side, position_index, kind::text AS kind,
+                    COALESCE(sol_in, 0)::bigint AS sol_in,
+                    COALESCE(surplus_sol, 0)::bigint AS surplus_sol,
+                    COALESCE(residual, 0)::bigint AS residual,
+                    COALESCE(fully_resolved, false) AS fully_resolved
+             FROM position_events
+             WHERE owner = $1
+             ORDER BY mint, side, position_index, event_id",
+        )
+        .bind(wallet)
+        .fetch_all(&mut *self.ctx.tx)
+        .await?;
+
+        #[derive(Default)]
+        struct PosAcc {
+            sol_in: i64,
+            sol_out: i64,
+            resolved: bool,
+        }
+        let mut positions: HashMap<(String, String, i32), PosAcc> = HashMap::new();
+        for row in pos_rows {
+            let mint: String = row.get("mint");
+            let side: String = row.get("side");
+            let idx: i32 = row.get("position_index");
+            let kind: String = row.get("kind");
+            let acc = positions.entry((mint, side.clone(), idx)).or_default();
+            match kind.as_str() {
+                // Short opens stake SOL collateral (sol_in = gross collateral).
+                // Long opens stake TOKEN collateral — no wallet SOL outflow.
+                "open" if side == "short" => acc.sol_in = acc.sol_in.saturating_add(row.get::<i64, _>("sol_in")),
+                "close" => {
+                    acc.sol_out = acc.sol_out.saturating_add(row.get::<i64, _>("surplus_sol"));
+                    if row.get::<bool, _>("fully_resolved") {
+                        acc.resolved = true;
+                    }
+                }
+                "liquidate" => {
+                    acc.sol_out = acc.sol_out.saturating_add(row.get::<i64, _>("residual"));
+                    if row.get::<bool, _>("fully_resolved") {
+                        acc.resolved = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        for ((mint, _side, _idx), acc) in positions {
+            if !acc.resolved {
+                continue; // open position = unrealized; shown live elsewhere
+            }
+            let state = by_mint.entry(mint).or_default();
+            let pnl = acc.sol_out.saturating_sub(acc.sol_in);
+            state.position_pnl = state.position_pnl.saturating_add(pnl);
+            state.position_count += 1;
+            state.realized_pnl = state.realized_pnl.saturating_add(pnl);
+        }
+
         let mut by_mint_vec: Vec<UserPnlByMint> = by_mint
             .into_iter()
             .map(|(mint, acc)| {
@@ -145,6 +214,8 @@ impl<'a> PnlService<'a> {
                     total_buy_volume: acc.total_buy_volume,
                     total_sell_volume: acc.total_sell_volume,
                     trade_count: acc.trade_count,
+                    position_pnl: acc.position_pnl,
+                    position_count: acc.position_count,
                 }
             })
             .collect();
@@ -180,4 +251,6 @@ struct MintAccumulator {
     total_buy_volume: i64,
     total_sell_volume: i64,
     trade_count: i64,
+    position_pnl: i64,
+    position_count: i64,
 }

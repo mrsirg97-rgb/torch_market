@@ -464,3 +464,84 @@ async fn list_messages_returns_attached_memos() {
     assert_eq!(arr[0]["memo_text"].as_str().unwrap(), "lfg");
     assert_eq!(arr[0]["action_kind"].as_str().unwrap(), "buy");
 }
+
+// [2026-06-12] The +2-SOL-realized-0 bug: position closes pay via
+// position_events, which trade-FIFO never folds. A resolved short must
+// realize (surplus − collateral); an OPEN position must realize nothing.
+#[tokio::test]
+async fn user_pnl_folds_resolved_position_outcomes() {
+    use torch_indexer::contracts::CloseShortEvent;
+    use torch_indexer::stream::writer::write_events_no_checkpoint;
+
+    let db = TestDb::new().await;
+    let net = 999_300_000u64;
+    // Open: collateral_sol_gross = 2_010_000_000 (fixture).
+    write_events_no_checkpoint(
+        &db.pool,
+        100,
+        vec![
+            de(ev_market_created(1, 2), 100, 0),
+            de(ev_open_short(1, 3, net), 100, 1),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let app = build_app(&db).await;
+    // Open position → no realized contribution yet.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/user-pnl/{}", pk58(3)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(body["total_realized_pnl"], 0, "open position stays unrealized");
+
+    // Full close paying out 4.01 SOL surplus → +2 SOL realized.
+    let close = CloseShortEvent {
+        user: pk(3),
+        mint: pk(1),
+        position_index: 0,
+        debt_repaid: net,
+        sol_spent_on_buyback: 1_500_000_000,
+        interest_paid: 0,
+        principal_paid: net,
+        surplus_sol_to_user: 4_010_000_000,
+        fully_closed: true,
+    };
+    write_events_no_checkpoint(
+        &db.pool,
+        200,
+        vec![de(
+            torch_api::contracts::AnyEvent::Torch(
+                torch_api::contracts::TorchEvent::CloseShort(close),
+            ),
+            200,
+            0,
+        )],
+    )
+    .await
+    .unwrap();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/user-pnl/{}", pk58(3)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["total_realized_pnl"], 2_000_000_000i64,
+        "realized = surplus (4.01) − collateral (2.01) = +2 SOL"
+    );
+    assert_eq!(body["by_mint"][0]["position_pnl"], 2_000_000_000i64);
+    assert_eq!(body["by_mint"][0]["position_count"], 1);
+}

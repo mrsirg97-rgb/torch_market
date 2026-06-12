@@ -8,7 +8,7 @@
 
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useRef, useEffect, useState } from 'react'
 import { useWallet } from '@solana/wallet-adapter-react'
 import { getUserPnl, type UserPnlSummary } from 'torchsdk'
 import { useNetwork } from '@/lib/NetworkContext'
@@ -36,9 +36,14 @@ export function useUserPnl(): UseUserPnlResult {
   // (cheap HTTP + SQL) and ensures we catch the user's own activity.
   // 'all' room carries trade + swap ticks for every market — enough to know
   // when this wallet's PnL might have moved (refetch recomputes precisely).
+  // [prompt-007 family] Debounced: during busy trading the room delivers
+  // frames continuously — refetch-per-frame made the stats page re-render
+  // storm ("tearing"). One trailing refetch per 2s burst.
+  const pnlDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
   useTorchFeed(wallet ? 'all' : null, (frame) => {
     if (frame.kind === 'trade' || frame.kind === 'swap' || frame.kind === 'resync') {
-      setRefetchTrigger((n) => n + 1)
+      if (pnlDebounce.current) clearTimeout(pnlDebounce.current)
+      pnlDebounce.current = setTimeout(() => setRefetchTrigger((n) => n + 1), 2000)
     }
   })
 
@@ -48,7 +53,11 @@ export function useUserPnl(): UseUserPnlResult {
       return
     }
     let cancelled = false
-    setLoading(true)
+    // Stale-while-revalidate: only the INITIAL load shows a loading state.
+    // Background refetches keep the current table rendered and swap the data
+    // in place when it lands — no skeleton flash, no tearing.
+    const isInitial = pnl === null
+    if (isInitial) setLoading(true)
     setError(null)
     getUserPnl(effectiveIndexerUrl, wallet)
       .then((summary) => {
@@ -60,7 +69,9 @@ export function useUserPnl(): UseUserPnlResult {
       .catch((err: unknown) => {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : String(err))
-          setPnl(null)
+          // Background failure: keep showing stale data rather than blanking
+          // the page; only null out if we never had data.
+          if (isInitial) setPnl(null)
           setLoading(false)
         }
       })

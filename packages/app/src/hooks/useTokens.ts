@@ -39,6 +39,10 @@ interface UseTokensResult {
   tokens: TokenData[]
   /** Whether initial load is in progress */
   loading: boolean
+  /** [prompt-007] Unseen markets announced by the AllMarkets room (pin count) */
+  pendingNew: number
+  /** Pull pending new markets into the list + clear the pin */
+  acceptNewMarkets: () => void
   /** Filter counts for each filter type */
   filterCounts: Record<TokenFilter, number>
   /** Top projects (highest market cap completed tokens) */
@@ -64,11 +68,35 @@ export function useTokens(options?: { enabled?: boolean }): UseTokensResult {
   const [loading, setLoading] = useState(true)
   const [rawTokens, setRawTokens] = useState<TokenData[]>([])
   const feedHealthy = useFeedHealthy()
+  // [prompt-007] AllMarkets frames, handled calmly:
+  //   - market frame for an UNKNOWN mint → count it for the "new markets" pin
+  //     (no auto-refetch; the list never reorders under the user's cursor)
+  //   - trade/swap ticks + known-market updates → ONE debounced refetch (2s)
+  //   - resync → refetch now
+  const [pendingNew, setPendingNew] = useState(0)
+  const knownMintsRef = useRef<Set<string>>(new Set())
+  const tickDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
   useTorchFeed('all', (frame) => {
-    if (frame.kind === 'market' || frame.kind === 'trade' || frame.kind === 'resync') {
+    if (frame.kind === 'resync') {
       fetchTokensRef.current?.(true)
+      return
+    }
+    const mint = typeof frame.mint === 'string' ? frame.mint : undefined
+    if (frame.kind === 'market' && mint && !knownMintsRef.current.has(mint)) {
+      knownMintsRef.current.add(mint)
+      setPendingNew((n) => n + 1)
+      return
+    }
+    if (frame.kind === 'trade' || frame.kind === 'swap' || frame.kind === 'market') {
+      if (tickDebounce.current) clearTimeout(tickDebounce.current)
+      tickDebounce.current = setTimeout(() => fetchTokensRef.current?.(true), 2000)
     }
   })
+  // Pin click: pull the new markets in and clear the counter.
+  const acceptNewMarkets = useCallback(() => {
+    setPendingNew(0)
+    fetchTokensRef.current?.(true)
+  }, [])
   const fetchTokensRef = useRef<((r: boolean) => void) | null>(null)
   const [currentSlot, setCurrentSlot] = useState<bigint>(BigInt(0))
   const initialLoadDone = useRef(false)
@@ -122,6 +150,10 @@ export function useTokens(options?: { enabled?: boolean }): UseTokensResult {
   useEffect(() => {
     fetchTokensRef.current = fetchTokens
   }, [fetchTokens])
+
+  useEffect(() => {
+    for (const t of tokens) knownMintsRef.current.add(t.mint)
+  }, [tokens])
 
   useEffect(() => {
     if (!enabled) {
@@ -440,6 +472,8 @@ export function useTokens(options?: { enabled?: boolean }): UseTokensResult {
   return {
     tokens,
     loading,
+    pendingNew,
+    acceptNewMarkets,
     filterCounts,
     topProjects,
     trendingTokens,

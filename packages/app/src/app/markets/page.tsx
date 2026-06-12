@@ -18,7 +18,7 @@ export default function MarketsPage() {
   const [filter, setFilter] = useState<TokenFilter>('bonding')
   const [search, setSearch] = useState('')
 
-  const { tokens, loading, topProjects, trendingTokens, currentSlot } = useTokens()
+  const { tokens, loading, topProjects, trendingTokens, currentSlot, pendingNew, acceptNewMarkets } = useTokens()
 
   const filterCounts = useMemo(
     () => ({
@@ -35,7 +35,9 @@ export default function MarketsPage() {
   )
 
   // Incremental rendering — show PAGE_SIZE at a time, load more on window scroll
-  const PAGE_SIZE = 50
+  // [prompt-007] 10 on load; infinite scroll pulls the rest. New markets
+  // arrive via the pin, never by reordering under the cursor.
+  const PAGE_SIZE = 10
   const filterKey = `${filter}:${search}`
   const [visibleState, setVisibleState] = useState({ count: PAGE_SIZE, key: filterKey })
   const visibleCount = visibleState.key === filterKey ? visibleState.count : PAGE_SIZE
@@ -107,6 +109,18 @@ export default function MarketsPage() {
               <span className="hidden sm:inline">+ launch</span>
             </button>
           </div>
+
+          {pendingNew > 0 && (
+            <button
+              onClick={() => {
+                acceptNewMarkets()
+                window.scrollTo({ top: 0, behavior: 'smooth' })
+              }}
+              className="w-full mt-2 py-2 text-xs rounded-xl bg-[color-mix(in_srgb,var(--accent)_18%,transparent)] text-[var(--accent)] hover:bg-[color-mix(in_srgb,var(--accent)_28%,transparent)] transition-colors cursor-pointer"
+            >
+              ↑ {pendingNew} new market{pendingNew === 1 ? '' : 's'}
+            </button>
+          )}
 
           {/* List */}
           {loading ? (
