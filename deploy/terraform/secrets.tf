@@ -19,6 +19,12 @@ resource "google_secret_manager_secret" "ingest_db_url" {
 resource "google_secret_manager_secret_version" "ingest_db_url" {
   secret      = google_secret_manager_secret.ingest_db_url.id
   secret_data = "postgres://torch_ingest:${random_password.ingest_db.result}@${local.cloudsql_socket_encoded}/torch"
+
+  # Rotation safety: new version exists BEFORE the old is destroyed, so
+  # 'latest' never dangles mid-apply (2026-06-12 backfill-job race).
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Read URL — torch_api role (SELECT only). The api service NEVER sees a
@@ -33,6 +39,12 @@ resource "google_secret_manager_secret" "api_db_url" {
 resource "google_secret_manager_secret_version" "api_db_url" {
   secret      = google_secret_manager_secret.api_db_url.id
   secret_data = "postgres://torch_api:${random_password.api_db.result}@${local.cloudsql_socket_encoded}/torch"
+
+  # Rotation safety: new version exists BEFORE the old is destroyed, so
+  # 'latest' never dangles mid-apply (2026-06-12 backfill-job race).
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Superuser password — bootstrap-schema.sh only. Never mounted into any service.
@@ -46,6 +58,12 @@ resource "google_secret_manager_secret" "pg_superuser_password" {
 resource "google_secret_manager_secret_version" "pg_superuser_password" {
   secret      = google_secret_manager_secret.pg_superuser_password.id
   secret_data = random_password.pg_superuser.result
+
+  # Rotation safety: new version exists BEFORE the old is destroyed, so
+  # 'latest' never dangles mid-apply (2026-06-12 backfill-job race).
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "google_secret_manager_secret" "laserstream_token" {
@@ -58,6 +76,12 @@ resource "google_secret_manager_secret" "laserstream_token" {
 resource "google_secret_manager_secret_version" "laserstream_token" {
   secret      = google_secret_manager_secret.laserstream_token.id
   secret_data = var.laserstream_token
+
+  # Rotation safety: new version exists BEFORE the old is destroyed, so
+  # 'latest' never dangles mid-apply (2026-06-12 backfill-job race).
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "google_secret_manager_secret" "rpc_url" {
@@ -70,4 +94,10 @@ resource "google_secret_manager_secret" "rpc_url" {
 resource "google_secret_manager_secret_version" "rpc_url" {
   secret      = google_secret_manager_secret.rpc_url.id
   secret_data = var.rpc_url_helius
+
+  # Rotation safety: new version exists BEFORE the old is destroyed, so
+  # 'latest' never dangles mid-apply (2026-06-12 backfill-job race).
+  lifecycle {
+    create_before_destroy = true
+  }
 }
