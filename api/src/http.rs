@@ -407,6 +407,22 @@ async fn list_candles(
     let since = q.since.unwrap_or_else(|| now - chrono::Duration::hours(24));
     let before = q.before.unwrap_or(now);
 
+    // [prompt-008 A-3] Bound the work: since/before are caller-controlled with no
+    // max span, so a 1s interval over a multi-year range would bucket into
+    // millions of rows (expensive aggregate + array_agg). Cap the bucket count.
+    // 100k clears every real request — the UI's default 24h window even at 1s is
+    // 86,400, and 1m-over-a-month is ~44,640 — while rejecting the pathological
+    // fine-grain-over-years case.
+    const MAX_CANDLE_BUCKETS: i64 = 100_000;
+    if before <= since {
+        return Err(ApiError::BadRequest("before must be after since"));
+    }
+    if (before - since).num_seconds() / bucket_seconds as i64 > MAX_CANDLE_BUCKETS {
+        return Err(ApiError::BadRequest(
+            "time window too large for interval — narrow the range or use a coarser interval",
+        ));
+    }
+
     let mut ctx = RequestCtx::begin(&state.pool).await?;
     let rows: Vec<Candle> = sqlx::query_as(
         "WITH all_events AS (
@@ -489,9 +505,13 @@ async fn list_pools(
     } else if let Some(creator) = q.creator {
         ctx.pools().for_creators(vec![creator]).await?
     } else {
+        // [prompt-008 A-2] Clamp like every other list endpoint — without this an
+        // unfiltered `/api/pools` (limit absent) emits no LIMIT and dumps the
+        // whole table.
+        let limit = q.limit.unwrap_or(50).clamp(1, 500);
         ctx.pools()
             .list(PoolFilter {
-                limit: q.limit,
+                limit: Some(limit),
                 ..Default::default()
             })
             .await?

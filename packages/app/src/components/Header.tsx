@@ -58,15 +58,22 @@ export function Header({ onHowItWorksClick, onTreasuryClick }: HeaderProps) {
   const isProfile = pathname?.startsWith('/profile')
 
   return (
-    <header
-      className="sticky top-0 z-50 pointer-events-none"
-      style={{
-        background: 'color-mix(in srgb, var(--background) 35%, transparent)',
-        backdropFilter: 'blur(8px)',
-        WebkitBackdropFilter: 'blur(8px)',
-      }}
-    >
-      <div className="w-full px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
+    <header className="sticky top-0 z-50 pointer-events-none">
+      {/* Frosted backdrop as a SEPARATE layer — NOT on <header> itself. The nav
+          dropdowns are descendants of <header>, and a child's backdrop-filter is
+          a no-op when an ancestor also has one. Keeping the header's blur on this
+          sibling layer (not an ancestor of the dropdowns) lets their own frosted
+          blur actually render against page content. */}
+      <div
+        aria-hidden
+        className="absolute inset-0"
+        style={{
+          background: 'color-mix(in srgb, var(--background) 35%, transparent)',
+          backdropFilter: 'blur(8px)',
+          WebkitBackdropFilter: 'blur(8px)',
+        }}
+      />
+      <div className="relative w-full px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
         {/* Wordmark */}
         <Link
           href="/"
@@ -154,11 +161,14 @@ export function Header({ onHowItWorksClick, onTreasuryClick }: HeaderProps) {
             </button>
             {menuOpen && (
               <div
-                className="absolute right-0 mt-2 min-w-[160px] rounded-xl py-2 z-[60]"
+                className="absolute left-0 mt-2 min-w-[160px] rounded-xl py-2 z-[60]"
                 style={{
-                  background: 'color-mix(in srgb, var(--background) 96%, transparent)',
-                  boxShadow: '0 12px 32px rgba(0,0,0,0.25)',
-                  backdropFilter: 'blur(12px)',
+                  // Same frosted glass as the markets FilterDropdown + NetworkDropdown
+                  // (now that the header's blur is off the ancestor, this renders).
+                  background: 'color-mix(in srgb, var(--background) 60%, transparent)',
+                  backdropFilter: 'blur(8px)',
+                  WebkitBackdropFilter: 'blur(8px)',
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
                 }}
               >
                 <Link

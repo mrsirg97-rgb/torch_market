@@ -11,6 +11,7 @@ import {
   buildSellTransaction,
   buildMigrateTransaction,
   getVault,
+  applySlippageBps,
 } from 'torchsdk'
 import type { BuyQuoteResult, SellQuoteResult, VaultInfo } from 'torchsdk'
 import {
@@ -319,7 +320,8 @@ export function SwapPanel({
         tokensToCommunity: tokensToCommunityBigint,
         solToTreasury: solToTreasuryBigint,
         protocolFee: protocolFeeBigint,
-        minGuaranteed: BigInt(Math.floor(buyQuote.min_output_tokens)),
+        // [prompt-008 F-3] signed floor == displayed floor: one haircut on the raw output.
+        minGuaranteed: applySlippageBps(BigInt(Math.floor(buyQuote.tokens_to_user)), slippageBps),
         symbol,
       })
     } else if (sellQuote) {
@@ -327,12 +329,12 @@ export function SwapPanel({
       onPreviewChange({
         type: 'sell',
         solToUser: solToUserBigint,
-        minGuaranteed: BigInt(Math.floor(sellQuote.min_output_sol)),
+        minGuaranteed: applySlippageBps(BigInt(Math.floor(sellQuote.output_sol)), slippageBps),
       })
     } else {
       onPreviewChange(null)
     }
-  }, [buyQuote, sellQuote, symbol, onPreviewChange])
+  }, [buyQuote, sellQuote, symbol, onPreviewChange, slippageBps])
 
   // Handle bonding curve buy via SDK
   // [V36] Vote parameter removed — 100% of tokens to buyer
@@ -694,9 +696,9 @@ export function SwapPanel({
                   <span className="text-white/50">Min. guaranteed:</span>
                   <span className="text-success">
                     {tradeTab === 'buy' && buyQuote
-                      ? `${formatTokens(BigInt(Math.floor(buyQuote.min_output_tokens)))} ${symbol}`
+                      ? `${formatTokens(applySlippageBps(BigInt(Math.floor(buyQuote.tokens_to_user)), slippageBps))} ${symbol}`
                       : sellQuote
-                        ? `${formatSol(BigInt(Math.floor(sellQuote.min_output_sol)))} SOL`
+                        ? `${formatSol(applySlippageBps(BigInt(Math.floor(sellQuote.output_sol)), slippageBps))} SOL`
                         : ''}
                   </span>
                 </div>

@@ -532,8 +532,14 @@ export interface OpenShortParams {
   position_index?: number
   /** SOL collateral, lamports. Borrowed tokens = collateral × LTV (clamped). */
   collateral: number
-  /** Min SOL out from selling the borrowed tokens (slippage guard; 0 = none). */
+  /**
+   * Min SOL out from selling the borrowed tokens (slippage guard). If omitted,
+   * the builder simulates the open and sizes it from `slippage_bps` — leave it
+   * unset for the safe default. An explicit value overrides the simulation.
+   */
   min_out?: number
+  /** Entry-swap slippage tolerance in bps when min_out is auto-sized (default 100 = 1%). */
+  slippage_bps?: number
   /** Vault creator pubkey → routes open_short_via_vault. */
   vault?: string
 }
@@ -545,8 +551,14 @@ export interface OpenLongParams {
   position_index?: number
   /** Token collateral (6 decimals). Borrowed SOL = collateral × LTV (clamped). */
   collateral: number
-  /** Min tokens out from the atomic buy (slippage guard; 0 = none). */
+  /**
+   * Min tokens out from the atomic buy (slippage guard). If omitted, the builder
+   * simulates the open and sizes it from `slippage_bps` — leave it unset for the
+   * safe default. An explicit value overrides the simulation.
+   */
   min_out?: number
+  /** Entry-swap slippage tolerance in bps when min_out is auto-sized (default 100 = 1%). */
+  slippage_bps?: number
   /** Vault creator pubkey → routes open_long_via_vault. */
   vault?: string
 }

@@ -6,6 +6,7 @@ import Image from 'next/image'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { sendCreateToken } from 'torchsdk'
 import { uploadTokenAssets } from '@/lib/irys'
+import { isSafeHttpUrl } from '@/lib/url'
 import { TokenTier, TIER_CONFIG, SOL_TARGET_MAP } from '@/types/token'
 
 interface CreateTokenPanelProps {
@@ -142,13 +143,11 @@ export function CreateTokenPanel({ isOpen, onClose }: CreateTokenPanelProps) {
       { value: website, name: 'Website' },
     ]
     for (const field of urlFields) {
-      if (field.value) {
-        try {
-          new URL(field.value)
-        } catch {
-          setCreateError(`Invalid ${field.name} URL format`)
-          return
-        }
+      // [prompt-008 F-2] http(s) only — bare `new URL()` accepts javascript:/data:,
+      // which would render as an executable href on the token page (stored XSS).
+      if (field.value && !isSafeHttpUrl(field.value)) {
+        setCreateError(`Invalid ${field.name} URL — must be an http(s) link`)
+        return
       }
     }
 
@@ -241,7 +240,10 @@ export function CreateTokenPanel({ isOpen, onClose }: CreateTokenPanelProps) {
         style={{
           background:
             'color-mix(in srgb, var(--background) 92%, transparent)',
-          boxShadow: '-20px 0 60px rgba(0,0,0,0.25)',
+          // Only lift the panel when it's on-screen. When closed it sits off the
+          // right edge; its shadow would otherwise bleed onto the page and double
+          // up with the global right-edge shadow (now in layout.tsx).
+          boxShadow: isOpen ? '-20px 0 60px rgba(0,0,0,0.25)' : 'none',
         }}
       >
         <div className="h-full overflow-y-auto p-6">

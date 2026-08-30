@@ -85,6 +85,136 @@ async fn market_apply_trade_updates_reserves() {
     tx.commit().await.unwrap();
 }
 
+// [prompt-008 I-1] The monotonic slot-guard on apply_trade: a stale / out-of-order
+// / backfill-over-live trade must NOT regress the reserves, but an equal-slot
+// replay (exact retry) and any forward trade must still apply.
+#[tokio::test]
+async fn market_apply_trade_stale_slot_ignored() {
+    let db = TestDb::new().await;
+    let mut tx = db.pool.begin().await.unwrap();
+    let mint = pk58(1);
+    ingest_domain::market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
+        .await
+        .unwrap();
+
+    // Forward trade at slot 300 sets reserves + advances last_activity to 300.
+    ingest_domain::market::apply_trade(
+        &mut tx, &mint, 31_000_000_000, 1_072_000_000_000_000, 5_000_000_000, 800_000_000_000, 300,
+        fixed_ts(),
+    )
+    .await
+    .unwrap();
+
+    // Stale trade at slot 200 (< 300) must be IGNORED — no reserve regression.
+    ingest_domain::market::apply_trade(
+        &mut tx, &mint, 1, 1, 9_999, 1, 200, fixed_ts(),
+    )
+    .await
+    .unwrap();
+    let f = market::get_by_mint(&mut tx, &mint).await.unwrap().unwrap();
+    assert_eq!(f.real_sol, 5_000_000_000, "stale trade must not regress reserves");
+    assert_eq!(f.last_activity_slot, 300);
+
+    // Equal slot (300) — exact-retry idempotency preserved: applies (>=).
+    ingest_domain::market::apply_trade(
+        &mut tx, &mint, 31_000_000_000, 1_072_000_000_000_000, 7_000_000_000, 800_000_000_000, 300,
+        fixed_ts(),
+    )
+    .await
+    .unwrap();
+    let f = market::get_by_mint(&mut tx, &mint).await.unwrap().unwrap();
+    assert_eq!(f.real_sol, 7_000_000_000, "equal-slot replay must still apply");
+
+    // Newer slot (400) applies.
+    ingest_domain::market::apply_trade(
+        &mut tx, &mint, 31_000_000_000, 1_072_000_000_000_000, 8_000_000_000, 800_000_000_000, 400,
+        fixed_ts(),
+    )
+    .await
+    .unwrap();
+    let f = market::get_by_mint(&mut tx, &mint).await.unwrap().unwrap();
+    assert_eq!(f.real_sol, 8_000_000_000);
+    assert_eq!(f.last_activity_slot, 400);
+    tx.commit().await.unwrap();
+}
+
+// [prompt-008 I-1] apply_migration is guarded too: a stale migration replay
+// can't zero a market's reserves / flip status after newer activity.
+#[tokio::test]
+async fn market_apply_migration_stale_slot_ignored() {
+    let db = TestDb::new().await;
+    let mut tx = db.pool.begin().await.unwrap();
+    let mint = pk58(1);
+    let pool_pk = pk58(50);
+    ingest_domain::market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
+        .await
+        .unwrap();
+    ingest_domain::pool::set(&mut tx, &[new_pool_row(&pool_pk, &mint, &pk58(2))])
+        .await
+        .unwrap();
+    // Advance activity to slot 500.
+    ingest_domain::market::apply_trade(
+        &mut tx, &mint, 31_000_000_000, 1_072_000_000_000_000, 5_000_000_000, 800_000_000_000, 500,
+        fixed_ts(),
+    )
+    .await
+    .unwrap();
+
+    // Stale migration at slot 300 (< 500) — ignored.
+    ingest_domain::market::apply_migration(&mut tx, &mint, &pool_pk, 300, fixed_ts())
+        .await
+        .unwrap();
+    let f = market::get_by_mint(&mut tx, &mint).await.unwrap().unwrap();
+    assert_eq!(f.status, MarketStatus::Bonding, "stale migration must not flip status");
+    assert_eq!(f.migrated_slot, None);
+    assert_eq!(f.real_sol, 5_000_000_000, "stale migration must not zero reserves");
+
+    // Forward migration at slot 600 applies.
+    ingest_domain::market::apply_migration(&mut tx, &mint, &pool_pk, 600, fixed_ts())
+        .await
+        .unwrap();
+    let f = market::get_by_mint(&mut tx, &mint).await.unwrap().unwrap();
+    assert_eq!(f.status, MarketStatus::Migrated);
+    assert_eq!(f.migrated_slot, Some(600));
+    assert_eq!(f.real_sol, 0);
+    tx.commit().await.unwrap();
+}
+
+// [prompt-008 I-1] mark_status guard: a stale status replay can't regress.
+#[tokio::test]
+async fn market_mark_status_stale_slot_ignored() {
+    let db = TestDb::new().await;
+    let mut tx = db.pool.begin().await.unwrap();
+    let mint = pk58(1);
+    ingest_domain::market::set(&mut tx, &new_market_row(&mint, &pk58(2)))
+        .await
+        .unwrap();
+    ingest_domain::market::apply_trade(
+        &mut tx, &mint, 31_000_000_000, 1_072_000_000_000_000, 5_000_000_000, 800_000_000_000, 500,
+        fixed_ts(),
+    )
+    .await
+    .unwrap();
+
+    // Stale Complete at slot 300 — ignored.
+    ingest_domain::market::mark_status(&mut tx, &mint, MarketStatus::Complete, 300, fixed_ts())
+        .await
+        .unwrap();
+    let f = market::get_by_mint(&mut tx, &mint).await.unwrap().unwrap();
+    assert_eq!(f.status, MarketStatus::Bonding, "stale status must not apply");
+    assert_eq!(f.bonding_complete_slot, None);
+
+    // Forward Complete at slot 600 applies.
+    ingest_domain::market::mark_status(&mut tx, &mint, MarketStatus::Complete, 600, fixed_ts())
+        .await
+        .unwrap();
+    let f = market::get_by_mint(&mut tx, &mint).await.unwrap().unwrap();
+    assert_eq!(f.status, MarketStatus::Complete);
+    assert_eq!(f.bonding_complete_slot, Some(600));
+    assert_eq!(f.last_activity_slot, 600);
+    tx.commit().await.unwrap();
+}
+
 #[tokio::test]
 async fn market_apply_migration_sets_status_and_fk() {
     let db = TestDb::new().await;

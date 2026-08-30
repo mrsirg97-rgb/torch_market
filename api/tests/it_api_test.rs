@@ -545,3 +545,44 @@ async fn user_pnl_folds_resolved_position_outcomes() {
     assert_eq!(body["by_mint"][0]["position_pnl"], 2_000_000_000i64);
     assert_eq!(body["by_mint"][0]["position_count"], 1);
 }
+
+// ─── /api/candles window bound [prompt-008 A-3] ────────────────────────────
+
+#[tokio::test]
+async fn candles_rejects_oversized_window() {
+    let db = TestDb::new().await;
+    let app = build_app(&db).await;
+    let mint = "So11111111111111111111111111111111111111112";
+
+    // 1s interval over ~6 years → ~189M buckets, far over the 5000 cap → 400.
+    let huge = format!(
+        "/api/candles?mint={mint}&interval=1s&since=2020-01-01T00:00:00Z&before=2026-01-01T00:00:00Z"
+    );
+    let resp = app
+        .clone()
+        .oneshot(Request::builder().uri(huge).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "oversized window must 400");
+
+    // before <= since → 400.
+    let inverted = format!(
+        "/api/candles?mint={mint}&interval=1m&since=2026-01-02T00:00:00Z&before=2026-01-01T00:00:00Z"
+    );
+    let resp = app
+        .clone()
+        .oneshot(Request::builder().uri(inverted).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "before<=since must 400");
+
+    // A small valid window is accepted (200) even with no underlying rows.
+    let ok = format!(
+        "/api/candles?mint={mint}&interval=1m&since=2026-01-01T00:00:00Z&before=2026-01-01T01:00:00Z"
+    );
+    let resp = app
+        .oneshot(Request::builder().uri(ok).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "small window must be accepted");
+}

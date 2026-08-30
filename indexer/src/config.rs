@@ -29,12 +29,32 @@ pub struct Config {
     pub rpc_url: String,
     // Optional cutoff for backfill; if set, skip any slot < START_SLOT.
     // Useful for fresh devnet envs to avoid ingesting dead history.
+    // [prompt-008 I-4] REQUIRED for the `backfill` subcommand (enforced in main):
+    // an unbounded full-history walk against the wrong RPC is the foot-gun the
+    // genesis guard backstops.
     pub start_slot: Option<u64>,
+    // [prompt-008 I-4] Expected cluster for the genesis-hash guard. Defaults to
+    // "devnet" (matches rpc_url's default) so the current preview boots
+    // unchanged; a mainnet cutover MUST set SOLANA_CLUSTER=mainnet — and if it
+    // forgets, the genesis assert fails closed at boot rather than ingesting
+    // wrong-chain data.
+    pub cluster: String,
+    // Resolved from `cluster` via constants::genesis_for_cluster.
+    pub expected_genesis: String,
 }
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let _ = dotenvy::dotenv();
+        // [prompt-008 I-4] Resolve the expected genesis up front so an unknown
+        // SOLANA_CLUSTER fails config load (deny by default) rather than booting
+        // unguarded.
+        let cluster = std::env::var("SOLANA_CLUSTER").unwrap_or_else(|_| "devnet".to_string());
+        let expected_genesis = crate::constants::genesis_for_cluster(&cluster)
+            .with_context(|| {
+                format!("unknown SOLANA_CLUSTER {cluster:?} (expected mainnet|devnet|testnet)")
+            })?
+            .to_string();
         Ok(Self {
             database_url: env_required("DATABASE_URL")?,
             laserstream_url: env_required("LASERSTREAM_URL")?,
@@ -49,6 +69,8 @@ impl Config {
             rpc_url: std::env::var("RPC_URL")
                 .unwrap_or_else(|_| "https://api.devnet.solana.com".to_string()),
             start_slot: std::env::var("START_SLOT").ok().and_then(|s| s.parse().ok()),
+            cluster,
+            expected_genesis,
         })
     }
 }

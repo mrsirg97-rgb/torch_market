@@ -61,6 +61,8 @@ export {
   setPriorityFeeMicroLamports,
   getPriorityFeeMicroLamports,
   estimatePriorityFee,
+  // [prompt-008 F-3] shared slippage haircut — keeps UI "min guaranteed" == signed floor
+  applySlippageBps,
 } from './transactions'
 
 // transaction builders

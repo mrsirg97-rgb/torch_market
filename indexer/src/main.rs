@@ -2,9 +2,13 @@
 // can import it. This file just wires the runtime (tokio, tracing,
 // subcommand dispatch) and delegates everything else.
 
+use std::time::Duration;
+
 use anyhow::Context;
 use torch_indexer::constants::BLOCK_CHANNEL_CAPACITY;
-use torch_indexer::{config, contracts, db, stream::backfill, stream::grpc, stream::writer};
+use torch_indexer::{
+    config, contracts, db, stream::backfill, stream::grpc, stream::writer, util::retry_backoff,
+};
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -19,6 +23,11 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cfg = config::Config::from_env().context("load config")?;
+
+    // [prompt-008 I-4] Wrong-cluster guard — before connecting to Postgres or
+    // writing a single row, confirm the configured RPC really is the cluster we
+    // expect. Covers both `run` and `backfill`.
+    verify_genesis(&cfg).await?;
 
     // Subcommands. Default and `run` start the live indexer; `backfill` runs
     // a one-shot historical pass and exits. Backfill needs only DATABASE_URL +
@@ -35,6 +44,14 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run_backfill(cfg: config::Config) -> anyhow::Result<()> {
+    // [prompt-008 I-4] Backfill must be explicitly lower-bounded — an unbounded
+    // full-history walk is the costly/foot-gun path the genesis guard backstops.
+    if cfg.start_slot.is_none() {
+        anyhow::bail!(
+            "backfill requires START_SLOT (explicit lower bound); refusing an \
+             unbounded full-history walk"
+        );
+    }
     info!("running historical backfill");
     let pool = db::connect(&cfg.database_url)
         .await
@@ -161,6 +178,55 @@ async fn run_live(cfg: config::Config) -> anyhow::Result<()> {
 
     info!("shutting down");
     Ok(())
+}
+
+// [prompt-008 I-4] Verify the configured RPC is the expected cluster before any
+// write. Fail closed: a mismatch refuses to ingest foreign-chain history, and an
+// RPC still unreachable after 5 backed-off attempts is presumed down (a bigger
+// problem than ingestion lag) — refuse to start rather than silently skip the
+// guard. base 200ms → ~3s worst case across the 5 tries before giving up.
+async fn verify_genesis(cfg: &config::Config) -> anyhow::Result<()> {
+    let actual = retry_backoff(5, Duration::from_millis(200), || {
+        fetch_genesis_hash(&cfg.rpc_url)
+    })
+    .await
+    .with_context(|| {
+        format!(
+            "could not reach RPC {} to fetch genesis after 5 attempts; refusing to \
+             start (RPC presumed down — check RPC_URL / upstream)",
+            cfg.rpc_url
+        )
+    })?;
+    if actual == cfg.expected_genesis {
+        info!(cluster = %cfg.cluster, "genesis verified");
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "genesis mismatch: RPC reports {actual}, but SOLANA_CLUSTER={} expects {}. \
+             refusing to start (wrong-cluster ingest guard)",
+            cfg.cluster,
+            cfg.expected_genesis
+        )
+    }
+}
+
+// One-shot getGenesisHash via JSON-RPC. None on any failure (treated as
+// unverifiable, not as a mismatch — see verify_genesis).
+async fn fetch_genesis_hash(rpc_url: &str) -> Option<String> {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getGenesisHash",
+    });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+    let resp = client.post(rpc_url).json(&body).send().await.ok()?;
+    let v: serde_json::Value = resp.json().await.ok()?;
+    v.get("result")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string())
 }
 
 // One-shot getSlot via JSON-RPC. Returns None on any failure — the caller

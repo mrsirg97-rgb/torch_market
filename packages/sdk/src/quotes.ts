@@ -23,7 +23,7 @@ const DEEP_POOL_FEE_BPS = 25
 // Fetch DeepPool reserves for a migrated token.
 // SOL reserve = pool PDA lamports - rent exempt (rent derived from actual account size).
 // Token reserve = vault token balance.
-const fetchPoolReserves = async (
+export const fetchPoolReserves = async (
   connection: Connection,
   mint: PublicKey,
 ): Promise<{ solReserves: bigint; tokenReserves: bigint }> => {
@@ -64,7 +64,7 @@ export const quoteSolInForTokensOut = async (
 // CPMM swap calculation: constant product with fee.
 // effective_input = input * (10000 - fee_bps) / 10000
 // output = effective_input * reserve_out / (reserve_in + effective_input)
-const cpmmSwap = (
+export const cpmmSwap = (
   amountIn: bigint,
   reserveIn: bigint,
   reserveOut: bigint,

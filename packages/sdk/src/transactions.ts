@@ -56,7 +56,13 @@ import {
 } from './program'
 import { MEMO_PROGRAM_ID, DEEP_POOL_PROGRAM_ID } from './constants'
 import { fetchTokenRaw, getPosition, grossUpForTransferFee } from './tokens'
-import { getBuyQuote, getSellQuote, quoteSolInForTokensOut } from './quotes'
+import {
+  getBuyQuote,
+  getSellQuote,
+  quoteSolInForTokensOut,
+  fetchPoolReserves,
+  cpmmSwap,
+} from './quotes'
 import {
   BuyParams,
   DirectBuyParams,
@@ -231,6 +237,90 @@ const finalizeTransaction = async (
   return new VersionedTransaction(message)
 }
 
+// ── [prompt-008 F-1] Leverage entry-swap slippage (simulate-then-size) ──────
+//
+// The on-chain open AUTO-CLAMPS the borrow (depth-LTV, Rail-2, per-user / global
+// float / lock caps), so the client cannot predict the entry-swap output by
+// replicating that math without drifting from the program. Instead we simulate
+// the assembled tx with `min_out = 0`, read the EXACT swap the chain computed
+// from a post-sim account delta, and set `min_out = output × (1 − slippage)`.
+// Robust to every clamp, and it can't go stale against on-chain sizing. Without
+// this the entry swap had no floor at all — every leverage open was sandwichable.
+const DEFAULT_LEVERAGE_SLIPPAGE_BPS = 100 // 1%
+const SDK_TRANSFER_FEE_BPS = 7 // mirror of on-chain TRANSFER_FEE_BPS
+
+// [prompt-008 F-3] Single source of truth for the slippage haircut, used by the
+// tx builders (the signed floor) AND the UI (the displayed "min guaranteed") so
+// the two can never disagree. amount × (1 − bps/10000), bps clamped to [0,10000].
+export const applySlippageBps = (amount: bigint, slippageBps: number): bigint => {
+  const bps = Math.max(0, Math.min(10000, Math.floor(slippageBps)))
+  return (amount * BigInt(10000 - bps)) / 10000n
+}
+
+// Token-2022 transfer fee (ceil) — mirror of on-chain calc_transfer_fee.
+const transferFeeCeil = (amount: bigint): bigint =>
+  amount === 0n ? 0n : (amount * BigInt(SDK_TRANSFER_FEE_BPS) + 9999n) / 10000n
+
+// SPL token-account `amount` (u64 LE @ offset 64) from base64 account data.
+const tokenAmountFromB64 = (dataB64: string): bigint => {
+  const buf = Buffer.from(dataB64, 'base64')
+  if (buf.length < 72) throw new Error('not a token account')
+  return buf.readBigUInt64LE(64)
+}
+
+// Simulate an unsigned v0 tx (blockhash replaced, sig unverified) and return the
+// post-sim base64 data for the requested accounts. Throws on a sim error so the
+// real failure surfaces BEFORE the wallet signs.
+const simulateForAccounts = async (
+  connection: Connection,
+  vtx: VersionedTransaction,
+  addresses: PublicKey[],
+): Promise<(string | null)[]> => {
+  const sim = await connection.simulateTransaction(vtx, {
+    sigVerify: false,
+    replaceRecentBlockhash: true,
+    accounts: { encoding: 'base64', addresses: addresses.map((a) => a.toBase58()) },
+  })
+  if (sim.value.err) {
+    throw new Error(
+      `leverage open simulation failed: ${JSON.stringify(sim.value.err)} ` +
+        `${JSON.stringify(sim.value.logs?.slice(-4) ?? [])}`,
+    )
+  }
+  return (sim.value.accounts ?? []).map((a) => (a ? a.data[0] : null))
+}
+
+// Net token collateral after the Token-2022 deposit fee (mirror of on-chain
+// net_collateral = collateral − calc_transfer_fee(collateral)). Exported for tests.
+export const netCollateralAfterFee = (collateral: bigint): bigint =>
+  collateral - transferFeeCeil(collateral)
+
+// Pure min_out sizing for the LONG borrow→buy entry: the tokens actually bought
+// (post-sim vault total minus the deposited net collateral), haircut by slippage.
+// Exported for unit tests.
+export const sizeLongMinOut = (
+  vaultTokens: bigint,
+  netCollateral: bigint,
+  slippageBps: number,
+): bigint => {
+  const boughtNet = vaultTokens > netCollateral ? vaultTokens - netCollateral : 0n
+  return applySlippageBps(boughtNet, slippageBps)
+}
+
+// Pure min_out sizing for the SHORT borrow→sell entry: the SOL the borrowed
+// tokens yield at the current pool (priced on the net-of-transfer-fee amount the
+// pool receives), haircut by slippage. Exported for unit tests.
+export const sizeShortMinOut = (
+  tokensBorrowed: bigint,
+  tokenReserves: bigint,
+  solReserves: bigint,
+  slippageBps: number,
+): bigint => {
+  if (tokensBorrowed <= 0n) return 0n
+  const netReceived = tokensBorrowed - transferFeeCeil(tokensBorrowed)
+  return applySlippageBps(cpmmSwap(netReceived, tokenReserves, solReserves), slippageBps)
+}
+
 // Direct (no-vault) swap against the DeepPool pool for a migrated market.
 // Routes through deeppoolsdk and wraps the resulting Transaction in a v0
 // VersionedTransaction so the return shape matches every other SDK builder.
@@ -297,8 +387,11 @@ const buildBuyTransactionInternal = async (
   if (quote?.source === 'dex' || bondingCurve.bonding_complete) {
     const resolvedQuote = quote ?? (await getBuyQuote(connection, mintStr, amount_sol))
     const slippage = slippage_bps ?? 100
-    const minOut =
-      (BigInt(resolvedQuote.min_output_tokens) * BigInt(10000 - slippage)) / BigInt(10000)
+    // [prompt-008 F-3] Haircut the RAW expected output ONCE. Previously the quote
+    // pre-discounted min_output_tokens by 1% AND this re-applied slippage on top
+    // (~2% signed vs ~1% displayed); now slippage_bps is the single knob and the
+    // UI shows applySlippageBps(tokens_to_user, slippage) — identical to this.
+    const minOut = applySlippageBps(BigInt(Math.floor(resolvedQuote.tokens_to_user)), slippage)
 
     if (vaultCreatorStr) {
       const result = await buildVaultSwapTransaction(connection, {
@@ -633,7 +726,8 @@ export const buildSellTransaction = async (
   if (quote?.source === 'dex' || bondingCurve.bonding_complete) {
     const resolvedQuote = quote ?? (await getSellQuote(connection, mintStr, amount_tokens))
     const slippage = slippage_bps ?? 100
-    const minOut = (BigInt(resolvedQuote.min_output_sol) * BigInt(10000 - slippage)) / BigInt(10000)
+    // [prompt-008 F-3] Single slippage haircut on the raw expected SOL out (see buy).
+    const minOut = applySlippageBps(BigInt(Math.floor(resolvedQuote.output_sol)), slippage)
 
     if (vaultCreatorStr) {
       const result = await buildVaultSwapTransaction(connection, {
@@ -1880,11 +1974,6 @@ export const buildOpenShortTransaction = async (
   const provider = makeDummyProvider(connection, shorter)
   const program = new Program(idl as unknown, provider)
 
-  const args = {
-    positionIndex,
-    collateral: new BN(params.collateral.toString()),
-    minOut: new BN((params.min_out ?? 0).toString()),
-  }
   const shared = {
     mint,
     treasury: treasuryPda,
@@ -1902,9 +1991,10 @@ export const buildOpenShortTransaction = async (
     systemProgram: SystemProgram.programId,
   }
 
-  const ix =
-    torchVault && walletLink
-      ? await program.methods
+  const buildShortIx = (minOut: BN): Promise<TransactionInstruction> => {
+    const args = { positionIndex, collateral: new BN(params.collateral.toString()), minOut }
+    return torchVault && walletLink
+      ? program.methods
           .openShortViaVault(args)
           .accounts({
             ...shared,
@@ -1914,14 +2004,50 @@ export const buildOpenShortTransaction = async (
             vaultWalletLink: walletLink,
           })
           .instruction()
-      : await program.methods
-          .openShort(args)
-          .accounts({ ...shared, shorter })
-          .instruction()
+      : program.methods.openShort(args).accounts({ ...shared, shorter }).instruction()
+  }
 
-  const tx = new Transaction()
-  tx.add(ix)
-  const versionedTx = await finalizeTransaction(connection, tx, shorter)
+  // [prompt-008 F-1] Floor the borrow→sell entry swap. The chain clamps the token
+  // borrow, so simulate with min_out=0, read the actual tokens borrowed from the
+  // lock delta, and size min_out off the SOL that sale yields at the current pool.
+  let minOut: BN
+  if (params.min_out != null) {
+    minOut = new BN(params.min_out.toString())
+  } else {
+    const slippageBps = params.slippage_bps ?? DEFAULT_LEVERAGE_SLIPPAGE_BPS
+    const [lockPre, reserves, ix0] = await Promise.all([
+      connection
+        .getTokenAccountBalance(treasuryLockTokenAccount)
+        .then((r) => BigInt(r.value.amount))
+        .catch(() => null),
+      fetchPoolReserves(connection, mint),
+      buildShortIx(new BN(0)),
+    ])
+    const vtx0 = await finalizeTransaction(connection, new Transaction().add(ix0), shorter)
+    const [lockPostB64] = await simulateForAccounts(connection, vtx0, [treasuryLockTokenAccount])
+    if (lockPre == null || lockPostB64 == null) {
+      throw new Error('could not size short slippage (lock unreadable); please retry')
+    }
+    const lockPost = tokenAmountFromB64(lockPostB64)
+    const tokensBorrowed = lockPre > lockPost ? lockPre - lockPost : 0n
+    if (tokensBorrowed === 0n) {
+      throw new Error('open short would borrow nothing (caps or lock exhausted)')
+    }
+    minOut = new BN(
+      sizeShortMinOut(
+        tokensBorrowed,
+        reserves.tokenReserves,
+        reserves.solReserves,
+        slippageBps,
+      ).toString(),
+    )
+  }
+
+  const versionedTx = await finalizeTransaction(
+    connection,
+    new Transaction().add(await buildShortIx(minOut)),
+    shorter,
+  )
   const vaultLabel = vaultCreatorStr ? ' (via vault)' : ''
   return {
     transaction: versionedTx,
@@ -2141,15 +2267,9 @@ export const buildOpenLongTransaction = async (
   const [longSolVaultPda] = getLongSolVaultPda(owner, mint, positionIndex)
   const deepPool = getDeepPoolAccounts(mint)
 
-  const tx = new Transaction()
   const provider = makeDummyProvider(connection, borrower)
   const program = new Program(idl as unknown, provider)
 
-  const args = {
-    positionIndex,
-    collateral: new BN(params.collateral.toString()),
-    minOut: new BN((params.min_out ?? 0).toString()),
-  }
   const shared = {
     mint,
     treasury: treasuryPda,
@@ -2167,46 +2287,63 @@ export const buildOpenLongTransaction = async (
     systemProgram: SystemProgram.programId,
   }
 
-  let ix: TransactionInstruction
-  if (torchVault && walletLink) {
-    const vaultTokenAccount = getVaultTokenAta(mint, torchVault)
-    tx.add(createVaultTokenAtaIx(borrower, mint, torchVault))
-    ix = await program.methods
-      .openLongViaVault(args)
-      .accounts({
-        ...shared,
-        signer: borrower,
-        torchVault,
-        vaultWalletLink: walletLink,
-        vaultTokenAccount,
-      })
-      .instruction()
-  } else {
-    const borrowerTokenAccount = getAssociatedTokenAddressSync(
-      mint,
-      borrower,
-      false,
-      TOKEN_2022_PROGRAM_ID,
-    )
-    // Borrower posts token collateral from its ATA.
-    tx.add(
-      createAssociatedTokenAccountIdempotentInstruction(
-        borrower,
-        borrowerTokenAccount,
-        borrower,
-        mint,
-        TOKEN_2022_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID,
-      ),
-    )
-    ix = await program.methods
-      .openLong(args)
-      .accounts({ ...shared, borrower, borrowerTokenAccount })
-      .instruction()
+  // Assembles the full open-long tx (collateral-ATA prep + open ix) for a given
+  // min_out. Rebuilt once with min_out=0 to simulate, once with the sized floor.
+  const assembleLongTx = async (minOut: BN): Promise<Transaction> => {
+    const args = { positionIndex, collateral: new BN(params.collateral.toString()), minOut }
+    const t = new Transaction()
+    let ix: TransactionInstruction
+    if (torchVault && walletLink) {
+      const vaultTokenAccount = getVaultTokenAta(mint, torchVault)
+      t.add(createVaultTokenAtaIx(borrower, mint, torchVault))
+      ix = await program.methods
+        .openLongViaVault(args)
+        .accounts({ ...shared, signer: borrower, torchVault, vaultWalletLink: walletLink, vaultTokenAccount })
+        .instruction()
+    } else {
+      const borrowerTokenAccount = getAssociatedTokenAddressSync(mint, borrower, false, TOKEN_2022_PROGRAM_ID)
+      t.add(
+        createAssociatedTokenAccountIdempotentInstruction(
+          borrower,
+          borrowerTokenAccount,
+          borrower,
+          mint,
+          TOKEN_2022_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID,
+        ),
+      )
+      ix = await program.methods
+        .openLong(args)
+        .accounts({ ...shared, borrower, borrowerTokenAccount })
+        .instruction()
+    }
+    t.add(ix)
+    return t
   }
 
-  tx.add(ix)
-  const versionedTx = await finalizeTransaction(connection, tx, borrower)
+  // [prompt-008 F-1] Floor the borrow→buy entry swap. The chain clamps the SOL
+  // borrow, so simulate with min_out=0 and read the tokens actually bought from
+  // the post-sim token-vault (total minus the deterministic net collateral).
+  let minOut: BN
+  if (params.min_out != null) {
+    minOut = new BN(params.min_out.toString())
+  } else {
+    const slippageBps = params.slippage_bps ?? DEFAULT_LEVERAGE_SLIPPAGE_BPS
+    const collateral = BigInt(params.collateral.toString())
+    const netCollateral = netCollateralAfterFee(collateral)
+    const vtx0 = await finalizeTransaction(connection, await assembleLongTx(new BN(0)), borrower)
+    const [vaultB64] = await simulateForAccounts(connection, vtx0, [positionTokenVault])
+    if (vaultB64 == null) {
+      throw new Error('could not size long slippage (vault unreadable); please retry')
+    }
+    const vaultTokens = tokenAmountFromB64(vaultB64)
+    if (vaultTokens <= netCollateral) {
+      throw new Error('open long would buy nothing (caps exhausted)')
+    }
+    minOut = new BN(sizeLongMinOut(vaultTokens, netCollateral, slippageBps).toString())
+  }
+
+  const versionedTx = await finalizeTransaction(connection, await assembleLongTx(minOut), borrower)
   const vaultLabel = vaultCreatorStr ? ' (via vault)' : ''
   return {
     transaction: versionedTx,

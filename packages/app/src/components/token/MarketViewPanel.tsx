@@ -17,6 +17,7 @@ import { PublicKey } from '@solana/web3.js'
 import { ChartTabs, type ChartTabsMessage } from './ChartTabs'
 import { VerifiedBadge } from '@/components'
 import { LAMPORTS_PER_SOL, shortenAddress } from '@/lib/constants'
+import { isSafeHttpUrl } from '@/lib/url'
 import type { UseTokenResult } from '@/hooks/useToken'
 
 // Inline helpers (lifted from page.tsx — moved here as part of the
@@ -181,7 +182,7 @@ export function MarketViewPanel({
             </button>
 
             {/* Socials */}
-            {token.metadata?.twitter && (
+            {token.metadata?.twitter && isSafeHttpUrl(token.metadata.twitter) && (
               <a
                 href={token.metadata.twitter}
                 target="_blank"
@@ -194,7 +195,7 @@ export function MarketViewPanel({
                 </svg>
               </a>
             )}
-            {token.metadata?.telegram && (
+            {token.metadata?.telegram && isSafeHttpUrl(token.metadata.telegram) && (
               <a
                 href={token.metadata.telegram}
                 target="_blank"
@@ -207,7 +208,7 @@ export function MarketViewPanel({
                 </svg>
               </a>
             )}
-            {token.metadata?.website && (
+            {token.metadata?.website && isSafeHttpUrl(token.metadata.website) && (
               <a
                 href={token.metadata.website}
                 target="_blank"

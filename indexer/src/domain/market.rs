@@ -67,8 +67,12 @@ pub async fn set(
 }
 
 // Apply a BondingCurveTrade — updates the four reserves columns plus the
-// last_activity_slot. Idempotent at the writer layer (trade rows are
-// (signature, inner_ix_idx) keyed) so this is safe to retry.
+// last_activity_slot. [prompt-008 I-1] The trade ROW insert is idempotent
+// (signature, inner_ix_idx keyed) but the writer calls THIS unconditionally
+// (writer.rs ~509, not gated on the insert) — so the reserve overwrite is the
+// part that is NOT replay-safe. The monotonic `$slot >= last_activity_slot`
+// guard is what stops a replay / backfill-over-live / out-of-order event from
+// re-stamping reserves backward to a value that never held on the canonical chain.
 #[allow(clippy::too_many_arguments)]
 pub async fn apply_trade(
     tx: &mut Transaction<'_, Postgres>,
@@ -88,7 +92,7 @@ pub async fn apply_trade(
              real_token = $5,
              last_activity_slot = $6,
              updated_at = $7
-         WHERE mint = $1",
+         WHERE mint = $1 AND $6 >= last_activity_slot",
     )
     .bind(mint)
     .bind(virtual_sol)
@@ -131,7 +135,7 @@ pub async fn apply_migration(
              real_token = 0,
              last_activity_slot = $2,
              updated_at = $4
-         WHERE mint = $1",
+         WHERE mint = $1 AND $2 >= last_activity_slot",
     )
     .bind(mint)
     .bind(migrated_slot)
@@ -161,15 +165,19 @@ pub async fn mark_status(
         MarketStatus::Reclaimed => Some("reclaimed_slot"),
         _ => None,
     };
+    // [prompt-008 I-1] Same monotonic guard as apply_trade/apply_migration: a
+    // stale/out-of-order status replay must not regress last_activity_slot or
+    // re-flip status. `>=` keeps an equal-slot replay idempotent (status flips
+    // on the trade slot that crosses the target — same slot as that trade).
     let sql = match column {
         Some(col) => format!(
             "UPDATE markets
              SET status = $2, {col} = $3, last_activity_slot = $3, updated_at = $4
-             WHERE mint = $1",
+             WHERE mint = $1 AND $3 >= last_activity_slot",
         ),
         None => "UPDATE markets
              SET status = $2, last_activity_slot = $3, updated_at = $4
-             WHERE mint = $1"
+             WHERE mint = $1 AND $3 >= last_activity_slot"
             .to_string(),
     };
     sqlx::query(&sql)
