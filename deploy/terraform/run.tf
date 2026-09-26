@@ -183,6 +183,16 @@ resource "google_cloud_run_v2_service" "ingest" {
   ]
 }
 
+# The load balancer forwards /events unauthenticated, so Cloud Run needs the
+# public invoker binding (same as api/ui). Exposure is bounded by ingress =
+# internal-LB plus the URL map, which sends only /events here.
+resource "google_cloud_run_v2_service_iam_member" "ingest_public" {
+  name     = google_cloud_run_v2_service.ingest.name
+  location = google_cloud_run_v2_service.ingest.location
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
 # ----- API (read tier, scales) ------------------------------------------
 
 resource "google_cloud_run_v2_service" "api" {
