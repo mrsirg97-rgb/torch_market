@@ -1,6 +1,6 @@
 # Global external ALB: one static IP, google-managed certs, serverless NEGs.
 #   torchmarket.dev, www → torch-ui   (www 301s to apex)
-#   api.torchmarket.dev  → torch-api  (HTTP + WS)
+#   api.torchmarket.dev  → torch-api  (HTTP), /events → torch-ingest (WS)
 # Chosen over Cloud Run domain mappings (apex support, no regional caveats).
 # Managed certs provision automatically once DNS resolves through the zone —
 # expect 15-60 min of PROVISIONING on first bring-up; no manual SSL anywhere.
@@ -32,6 +32,29 @@ resource "google_compute_region_network_endpoint_group" "api" {
   region                = var.region
   cloud_run {
     service = google_cloud_run_v2_service.api.name
+  }
+}
+
+# The writer serves /events (ws-to-indexer): its own NEG + backend so the
+# URL map can send exactly that path to it.
+resource "google_compute_region_network_endpoint_group" "ingest" {
+  name                  = "torch-ingest-neg"
+  network_endpoint_type = "SERVERLESS"
+  region                = var.region
+  cloud_run {
+    service = google_cloud_run_v2_service.ingest.name
+  }
+}
+
+resource "google_compute_backend_service" "ingest" {
+  name                  = "torch-ingest-backend"
+  load_balancing_scheme = "EXTERNAL_MANAGED"
+  protocol              = "HTTPS"
+  security_policy       = google_compute_security_policy.edge.id
+  # No timeout_sec (serverless NEGs reject it); the ingest service's own
+  # 3600s request timeout governs WS connection lifetime.
+  backend {
+    group = google_compute_region_network_endpoint_group.ingest.id
   }
 }
 
@@ -75,7 +98,11 @@ resource "google_compute_url_map" "torch" {
       strip_query            = true
     }
     path_rule {
-      paths   = ["/api/*", "/events", "/health", "/healthz", "/rpc", "/rpc-ws"]
+      paths   = ["/events"]
+      service = google_compute_backend_service.ingest.id
+    }
+    path_rule {
+      paths   = ["/api/*", "/health", "/healthz", "/rpc", "/rpc-ws"]
       service = google_compute_backend_service.api.id
     }
   }

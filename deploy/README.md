@@ -1,7 +1,7 @@
 # GCP deploy — torchmarket.dev (prompt-004)
 
-Terraform-managed: 3 Cloud Run services (ingest single-writer / api read tier /
-ui), Cloud SQL Postgres 16, global ALB + managed certs + Cloud DNS, Secret
+Terraform-managed: 3 Cloud Run services (ingest single-writer + WS rooms /
+api read tier / ui), Cloud SQL Postgres 16, global ALB + managed certs + Cloud DNS, Secret
 Manager. Adapted from the metadao-challenge template; split per prompt-003.
 
 ```
@@ -55,15 +55,14 @@ cargo run --manifest-path ../loadtest/Cargo.toml --release -- \
 - `torch_ingest` (INSERT/UPDATE) — mounted by ingest service + backfill job only
 - `torch_api` (SELECT only) — the api service NEVER holds a writable URL
 - superuser password — bootstrap-schema.sh only, never mounted into a service
-- nobody has DELETE; ingest service is INTERNAL ingress (nothing public calls it)
+- nobody has DELETE; ingest is reachable only through the load balancer and only on `/events` (the WS rooms live with the writer); its /healthz and /metrics stay internal
 - prod config is Secret Manager env vars; no .env ships in any image
 
 ## Knobs that are correctness, not cost
 
 - ingest min=max=1: single writer (chain-ordered serial ids depend on it)
-- api always-on CPU: holds WS rooms + its LISTEN connection between requests
-- api 1..4: each instance has its own LISTEN conn; watch Cloud SQL
-  max_connections before raising max
+- ingest always-on CPU: holds the gRPC stream and the WS rooms
+- api 1..4: stateless HTTP; scale on request latency alone
 
 ## Cost
 

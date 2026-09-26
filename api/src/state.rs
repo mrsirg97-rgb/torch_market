@@ -1,12 +1,10 @@
-// Shared axum state: the read pool (torch_api role, SELECT-only) + rooms.
+// Shared axum state: the read pool (torch_api role, SELECT-only) + the RPC
+// proxy upstream. The WS rooms moved to the indexer (ws-to-indexer).
 use sqlx::PgPool;
-
-use crate::ws::Rooms;
 
 #[derive(Clone)]
 pub struct AppState {
     pub pool: PgPool,
-    pub rooms: Rooms,
     // RPC proxy (prompt-005): upstream JSON-RPC URL with key inline (from
     // Secret Manager in prod). None disables /rpc + /rpc-ws.
     pub rpc_upstream: Option<String>,

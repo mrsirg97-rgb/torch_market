@@ -240,7 +240,7 @@ GET  /api/liquidations        ?mint&owner&side&kind                [V21] positio
 GET  /api/holders/:mint       count + top-N (joins markets to ATAs)
 GET  /api/candles             ?mint&interval&since&before
                               interval ∈ {1m, 5m, 1h}
-WS   /events                  firehose, all programs, post-commit
+WS   /events                  rooms, served by the indexer, published post-commit by the writer
 ```
 
 ### Candles

@@ -1,8 +1,9 @@
-// torch read-API service (prompt-003): axum + WS rooms, fed by Postgres
-// LISTEN. Scales horizontally — every instance holds its own LISTEN
-// connection and its own rooms; the single-writer ingest never knows we exist.
+// torch read-API service (prompt-003): stateless axum over the SELECT-only
+// role. Scales horizontally with nothing to coordinate — the WS rooms live
+// with the single writer (ws-to-indexer), so no instance holds a LISTEN
+// connection or any per-connection state.
 use anyhow::Context;
-use torch_api::{config, db, http, listen, state::AppState, ws::Rooms};
+use torch_api::{config, db, http, state::AppState};
 use tracing::info;
 
 #[tokio::main]
@@ -22,23 +23,11 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState {
         pool: pool.clone(),
-        rooms: Rooms::new(),
         rpc_upstream: cfg.rpc_url.clone(),
         http: reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .build()
             .expect("http client"),
-    };
-
-    // LISTEN bridge: pg_notify → rooms.
-    let listener_handle = {
-        let state = state.clone();
-        let url = cfg.database_url.clone();
-        tokio::spawn(async move {
-            if let Err(e) = listen::run_listener(state, url).await {
-                tracing::error!(error = %e, "listener task exited");
-            }
-        })
     };
 
     let app = http::router(state);
@@ -55,7 +44,6 @@ async fn main() -> anyhow::Result<()> {
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => { info!("shutdown signal"); }
-        _ = listener_handle => {}
         _ = server_handle => {}
     }
     Ok(())

@@ -23,9 +23,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{
-        Path, Query, State,
-    },
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
@@ -36,9 +34,9 @@ use serde::{Deserialize, Serialize};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::contracts::{
-    LiquidityRow, MarketRow, MarketStatus, MarketTier, MessageRow, MigrationRow,
-    PoolRow, PositionEventKind, PositionEventRow, PositionHealth, PositionRow, PositionSide,
-    ReservesRow, SwapRow, TradeRow,
+    LiquidityRow, MarketRow, MarketStatus, MarketTier, MessageRow, MigrationRow, PoolRow,
+    PositionEventKind, PositionEventRow, PositionHealth, PositionRow, PositionSide, ReservesRow,
+    SwapRow, TradeRow,
 };
 use crate::domain::{
     LiquidityFilter, MarketFilter, MessageFilter, MigrationFilter, PoolFilter, PositionEventFilter,
@@ -69,8 +67,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/pools/:pubkey", get(get_pool))
         .route("/api/swaps", get(list_swaps))
         .route("/api/liquidity", get(list_liquidity))
-        // WS firehose
-        .route("/events", get(crate::ws::ws_handler))
+        // /events (the WS rooms) is served by the indexer since ws-to-indexer;
+        // the load balancer routes that path to the ingest service.
         // RPC proxy (prompt-005) — POST passthrough + WS bridge.
         .route("/rpc", axum::routing::post(crate::rpc::rpc_http))
         .route("/rpc-ws", get(crate::rpc::rpc_ws))
@@ -397,9 +395,11 @@ async fn list_candles(
         "15m" => 900,
         "1h" => 3600,
         "4h" => 14_400,
-        _ => return Err(ApiError::BadRequest(
-            "interval must be 1s | 15s | 30s | 1m | 5m | 15m | 1h | 4h",
-        )),
+        _ => {
+            return Err(ApiError::BadRequest(
+                "interval must be 1s | 15s | 30s | 1m | 5m | 15m | 1h | 4h",
+            ))
+        }
     };
 
     // Default window: last 24h if neither bound given.

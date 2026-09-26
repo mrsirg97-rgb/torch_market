@@ -21,7 +21,7 @@ path = "src/main.rs"
 torch-indexer-core = { path = "../indexer-core" }
 # Runtime
 tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
-tokio-stream = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
 
 # Yellowstone gRPC (Laserstream is compatible)
@@ -33,6 +33,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-r
 
 # HTTP + WebSocket
 axum = { version = "0.7", features = ["ws"] }
+dashmap = "6"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 
 # Backfill subcommand calls JSON-RPC against a regular Solana RPC node

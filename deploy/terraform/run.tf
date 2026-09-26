@@ -72,9 +72,10 @@ resource "google_cloud_run_v2_service" "ingest" {
 
   deletion_protection = false
 
-  # Nothing outside the project ever calls ingest — health checks are
-  # platform-internal, and the ops /metrics is for monitoring agents.
-  ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+  # Reachable only through the load balancer, and only for /events: the WS
+  # rooms live with the writer (ws-to-indexer). /healthz and /metrics stay
+  # platform-internal; the URL map never routes them here.
+  ingress = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
 
   template {
     service_account = google_service_account.ingest.email
@@ -83,7 +84,7 @@ resource "google_cloud_run_v2_service" "ingest" {
     scaling {
       # Single writer. Two instances = two Laserstream subscriptions racing
       # on the idempotency keys: correct (ON CONFLICT) but wasteful, and it
-      # would double pg_notify traffic. Never scale this.
+      # would split the WS rooms across two processes. Never scale this.
       min_instance_count = 1
       max_instance_count = 1
     }

@@ -89,7 +89,7 @@ impl Metrics {
         .expect("build last_processed_slot");
         let broadcast_subscribers = IntGauge::new(
             "indexer_broadcast_subscribers",
-            "Current WS subscribers",
+            "Open WebSocket connections on /events",
         )
         .expect("build broadcast_subscribers");
 

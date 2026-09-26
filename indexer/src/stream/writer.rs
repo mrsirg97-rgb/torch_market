@@ -2,7 +2,8 @@
 //
 // Receives BlockBatches from the gRPC subscriber, writes each atomically
 // (events + state mutations + checkpoint) in a single Postgres transaction,
-// then broadcasts inserted rows to WS subscribers post-COMMIT.
+// then publishes the inserted rows to the WS rooms post-COMMIT (the writer
+// is the broadcaster: a frame exists iff its row committed, in commit order).
 //
 // One BlockBatch = one transaction.
 //
@@ -15,6 +16,7 @@
 //   Phase 3: everything else, in (signature, inner_ix_idx) order.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -22,19 +24,25 @@ use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 use crate::contracts::{
-    AnyEvent, BlockBatch, DecodedEvent, DeepPoolEvent, LiquidityRow,
-    MarketRow, MarketStatus, MessageRow, MigrationRow, NewMarketRow, NewMessageRow, NewPositionRow,
-    PoolRow, PositionEventRow, PositionHealth, PositionRow, PositionSide, ReservesRow, SwapRow,
-    TorchEvent, TradeRow,
+    AnyEvent, BlockBatch, DecodedEvent, DeepPoolEvent, LiquidityRow, MarketRow, MarketStatus,
+    MessageRow, MigrationRow, NewMarketRow, NewMessageRow, NewPositionRow, PoolRow,
+    PositionEventRow, PositionHealth, PositionRow, PositionSide, ReservesRow, SwapRow, TorchEvent,
+    TradeRow,
 };
 use crate::domain::{liquidity, market, message, migration, pool, position, reserves, swap};
 use crate::stream::translate;
+use crate::ws::{BroadcastFrame, Rooms};
 
-pub async fn run_writer(db: PgPool, mut rx: mpsc::Receiver<BlockBatch>) -> anyhow::Result<()> {
+pub async fn run_writer(
+    db: PgPool,
+    mut rx: mpsc::Receiver<BlockBatch>,
+    rooms: Rooms,
+) -> anyhow::Result<()> {
     info!("writer task started");
 
     let mut pool_cache = load_pool_cache(&db).await?;
     let mut lp_supply_cache = load_lp_supply_cache(&db).await?;
+    let mut publisher = Publisher::new(rooms);
     info!(
         pools = pool_cache.len(),
         lp_supply_entries = lp_supply_cache.len(),
@@ -48,12 +56,17 @@ pub async fn run_writer(db: PgPool, mut rx: mpsc::Receiver<BlockBatch>) -> anyho
                 // Live-only gauges. `events_total` + `blocks_written_total`
                 // are incremented inside `write_block_inner` so backfill and
                 // live ingest share the same accounting.
-                crate::metrics::METRICS
-                    .last_processed_slot
-                    .set(slot as i64);
+                crate::metrics::METRICS.last_processed_slot.set(slot as i64);
                 let n = written.total_count();
                 if n > 0 {
                     info!(slot, inserted = n, "wrote block");
+                    // Post-COMMIT: the rows are durable, now they are frames.
+                    // A publish failure is a lookup failure (pool_id → mint),
+                    // never a write failure; log and move on — the checkpoint
+                    // already advanced with the transaction.
+                    if let Err(e) = publisher.publish(&db, &written).await {
+                        warn!(slot, error = %e, "post-commit publish incomplete");
+                    }
                 }
             }
             Err(e) => {
@@ -67,7 +80,7 @@ pub async fn run_writer(db: PgPool, mut rx: mpsc::Receiver<BlockBatch>) -> anyho
 }
 
 #[derive(Default)]
-struct WrittenBlock {
+pub struct WrittenBlock {
     // deep_pool
     pools: Vec<PoolRow>,
     reserves: Vec<ReservesRow>,
@@ -80,6 +93,111 @@ struct WrittenBlock {
     positions: Vec<PositionRow>,
     position_events: Vec<PositionEventRow>,
     migrations: Vec<MigrationRow>,
+}
+
+// The post-commit publisher. Routes each committed row to its market room
+// (and the AllMarkets heartbeat for the rows the index page sorts on:
+// markets, trades, migrations, swaps). Swaps, reserves and liquidity carry a
+// pool_id, not a mint; the pool → mint map is filled from the pools this
+// block created and, for older pools, one cached lookup.
+pub struct Publisher {
+    rooms: Rooms,
+    pool_mints: HashMap<i32, String>,
+}
+
+impl Publisher {
+    pub fn new(rooms: Rooms) -> Self {
+        Self {
+            rooms,
+            pool_mints: HashMap::new(),
+        }
+    }
+
+    async fn pool_mint(&mut self, db: &PgPool, pool_id: i32) -> sqlx::Result<Option<String>> {
+        if let Some(m) = self.pool_mints.get(&pool_id) {
+            return Ok(Some(m.clone()));
+        }
+        let mint: Option<String> =
+            sqlx::query_scalar("SELECT token_mint FROM pools WHERE pool_id = $1")
+                .bind(pool_id)
+                .fetch_optional(db)
+                .await?;
+        if let Some(m) = &mint {
+            self.pool_mints.insert(pool_id, m.clone());
+        }
+        Ok(mint)
+    }
+
+    pub async fn publish(&mut self, db: &PgPool, w: &WrittenBlock) -> anyhow::Result<()> {
+        // Pools first: they seed the pool → mint map the pool-keyed rows need.
+        for r in &w.pools {
+            self.pool_mints.insert(r.pool_id, r.token_mint.clone());
+            let mint = r.token_mint.clone();
+            self.rooms
+                .route_market(&mint, BroadcastFrame::Pool(Arc::new(r.clone())), false);
+        }
+        for r in &w.markets {
+            // Market updates feed the index page too (status, progress).
+            self.rooms
+                .route_market(&r.mint, BroadcastFrame::Market(Arc::new(r.clone())), true);
+        }
+        for r in &w.trades {
+            // Trade ticks feed AllMarkets (live sort heartbeats).
+            self.rooms
+                .route_market(&r.mint, BroadcastFrame::Trade(Arc::new(r.clone())), true);
+        }
+        for r in &w.messages {
+            self.rooms
+                .route_market(&r.mint, BroadcastFrame::Message(Arc::new(r.clone())), false);
+        }
+        for r in &w.positions {
+            self.rooms.route_market(
+                &r.mint,
+                BroadcastFrame::Position(Arc::new(r.clone())),
+                false,
+            );
+        }
+        for r in &w.position_events {
+            self.rooms.route_market(
+                &r.mint,
+                BroadcastFrame::PositionEvent(Arc::new(r.clone())),
+                false,
+            );
+        }
+        for r in &w.migrations {
+            self.rooms.route_market(
+                &r.mint,
+                BroadcastFrame::Migration(Arc::new(r.clone())),
+                true,
+            );
+        }
+        for r in &w.swaps {
+            if let Some(mint) = self.pool_mint(db, r.pool_id).await? {
+                // Post-migration trading: swaps ARE the trade ticks.
+                self.rooms
+                    .route_market(&mint, BroadcastFrame::Swap(Arc::new(r.clone())), true);
+            }
+        }
+        for r in &w.reserves {
+            if let Some(mint) = self.pool_mint(db, r.pool_id).await? {
+                self.rooms.route_market(
+                    &mint,
+                    BroadcastFrame::Reserves(Arc::new(r.clone())),
+                    false,
+                );
+            }
+        }
+        for r in &w.liquidity {
+            if let Some(mint) = self.pool_mint(db, r.pool_id).await? {
+                self.rooms.route_market(
+                    &mint,
+                    BroadcastFrame::Liquidity(Arc::new(r.clone())),
+                    false,
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 impl WrittenBlock {
@@ -96,16 +214,13 @@ impl WrittenBlock {
             + self.migrations.len()
     }
 
-    // [prompt-003] Queue one thin pg_notify per inserted row INSIDE the write
-    // transaction — Postgres delivers on COMMIT (never for rollbacks, in
-    // commit order). Payload is always thin: {"t": table, "k": key}; the /api
-    // listener fetches the row and assembles the client frame. Backfill does
-    // NOT notify (live path only) — catch-up replays would storm listeners,
-    // and clients resync by refetch anyway.
-    async fn queue_notifies(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-    ) -> sqlx::Result<()> {
+    // Queue one thin pg_notify per inserted row INSIDE the write transaction —
+    // Postgres delivers on COMMIT (never for rollbacks, in commit order).
+    // Payload is always thin: {"t": table, "k": key}. The WS rooms no longer
+    // ride this (the writer publishes post-commit, see Publisher); it stays
+    // as the durable-ish hook for any external LISTENer (a generated read
+    // tier, a dashboard). Backfill does NOT notify (live path only).
+    async fn queue_notifies(&self, tx: &mut Transaction<'_, Postgres>) -> sqlx::Result<()> {
         async fn notify(
             tx: &mut Transaction<'_, Postgres>,
             table: &str,
@@ -161,8 +276,8 @@ impl WrittenBlock {
 // indirection) and DOES NOT touch indexer_state. Returns the count of newly
 // inserted rows. Each call is one Postgres transaction.
 // Like write_events_no_checkpoint but WITH pg_notify (live-path semantics,
-// minus the checkpoint). Used by load tooling to drive the NOTIFY → /api
-// rooms fan-out exactly as live ingest would.
+// minus the checkpoint). Used by load tooling; note it does not publish to
+// the WS rooms — those belong to the live writer task (run_writer).
 pub async fn write_events_notify(
     db: &PgPool,
     slot: u64,
@@ -171,9 +286,15 @@ pub async fn write_events_notify(
     let mut pool_cache = HashMap::new();
     let mut lp_supply_cache = load_lp_supply_cache(db).await?;
     let batch = BlockBatch { slot, events };
-    let written =
-        write_block_inner(db, &mut pool_cache, &mut lp_supply_cache, &batch, false, true)
-            .await?;
+    let written = write_block_inner(
+        db,
+        &mut pool_cache,
+        &mut lp_supply_cache,
+        &batch,
+        false,
+        true,
+    )
+    .await?;
     Ok(written.total_count())
 }
 
@@ -191,9 +312,15 @@ pub async fn write_events_no_checkpoint(
     // swap-driven reserves row record lp_supply = 0 (backfill ≠ live).
     let mut lp_supply_cache = load_lp_supply_cache(db).await?;
     let batch = BlockBatch { slot, events };
-    let written =
-        write_block_inner(db, &mut pool_cache, &mut lp_supply_cache, &batch, false, false)
-            .await?;
+    let written = write_block_inner(
+        db,
+        &mut pool_cache,
+        &mut lp_supply_cache,
+        &batch,
+        false,
+        false,
+    )
+    .await?;
     Ok(written.total_count())
 }
 
@@ -322,15 +449,8 @@ async fn write_block_inner(
                 continue;
             }
             AnyEvent::DeepPool(ev) => {
-                write_deep_pool_event(
-                    &mut tx,
-                    de,
-                    ev,
-                    pool_cache,
-                    lp_supply_cache,
-                    &mut out,
-                )
-                .await?;
+                write_deep_pool_event(&mut tx, de, ev, pool_cache, lp_supply_cache, &mut out)
+                    .await?;
             }
             AnyEvent::Torch(ev) => {
                 write_torch_event(&mut tx, de, ev, &mut out).await?;
@@ -453,7 +573,8 @@ async fn write_deep_pool_event(
         }
         DeepPoolEvent::LiquidityAdded(la) => {
             lp_supply_cache.insert(pool_id, la.lp_supply_after as i64);
-            let inserted = liquidity::set(tx, &[translate::new_liquidity_add(la, pool_id, de)]).await?;
+            let inserted =
+                liquidity::set(tx, &[translate::new_liquidity_add(la, pool_id, de)]).await?;
             out.liquidity.extend(inserted);
             let inserted_reserves = reserves::set(
                 tx,
@@ -470,7 +591,8 @@ async fn write_deep_pool_event(
         }
         DeepPoolEvent::LiquidityRemoved(lr) => {
             lp_supply_cache.insert(pool_id, lr.lp_supply_after as i64);
-            let inserted = liquidity::set(tx, &[translate::new_liquidity_remove(lr, pool_id, de)]).await?;
+            let inserted =
+                liquidity::set(tx, &[translate::new_liquidity_remove(lr, pool_id, de)]).await?;
             out.liquidity.extend(inserted);
             let inserted_reserves = reserves::set(
                 tx,

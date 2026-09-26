@@ -5,11 +5,12 @@
 use std::time::Duration;
 
 use anyhow::Context;
+use tokio::sync::mpsc;
 use torch_indexer::constants::BLOCK_CHANNEL_CAPACITY;
 use torch_indexer::{
     config, contracts, db, stream::backfill, stream::grpc, stream::writer, util::retry_backoff,
+    ws::Rooms,
 };
-use tokio::sync::mpsc;
 use tracing::info;
 
 #[tokio::main]
@@ -104,13 +105,17 @@ async fn run_live(cfg: config::Config) -> anyhow::Result<()> {
 
     let (tx, rx) = mpsc::channel::<contracts::BlockBatch>(BLOCK_CHANNEL_CAPACITY);
 
-    // Writer task: drains the channel, writes per-block. Broadcast left this
-    // service (prompt-003): pg_notify fires INSIDE each write txn — Postgres
-    // delivers on COMMIT to every listening /api instance.
+    // The WS rooms live with the writer (ws-to-indexer): it is the one
+    // process that knows a row exists the moment it commits, so it publishes
+    // the frame itself. /events is served by the ops listener below.
+    let rooms = Rooms::new();
+
+    // Writer task: drains the channel, writes per-block, publishes post-COMMIT.
     let writer_handle = {
         let pool = pool.clone();
+        let rooms = rooms.clone();
         tokio::spawn(async move {
-            if let Err(e) = writer::run_writer(pool, rx).await {
+            if let Err(e) = writer::run_writer(pool, rx, rooms).await {
                 tracing::error!(error = %e, "writer task exited with error");
             }
         })
@@ -125,39 +130,33 @@ async fn run_live(cfg: config::Config) -> anyhow::Result<()> {
         let torch_program = cfg.torch_program_id.clone();
         let deep_pool_program = cfg.deep_pool_program_id.clone();
         tokio::spawn(async move {
-            if let Err(e) = grpc::run_subscriber(
-                url,
-                token,
-                torch_program,
-                deep_pool_program,
-                resume,
-                tx,
-            )
-            .await
+            if let Err(e) =
+                grpc::run_subscriber(url, token, torch_program, deep_pool_program, resume, tx).await
             {
                 tracing::error!(error = %e, "subscriber task exited with error");
             }
         })
     };
 
-    // Minimal ops listener: /healthz + /metrics ONLY (reads + WS live in
-    // /api). Exists because Cloud Run requires a listening port, and the
-    // events_total-vs-rows canary belongs on prod dashboards anyway.
+    // Ops listener: /healthz + /metrics, plus /events — the WS rooms, served
+    // from the process that fills them. HTTP reads stay in the read tier.
     let ops = {
         let bind = cfg.api_bind.clone();
+        let rooms = rooms.clone();
         tokio::spawn(async move {
             let app = axum::Router::new()
                 .route("/healthz", axum::routing::get(|| async { "ok" }))
                 .route("/health", axum::routing::get(|| async { "ok" }))
                 .route(
                     "/metrics",
-                    axum::routing::get(|| async {
-                        torch_indexer::metrics::render()
-                    }),
-                );
+                    axum::routing::get(|| async { torch_indexer::metrics::render() }),
+                )
+                .route("/events", axum::routing::get(torch_indexer::ws::ws_handler))
+                .layer(tower_http::cors::CorsLayer::permissive())
+                .with_state(rooms);
             match tokio::net::TcpListener::bind(&bind).await {
                 Ok(l) => {
-                    info!(bind = %bind, "ops listener up (healthz/metrics)");
+                    info!(bind = %bind, "ops listener up (healthz/metrics/events)");
                     if let Err(e) = axum::serve(l, app).await {
                         tracing::error!(error = %e, "ops listener exited");
                     }
