@@ -1,7 +1,7 @@
 # Load test — read API (prompt-003 split)
 
 Validates the split read service before the public preview: p50–p99 under
-query concurrency, plus WS room fan-out latency through the pg_notify bridge.
+query concurrency, plus WS room fan-out latency.
 Harness: `/loadtest` (tokio-native, no external tooling); seeder:
 `indexer loadseed` (drives the REAL writer path so the API serves
 production-shaped rows).
@@ -48,9 +48,13 @@ decision #6 it stays on-demand until measured need).
 frames=17,100 | delivery p50=8.9ms p95=11.1ms p99=12.5ms max=22.4ms
 ```
 
-Delivery = writer txn COMMIT → pg_notify → API row fetch → room broadcast →
-client receive (timestamp embedded in memo_text by `loadseed --notify`).
-**Sub-13ms p99 end-to-end through the whole split.**
+Measured on the pre-ws-to-indexer path: writer txn COMMIT → pg_notify →
+API row fetch → room broadcast → client receive (timestamp embedded in
+memo_text by the since-removed `loadseed --notify`). **Sub-13ms p99
+end-to-end through the whole split.** Since ws-to-indexer the rooms live on
+the writer and fill only from the live writer task, with two hops fewer;
+`loadseed` can no longer drive them, so this gate is unmeasurable until the
+indexer grows a synthetic-batch mode. Treat the numbers above as the ceiling.
 
 ## Gotcha worth remembering
 
@@ -77,11 +81,8 @@ DATABASE_URL=... API_BIND=127.0.0.1:8081 ./api/target/release/torch-api
 cargo run --manifest-path loadtest/Cargo.toml --release -- \
   --url http://127.0.0.1:8081 --concurrency 64 --duration 10 --mint <HOT_MINT>
 
-# WS fan-out (run loadseed --notify concurrently)
-DATABASE_URL=... cargo run --manifest-path indexer/Cargo.toml --release \
-  --bin loadseed -- --notify --rate 20 --seconds 12 &
-cargo run --manifest-path loadtest/Cargo.toml --release -- \
-  --url http://127.0.0.1:8081 --concurrency 50 --duration 14 --mint <HOT_MINT> --ws-only
+# WS fan-out: needs a live writer feeding the rooms (ws-to-indexer); no
+# seeder path today — see the note under "WS room fan-out" above.
 ```
 
 Re-measure on Cloud Run during the GCP rollout (prompt-004) for

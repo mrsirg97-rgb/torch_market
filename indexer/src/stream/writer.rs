@@ -213,91 +213,12 @@ impl WrittenBlock {
             + self.position_events.len()
             + self.migrations.len()
     }
-
-    // Queue one thin pg_notify per inserted row INSIDE the write transaction —
-    // Postgres delivers on COMMIT (never for rollbacks, in commit order).
-    // Payload is always thin: {"t": table, "k": key}. The WS rooms no longer
-    // ride this (the writer publishes post-commit, see Publisher); it stays
-    // as the durable-ish hook for any external LISTENer (a generated read
-    // tier, a dashboard). Backfill does NOT notify (live path only).
-    async fn queue_notifies(&self, tx: &mut Transaction<'_, Postgres>) -> sqlx::Result<()> {
-        async fn notify(
-            tx: &mut Transaction<'_, Postgres>,
-            table: &str,
-            key: String,
-        ) -> sqlx::Result<()> {
-            sqlx::query("SELECT pg_notify('torch_events', $1)")
-                .bind(format!("{{\"t\":\"{table}\",\"k\":\"{key}\"}}"))
-                .execute(&mut **tx)
-                .await?;
-            Ok(())
-        }
-        for r in &self.pools {
-            notify(tx, "pools", r.pool_id.to_string()).await?;
-        }
-        for r in &self.reserves {
-            notify(tx, "reserves", r.reserve_id.to_string()).await?;
-        }
-        for r in &self.swaps {
-            notify(tx, "swaps", r.swap_id.to_string()).await?;
-        }
-        for r in &self.liquidity {
-            notify(tx, "liquidity_events", r.liquidity_id.to_string()).await?;
-        }
-        for r in &self.markets {
-            notify(tx, "markets", r.mint.clone()).await?;
-        }
-        for r in &self.trades {
-            notify(tx, "trades", r.trade_id.to_string()).await?;
-        }
-        for r in &self.messages {
-            notify(tx, "messages", r.message_id.to_string()).await?;
-        }
-        for r in &self.positions {
-            notify(
-                tx,
-                "positions",
-                format!("{}|{}|{:?}|{}", r.mint, r.owner, r.side, r.position_index),
-            )
-            .await?;
-        }
-        for r in &self.position_events {
-            notify(tx, "position_events", r.event_id.to_string()).await?;
-        }
-        for r in &self.migrations {
-            notify(tx, "migrations", r.mint.clone()).await?;
-        }
-        Ok(())
-    }
 }
 
 // Public helper for the backfill path: same event-application logic as
 // write_block, but takes ownership of events directly (no BlockBatch
 // indirection) and DOES NOT touch indexer_state. Returns the count of newly
 // inserted rows. Each call is one Postgres transaction.
-// Like write_events_no_checkpoint but WITH pg_notify (live-path semantics,
-// minus the checkpoint). Used by load tooling; note it does not publish to
-// the WS rooms — those belong to the live writer task (run_writer).
-pub async fn write_events_notify(
-    db: &PgPool,
-    slot: u64,
-    events: Vec<DecodedEvent>,
-) -> anyhow::Result<usize> {
-    let mut pool_cache = HashMap::new();
-    let mut lp_supply_cache = load_lp_supply_cache(db).await?;
-    let batch = BlockBatch { slot, events };
-    let written = write_block_inner(
-        db,
-        &mut pool_cache,
-        &mut lp_supply_cache,
-        &batch,
-        false,
-        true,
-    )
-    .await?;
-    Ok(written.total_count())
-}
-
 pub async fn write_events_no_checkpoint(
     db: &PgPool,
     slot: u64,
@@ -312,15 +233,8 @@ pub async fn write_events_no_checkpoint(
     // swap-driven reserves row record lp_supply = 0 (backfill ≠ live).
     let mut lp_supply_cache = load_lp_supply_cache(db).await?;
     let batch = BlockBatch { slot, events };
-    let written = write_block_inner(
-        db,
-        &mut pool_cache,
-        &mut lp_supply_cache,
-        &batch,
-        false,
-        false,
-    )
-    .await?;
+    let written =
+        write_block_inner(db, &mut pool_cache, &mut lp_supply_cache, &batch, false).await?;
     Ok(written.total_count())
 }
 
@@ -330,7 +244,7 @@ async fn write_block(
     lp_supply_cache: &mut HashMap<i32, i64>,
     batch: &BlockBatch,
 ) -> anyhow::Result<WrittenBlock> {
-    write_block_inner(db, pool_cache, lp_supply_cache, batch, true, true).await
+    write_block_inner(db, pool_cache, lp_supply_cache, batch, true).await
 }
 
 // [prompt-006] Expected pool namespace: torch_config PDA derived from
@@ -353,7 +267,6 @@ async fn write_block_inner(
     lp_supply_cache: &mut HashMap<i32, i64>,
     batch: &BlockBatch,
     update_checkpoint: bool,
-    notify: bool,
 ) -> anyhow::Result<WrittenBlock> {
     let mut tx = db.begin().await?;
     let mut out = WrittenBlock::default();
@@ -458,10 +371,6 @@ async fn write_block_inner(
         }
     }
 
-    if notify {
-        // Live path (and load tooling): notify on commit. Backfill skips.
-        out.queue_notifies(&mut tx).await?;
-    }
     if update_checkpoint {
         sqlx::query(
             "INSERT INTO indexer_state (id, last_processed_slot) VALUES (1, $1)

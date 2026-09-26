@@ -3,6 +3,11 @@
 Not implemented. Premature for current scale. Document captures the design
 so the future migration is mechanical rather than re-litigated.
 
+Since ws-to-indexer the WS rooms live on the single writer and are published
+post-commit from the rows it just wrote; `pg_notify` was removed from the
+write path. The LISTEN/NOTIFY cross-process broadcast below is the design for
+when WS-serving instances multiply — reintroduce it then, not before.
+
 ## Current state (single-process)
 
 ```

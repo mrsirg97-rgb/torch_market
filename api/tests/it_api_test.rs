@@ -17,13 +17,11 @@ use tower::ServiceExt;
 
 use torch_api::http as api;
 use torch_api::state::AppState;
-use torch_api::ws::Rooms;
 use torch_indexer::stream::writer::write_events_no_checkpoint;
 
 async fn build_app(db: &TestDb) -> axum::Router {
     let state = AppState {
         pool: db.pool.clone(),
-        rooms: Rooms::new(),
         rpc_upstream: None, // proxy disabled in tests
         http: reqwest::Client::new(),
     };
@@ -47,7 +45,12 @@ async fn healthz_returns_ok() {
     let db = TestDb::new().await;
     let app = build_app(&db).await;
     let resp = app
-        .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -59,35 +62,46 @@ async fn healthz_returns_ok() {
 async fn metrics_endpoint_renders_prometheus_text() {
     let db = TestDb::new().await;
     // Seed one event so events_total carries a non-zero sample.
-    write_events_no_checkpoint(
-        &db.pool,
-        100,
-        vec![de(ev_market_created(1, 2), 100, 0)],
-    )
-    .await
-    .unwrap();
+    write_events_no_checkpoint(&db.pool, 100, vec![de(ev_market_created(1, 2), 100, 0)])
+        .await
+        .unwrap();
 
     let app = build_app(&db).await;
     let resp = app
-        .oneshot(Request::builder().uri("/metrics").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let ct = resp.headers().get("content-type").unwrap().to_str().unwrap().to_string();
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     assert!(ct.starts_with("text/plain"), "content-type = {ct}");
 
     let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
     let text = std::str::from_utf8(&body).expect("metrics body is utf-8");
 
-    // [prompt-003] This service exposes API-side metrics only — writer
-    // metrics (blocks_written, events_total) moved to the ingest service.
+    // The read tier is stateless HTTP (ws-to-indexer): the WS/LISTEN gauges
+    // left with the rooms. The scrape target must stay valid, and must not
+    // advertise series it no longer owns.
     for name in [
         "api_ws_connections",
         "api_rooms_active",
         "api_notifies_received_total",
         "api_listen_resyncs_total",
     ] {
-        assert!(text.contains(name), "metrics body missing `{name}`:\n{text}");
+        assert!(
+            !text.contains(name),
+            "read tier still exports `{name}` after ws-to-indexer:\n{text}"
+        );
     }
 }
 
@@ -243,8 +257,16 @@ async fn list_trades_filters_by_mint() {
         vec![
             de(ev_market_created(1, 2), 100, 0),
             de(ev_market_created(3, 4), 100, 1),
-            de(ev_buy_trade(1, 5, 1_000_000_000, 500_000_000_000_000), 100, 2),
-            de(ev_buy_trade(3, 5, 2_000_000_000, 1_000_000_000_000_000), 100, 3),
+            de(
+                ev_buy_trade(1, 5, 1_000_000_000, 500_000_000_000_000),
+                100,
+                2,
+            ),
+            de(
+                ev_buy_trade(3, 5, 2_000_000_000, 1_000_000_000_000_000),
+                100,
+                3,
+            ),
         ],
     )
     .await
@@ -391,7 +413,11 @@ async fn candles_aggregates_trades_into_buckets() {
         100,
         vec![
             de(ev_market_created(1, 2), 100, 0),
-            de(ev_buy_trade(1, 3, 1_000_000_000, 500_000_000_000_000), 100, 1),
+            de(
+                ev_buy_trade(1, 3, 1_000_000_000, 500_000_000_000_000),
+                100,
+                1,
+            ),
             de(ev_buy_trade(1, 3, 500_000_000, 250_000_000_000_000), 100, 2),
         ],
     )
@@ -500,7 +526,10 @@ async fn user_pnl_folds_resolved_position_outcomes() {
         .await
         .unwrap();
     let body = body_json(resp).await;
-    assert_eq!(body["total_realized_pnl"], 0, "open position stays unrealized");
+    assert_eq!(
+        body["total_realized_pnl"], 0,
+        "open position stays unrealized"
+    );
 
     // Full close paying out 4.01 SOL surplus → +2 SOL realized.
     let close = CloseShortEvent {
@@ -518,9 +547,9 @@ async fn user_pnl_folds_resolved_position_outcomes() {
         &db.pool,
         200,
         vec![de(
-            torch_api::contracts::AnyEvent::Torch(
-                torch_api::contracts::TorchEvent::CloseShort(close),
-            ),
+            torch_api::contracts::AnyEvent::Torch(torch_api::contracts::TorchEvent::CloseShort(
+                close,
+            )),
             200,
             0,
         )],
@@ -563,7 +592,11 @@ async fn candles_rejects_oversized_window() {
         .oneshot(Request::builder().uri(huge).body(Body::empty()).unwrap())
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "oversized window must 400");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "oversized window must 400"
+    );
 
     // before <= since → 400.
     let inverted = format!(
@@ -571,10 +604,19 @@ async fn candles_rejects_oversized_window() {
     );
     let resp = app
         .clone()
-        .oneshot(Request::builder().uri(inverted).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri(inverted)
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "before<=since must 400");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "before<=since must 400"
+    );
 
     // A small valid window is accepted (200) even with no underlying rows.
     let ok = format!(
@@ -584,5 +626,9 @@ async fn candles_rejects_oversized_window() {
         .oneshot(Request::builder().uri(ok).body(Body::empty()).unwrap())
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "small window must be accepted");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "small window must be accepted"
+    );
 }

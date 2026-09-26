@@ -81,6 +81,11 @@ resource "google_cloud_run_v2_service" "ingest" {
     service_account = google_service_account.ingest.email
     timeout         = "3600s"
 
+    # /events lives here now (ws-to-indexer). Idle WS sockets count toward
+    # request concurrency; the default (80) would cap viewers at ~80 per
+    # writer. Same knob and rationale as the api service.
+    max_instance_request_concurrency = 500
+
     scaling {
       # Single writer. Two instances = two Laserstream subscriptions racing
       # on the idempotency keys: correct (ON CONFLICT) but wasteful, and it

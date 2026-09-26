@@ -3,9 +3,6 @@
 # SELECT-only role (prompt-003 split). The API service can never mutate the
 # projection — the DB is a projection of chain state and only the single
 # ingest writer projects it. Separation enforced by GRANT, not convention.
-#
-# LISTEN requires no table grants; pg_notify fires from the ingest role's
-# write transactions and Postgres delivers to any listening session.
 
 set -euo pipefail
 

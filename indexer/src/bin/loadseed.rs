@@ -1,13 +1,10 @@
 // Load-test seeder: drives synthetic markets/trades/positions/messages through
 // the REAL writer path (translate → upsert → reconcile), so the API serves the
-// exact row shapes production would. Two modes:
+// exact row shapes production would.
 //
 //   loadseed --markets 50 --trades 2000 --positions 50
-//     bulk seed, NO notify (backfill semantics, no checkpoint)
-//
-//   loadseed --notify --mint <MINT> --rate 20 --seconds 15
-//     live-drive one market with trades+messages at ~rate/s, WITH pg_notify
-//     (memo_text = send-timestamp ns → loadtest --ws measures delivery latency)
+//     bulk seed (backfill semantics, no checkpoint, no WS frames — the rooms
+//     fill only from the live writer task since ws-to-indexer)
 //
 // DATABASE_URL from env/.env (use the WRITER role — this tool IS a writer).
 
@@ -16,7 +13,7 @@ use chrono::Utc;
 use torch_indexer::contracts::{
     AnyEvent, BondingCurveTrade, DecodedEvent, MarketCreated, OpenShortEvent, TorchEvent,
 };
-use torch_indexer::stream::writer::{write_events_no_checkpoint, write_events_notify};
+use torch_indexer::stream::writer::write_events_no_checkpoint;
 
 fn pk(i: u64) -> [u8; 32] {
     let mut b = [0u8; 32];
@@ -103,7 +100,6 @@ struct Args {
     markets: u64,
     trades: u64,
     positions: u64,
-    notify: bool,
     mint: Option<String>,
     rate: u64,
     seconds: u64,
@@ -114,7 +110,6 @@ fn parse() -> Args {
         markets: 50,
         trades: 2000,
         positions: 50,
-        notify: false,
         mint: None,
         rate: 20,
         seconds: 15,
@@ -125,7 +120,6 @@ fn parse() -> Args {
             "--markets" => a.markets = it.next().unwrap().parse().unwrap(),
             "--trades" => a.trades = it.next().unwrap().parse().unwrap(),
             "--positions" => a.positions = it.next().unwrap().parse().unwrap(),
-            "--notify" => a.notify = true,
             "--mint" => a.mint = Some(it.next().unwrap()),
             "--rate" => a.rate = it.next().unwrap().parse().unwrap(),
             "--seconds" => a.seconds = it.next().unwrap().parse().unwrap(),
@@ -142,39 +136,20 @@ async fn main() -> anyhow::Result<()> {
     let url = std::env::var("DATABASE_URL").context("DATABASE_URL")?;
     let pool = torch_indexer::db::connect(&url).await?;
 
-    if args.notify {
-        // Live-drive mode: trades+timestamped memos through the NOTIFY path.
-        let mint_i = 0u64; // first seeded market
-        let interval = std::time::Duration::from_millis(1000 / args.rate.max(1));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(args.seconds);
-        let mut n: u64 = 1_000_000; // disjoint from bulk-seed signatures
-        let mut slot: i64 = 90_000_000 + (run_nonce() % 1_000_000) as i64 * 100;
-        println!("live-driving market 0 at ~{}/s for {}s (notify ON)", args.rate, args.seconds);
-        while std::time::Instant::now() < deadline {
-            let ts_ns = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos()
-                .to_string();
-            let (ev, memo) = trade(mint_i, n, Some(&ts_ns));
-            write_events_notify(&pool, slot as u64, vec![de(ev, slot, 0, 0, memo)]).await?;
-            n += 1;
-            slot += 1;
-            tokio::time::sleep(interval).await;
-        }
-        println!("done: {} notifying writes", n - 1_000_000);
-        return Ok(());
-    }
-
     // Bulk seed.
     println!(
-        "seeding {} markets, {} trades, {} shorts (no notify)…",
+        "seeding {} markets, {} trades, {} shorts…",
         args.markets, args.trades, args.positions
     );
     let mut slot: i64 = 80_000_000;
     for i in 0..args.markets {
         let mut events = vec![de(market(i), slot, 0, 0, None)];
         // trades spread across markets, weighted to market 0 (the hot mint)
-        let per = if i == 0 { args.trades / 2 } else { args.trades / 2 / args.markets.max(1) };
+        let per = if i == 0 {
+            args.trades / 2
+        } else {
+            args.trades / 2 / args.markets.max(1)
+        };
         for n in 0..per {
             let (ev, memo) = trade(i, n, if n % 10 == 0 { Some("gm") } else { None });
             events.push(de(ev, slot, (n + 1) as i32, 0, memo));
