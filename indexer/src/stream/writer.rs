@@ -213,6 +213,50 @@ impl WrittenBlock {
             + self.position_events.len()
             + self.migrations.len()
     }
+
+    // One thin pg_notify per live block INSIDE the write transaction, so
+    // Postgres delivers it on COMMIT, never for a rollback, in commit order.
+    // Payload: {"slot": N, "tables": [...]} naming the tables this block
+    // wrote. The WS rooms do not ride this (the writer publishes post-commit,
+    // see Publisher); it is the hook for an external LISTENer: the generated
+    // read tier merges a fresh markets view on it. Backfill does not notify.
+    async fn queue_notify(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        slot: u64,
+    ) -> sqlx::Result<()> {
+        let mut tables: Vec<&str> = Vec::new();
+        let sets: [(&str, bool); 10] = [
+            ("pools", self.pools.is_empty()),
+            ("reserves", self.reserves.is_empty()),
+            ("swaps", self.swaps.is_empty()),
+            ("liquidity_events", self.liquidity.is_empty()),
+            ("markets", self.markets.is_empty()),
+            ("trades", self.trades.is_empty()),
+            ("messages", self.messages.is_empty()),
+            ("positions", self.positions.is_empty()),
+            ("position_events", self.position_events.is_empty()),
+            ("migrations", self.migrations.is_empty()),
+        ];
+        for (name, empty) in sets {
+            if !empty {
+                tables.push(name);
+            }
+        }
+        if tables.is_empty() {
+            return Ok(());
+        }
+        let list = tables
+            .iter()
+            .map(|t| format!("\"{t}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        sqlx::query("SELECT pg_notify('torch_events', $1)")
+            .bind(format!("{{\"slot\":{slot},\"tables\":[{list}]}}"))
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
 }
 
 // Public helper for the backfill path: same event-application logic as
@@ -233,8 +277,38 @@ pub async fn write_events_no_checkpoint(
     // swap-driven reserves row record lp_supply = 0 (backfill ≠ live).
     let mut lp_supply_cache = load_lp_supply_cache(db).await?;
     let batch = BlockBatch { slot, events };
-    let written =
-        write_block_inner(db, &mut pool_cache, &mut lp_supply_cache, &batch, false).await?;
+    let written = write_block_inner(
+        db,
+        &mut pool_cache,
+        &mut lp_supply_cache,
+        &batch,
+        false,
+        false,
+    )
+    .await?;
+    Ok(written.total_count())
+}
+
+// Like write_events_no_checkpoint but WITH the block notify (live-path
+// semantics, minus the checkpoint). For tests and load tooling; it does not
+// publish to the WS rooms, which belong to the live writer task (run_writer).
+pub async fn write_events_notify(
+    db: &PgPool,
+    slot: u64,
+    events: Vec<DecodedEvent>,
+) -> anyhow::Result<usize> {
+    let mut pool_cache = HashMap::new();
+    let mut lp_supply_cache = load_lp_supply_cache(db).await?;
+    let batch = BlockBatch { slot, events };
+    let written = write_block_inner(
+        db,
+        &mut pool_cache,
+        &mut lp_supply_cache,
+        &batch,
+        false,
+        true,
+    )
+    .await?;
     Ok(written.total_count())
 }
 
@@ -244,7 +318,7 @@ async fn write_block(
     lp_supply_cache: &mut HashMap<i32, i64>,
     batch: &BlockBatch,
 ) -> anyhow::Result<WrittenBlock> {
-    write_block_inner(db, pool_cache, lp_supply_cache, batch, true).await
+    write_block_inner(db, pool_cache, lp_supply_cache, batch, true, true).await
 }
 
 // [prompt-006] Expected pool namespace: torch_config PDA derived from
@@ -267,6 +341,7 @@ async fn write_block_inner(
     lp_supply_cache: &mut HashMap<i32, i64>,
     batch: &BlockBatch,
     update_checkpoint: bool,
+    notify: bool,
 ) -> anyhow::Result<WrittenBlock> {
     let mut tx = db.begin().await?;
     let mut out = WrittenBlock::default();
@@ -371,6 +446,9 @@ async fn write_block_inner(
         }
     }
 
+    if notify {
+        out.queue_notify(&mut tx, batch.slot).await?;
+    }
     if update_checkpoint {
         sqlx::query(
             "INSERT INTO indexer_state (id, last_processed_slot) VALUES (1, $1)

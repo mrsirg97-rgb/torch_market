@@ -4,9 +4,12 @@ Not implemented. Premature for current scale. Document captures the design
 so the future migration is mechanical rather than re-litigated.
 
 Since ws-to-indexer the WS rooms live on the single writer and are published
-post-commit from the rows it just wrote; `pg_notify` was removed from the
-write path. The LISTEN/NOTIFY cross-process broadcast below is the design for
-when WS-serving instances multiply — reintroduce it then, not before.
+post-commit from the rows it just wrote. The writer still queues one thin
+`pg_notify('torch_events', {"slot", "tables"})` per live block inside the
+write transaction: not for the rooms, but for external LISTENers such as the
+generated read tier (`svc/`), which merges a fresh markets view on it. The
+LISTEN/NOTIFY cross-process room broadcast below is the design for when
+WS-serving instances multiply — reintroduce it then, not before.
 
 ## Current state (single-process)
 
